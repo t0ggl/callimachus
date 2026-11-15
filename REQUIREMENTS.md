@@ -168,7 +168,7 @@ It adopts the proven management paradigm of the `*arr` stack (Radarr, Sonarr, Li
 
 All media is saved according to strict canonical rules:
 ```
-/mnt/media/books/
+/library/books/
 └── {Author}/
     └── {Series}/                                (if in a series)
         └── {Title} ({Year})/
@@ -177,7 +177,7 @@ All media is saved according to strict canonical rules:
             ├── {Title} ({Year}) - {Author}.opf  (Calibre metadata)
             └── {Title} ({Year}) - {Author}.jpg  (Front cover)
 ```
-- Standalone titles: `/mnt/media/books/{Author}/{Title} ({Year})/{Title} ({Year}) - {Author}.{ext}`
+- Standalone titles: `/library/books/{Author}/{Title} ({Year})/{Title} ({Year}) - {Author}.{ext}`
 - **Strict Rule:** Never create symlinks. Always use matching basenames for audiobooks and ebooks in the same title folder.
 
 ---

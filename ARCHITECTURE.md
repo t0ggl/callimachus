@@ -651,7 +651,7 @@ testdata/
 Callimachus enforces a strict, deterministic directory structure compatible with both Calibre and Audiobookshelf:
 
 ```
-/mnt/media/books/
+/library/books/
 └── {Author}/
     ├── {Series}/                                   # Present only if book is in a series
     │   └── {Title} ({Year})/
