@@ -435,40 +435,32 @@ CREATE TABLE settings (
 
 ---
 
-## 4. High-Reliability EPUB Engine Design
+## 4. EPUB Engine Strategy & Definitive Selection
 
-The EPUB engine in `pkg/epub` is responsible for inspecting, extracting, validating, modifying, and serializing EPUB books.
+The EPUB engine in `pkg/epub` inspects, extracts, validates, modifies, and serializes EPUB book metadata. 
+
+### 4.1 Single-Engine Decision Rule
+Rather than carrying perpetual dual-engine baggage or unreliable abstractions, Callimachus establishes a strict decision criterion:
+1. **Evaluation Phase:** We evaluate the native Go implementation against a comprehensive offline test fixture suite spanning EPUB 2.0.1, EPUB 3.0, EPUB 3.2, vendor-specific quirks, and dirty container XMLs.
+2. **Decision Trigger:**
+   - **If the native Go engine is good enough** (100% reliability, zero file corruption, perfect mimetype/zip compliance, correct OPF parsing across all test fixtures): We choose the **pure Go native engine exclusively**.
+   - **If the native Go engine falls short or proves fragile on real-world files:** We discard it and adopt **Calibre CLI (`ebook-meta`) exclusively**, as Calibre is the industry benchmark that reliably handles all broken and non-standard EPUB variations without corruption.
 
 ```mermaid
-flowchart LR
-    File["EPUB File on Disk"] --> Container["pkg/epub/container.go<br/>(Zip & META-INF parser)"]
-    Container --> OPFExtract["Extract & Parse<br/>content.opf / package.opf"]
-    OPFExtract --> SchemaCheck{"Valid XML & Namespaces?"}
-    SchemaCheck -- Valid --> NativeWriter["Native Go XML & Zip Serializer<br/>(Preserves mimetype & manifest)"]
-    SchemaCheck -- Quirks / Flagged --> CalibreCheck{"Calibre CLI<br/>ebook-meta available?"}
-    CalibreCheck -- Yes --> CLIWriter["Calibre CLI Driver<br/>(ebook-meta --set-metadata)"]
-    CalibreCheck -- No --> NativeWriter
-    NativeWriter --> TargetFile["Valid Non-Corrupt EPUB"]
-    CLIWriter --> TargetFile
-    TargetFile --> Sidecar["Generate Companion<br/>{Title} ({Year}) - {Author}.opf<br/>{Title} ({Year}) - {Author}.jpg"]
+flowchart TD
+    Start["Evaluate Native Go Parser against Real-World EPUB Fixtures"] --> TestRun{"Passes 100% of EPUB 2/3 fixtures<br/>without zip/XML corruption?"}
+    TestRun -- Yes --> NativeOnly["Select Pure Go Engine Exclusively<br/>(Zero external dependencies, fast, embedded)"]
+    TestRun -- No --> CalibreOnly["Select Calibre CLI (ebook-meta) Exclusively<br/>(Industry standard battle-tested reliability)"]
 ```
 
-### 4.1 Native Go Parser & Writer (`pkg/epub`)
+### 4.2 Core Requirements Regardless of Selected Driver
 1. **Container Specification Adherence:**
-   - The first file in the ZIP archive **must** be `mimetype` with zero compression (`zip.Store`) and exact content `application/epub+zip` without extraneous whitespace or trailing newlines.
-   - Reads `META-INF/container.xml` to dynamically resolve the `rootfile` path (commonly `content.opf`, `OEBPS/package.opf`, or `OPS/content.opf`), avoiding hardcoded path assumptions.
+   - The first entry in the ZIP archive **must** remain uncompressed `mimetype` (`zip.Store`) containing exactly `application/epub+zip` with no trailing whitespace or extra bytes.
+   - Dynamically resolves `rootfile` via `META-INF/container.xml`.
 2. **Lossless OPF Manipulation:**
-   - Parses Dublin Core metadata elements (`dc:title`, `dc:creator`, `dc:identifier`, `dc:date`, `dc:publisher`, `dc:language`).
-   - Supports EPUB 3 `<meta refines="...">` properties for series titles and series indexes, alongside EPUB 2 Calibre `<meta name="calibre:series" content="..."/>` and `<meta name="calibre:series_index" content="..."/>`.
-   - Modifies *only* the metadata block while strictly preserving manifest items, spines, guides, and XML entity encodings.
-3. **Calibre CLI Fallback (`ebook-meta`):**
-   - Callimachus detects if `ebook-meta` is present in the host `$PATH`.
-   - If configured or when processing malformed vendor-specific EPUB variations that fail native XML validation, Callimachus delegates tag injection to `ebook-meta` via a subprocess wrapper:
-     ```bash
-     ebook-meta "target.epub" --title="..." --authors="..." --series="..." --index="..." --isbn="..."
-     ```
-4. **Sidecar OPF & Cover Generation:**
-   - In alignment with Calibre and Audiobookshelf standards, Callimachus writes companion `{Title} ({Year}) - {Author}.opf` and `{Title} ({Year}) - {Author}.jpg` files in the canonical title folder.
+   - Preserves all manifest items, spines, guides, and XML entity encodings. Modifies only Dublin Core and series metadata tags.
+3. **Calibre & Audiobookshelf Sidecars:**
+   - Always generates companion `{Title} ({Year}) - {Author}.opf` and `{Title} ({Year}) - {Author}.jpg` alongside the media file.
 
 ---
 
