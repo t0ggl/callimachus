@@ -128,6 +128,7 @@ func TestMigrationAndTables(t *testing.T) {
 		"blocklist",
 		"users",
 		"user_requests",
+		"book_requests",
 		"settings",
 		"schema_migrations",
 	}
