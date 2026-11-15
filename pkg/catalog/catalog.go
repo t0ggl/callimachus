@@ -1,0 +1,785 @@
+package catalog
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/t0ggl/callimachus/pkg/database"
+	"github.com/t0ggl/callimachus/pkg/metadata"
+)
+
+// IngestResult captures the database records and filesystem paths resulting from an ingestion or reconcile operation.
+type IngestResult struct {
+	Organized   *OrganizedResult
+	Author      *database.Author
+	Series      *database.Series
+	Book        *database.Book
+	Edition     *database.BookEdition
+	MediaAssets []database.MediaAsset
+}
+
+// Catalog provides repository methods and catalog management operations
+// over the Callimachus database.
+type Catalog struct {
+	db *database.DB
+}
+
+// New creates a new Catalog manager backed by the given database.
+func New(db *database.DB) *Catalog {
+	return &Catalog{db: db}
+}
+
+// DB returns the underlying database instance.
+func (c *Catalog) DB() *database.DB {
+	return c.db
+}
+
+// AuthorSortName converts "First Last" to "Last, First" for catalog sorting.
+func AuthorSortName(name string) string {
+	clean := strings.TrimSpace(name)
+	if strings.Contains(clean, ",") {
+		return clean
+	}
+	parts := strings.Fields(clean)
+	if len(parts) >= 2 {
+		last := parts[len(parts)-1]
+		first := strings.Join(parts[:len(parts)-1], " ")
+		return fmt.Sprintf("%s, %s", last, first)
+	}
+	return clean
+}
+
+// GetAuthorByID retrieves an author by their unique identifier.
+func (c *Catalog) GetAuthorByID(ctx context.Context, id string) (*database.Author, error) {
+	query := `SELECT id, name, sort_name, aliases, photo_url, biography, created_at, updated_at FROM authors WHERE id = ?;`
+	row := c.db.QueryRowContext(ctx, query, id)
+	return scanAuthor(row)
+}
+
+// GetAuthorByName retrieves an author by name (case-insensitive).
+func (c *Catalog) GetAuthorByName(ctx context.Context, name string) (*database.Author, error) {
+	query := `SELECT id, name, sort_name, aliases, photo_url, biography, created_at, updated_at FROM authors WHERE name = ? COLLATE NOCASE LIMIT 1;`
+	row := c.db.QueryRowContext(ctx, query, strings.TrimSpace(name))
+	return scanAuthor(row)
+}
+
+// GetOrCreateAuthor finds an author by name or creates a new record.
+func (c *Catalog) GetOrCreateAuthor(ctx context.Context, name string) (*database.Author, error) {
+	norm := metadata.NormalizeAuthor(name)
+	if norm == "" {
+		return nil, ErrMissingAuthor
+	}
+
+	author, err := c.GetAuthorByName(ctx, norm)
+	if err == nil {
+		return author, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("lookup author: %w", err)
+	}
+
+	newAuthor := &database.Author{
+		ID:        uuid.New().String(),
+		Name:      norm,
+		SortName:  AuthorSortName(norm),
+		Aliases:   "[]",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	query := `INSERT INTO authors (id, name, sort_name, aliases, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?);`
+	_, err = c.db.ExecContext(ctx, query, newAuthor.ID, newAuthor.Name, newAuthor.SortName, newAuthor.Aliases, newAuthor.CreatedAt, newAuthor.UpdatedAt)
+	if err != nil {
+		// In case of race condition
+		if a, lookupErr := c.GetAuthorByName(ctx, norm); lookupErr == nil {
+			return a, nil
+		}
+		return nil, fmt.Errorf("create author: %w", err)
+	}
+
+	return newAuthor, nil
+}
+
+// UpsertAuthor creates or updates an author.
+func (c *Catalog) UpsertAuthor(ctx context.Context, a *database.Author) error {
+	if a.ID == "" {
+		a.ID = uuid.New().String()
+	}
+	if a.SortName == "" {
+		a.SortName = AuthorSortName(a.Name)
+	}
+	if a.Aliases == "" {
+		a.Aliases = "[]"
+	}
+	query := `
+		INSERT INTO authors (id, name, sort_name, aliases, photo_url, biography, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
+			sort_name = excluded.sort_name,
+			aliases = excluded.aliases,
+			photo_url = excluded.photo_url,
+			biography = excluded.biography,
+			updated_at = CURRENT_TIMESTAMP;
+	`
+	_, err := c.db.ExecContext(ctx, query, a.ID, a.Name, a.SortName, a.Aliases, a.PhotoURL, a.Biography)
+	return err
+}
+
+// GetSeriesByID retrieves a series by ID.
+func (c *Catalog) GetSeriesByID(ctx context.Context, id string) (*database.Series, error) {
+	query := `SELECT id, title, description, total_books, status, created_at, updated_at FROM series WHERE id = ?;`
+	row := c.db.QueryRowContext(ctx, query, id)
+	return scanSeries(row)
+}
+
+// GetSeriesByTitle retrieves a series by title (case-insensitive).
+func (c *Catalog) GetSeriesByTitle(ctx context.Context, title string) (*database.Series, error) {
+	query := `SELECT id, title, description, total_books, status, created_at, updated_at FROM series WHERE title = ? COLLATE NOCASE LIMIT 1;`
+	row := c.db.QueryRowContext(ctx, query, strings.TrimSpace(title))
+	return scanSeries(row)
+}
+
+// GetOrCreateSeries finds a series by title or creates a new record.
+func (c *Catalog) GetOrCreateSeries(ctx context.Context, title string) (*database.Series, error) {
+	clean := metadata.SanitizeTitle(title)
+	if clean == "" {
+		return nil, nil
+	}
+
+	series, err := c.GetSeriesByTitle(ctx, clean)
+	if err == nil {
+		return series, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("lookup series: %w", err)
+	}
+
+	newSeries := &database.Series{
+		ID:        uuid.New().String(),
+		Title:     clean,
+		Status:    "ongoing",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	query := `INSERT INTO series (id, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?);`
+	_, err = c.db.ExecContext(ctx, query, newSeries.ID, newSeries.Title, newSeries.Status, newSeries.CreatedAt, newSeries.UpdatedAt)
+	if err != nil {
+		if s, lookupErr := c.GetSeriesByTitle(ctx, clean); lookupErr == nil {
+			return s, nil
+		}
+		return nil, fmt.Errorf("create series: %w", err)
+	}
+
+	return newSeries, nil
+}
+
+// UpsertSeries creates or updates a series record.
+func (c *Catalog) UpsertSeries(ctx context.Context, s *database.Series) error {
+	if s.ID == "" {
+		s.ID = uuid.New().String()
+	}
+	if s.Status == "" {
+		s.Status = "ongoing"
+	}
+	query := `
+		INSERT INTO series (id, title, description, total_books, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		ON CONFLICT(id) DO UPDATE SET
+			title = excluded.title,
+			description = excluded.description,
+			total_books = excluded.total_books,
+			status = excluded.status,
+			updated_at = CURRENT_TIMESTAMP;
+	`
+	_, err := c.db.ExecContext(ctx, query, s.ID, s.Title, s.Description, s.TotalBooks, s.Status)
+	return err
+}
+
+// GetBookByID retrieves a book by ID.
+func (c *Catalog) GetBookByID(ctx context.Context, id string) (*database.Book, error) {
+	query := `SELECT id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, monitored, created_at, updated_at FROM books WHERE id = ?;`
+	row := c.db.QueryRowContext(ctx, query, id)
+	return scanBook(row)
+}
+
+// GetBookByAuthorAndTitle retrieves a book work by author ID and title.
+func (c *Catalog) GetBookByAuthorAndTitle(ctx context.Context, authorID, title string) (*database.Book, error) {
+	query := `SELECT id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, monitored, created_at, updated_at FROM books WHERE author_id = ? AND title = ? COLLATE NOCASE LIMIT 1;`
+	row := c.db.QueryRowContext(ctx, query, authorID, strings.TrimSpace(title))
+	return scanBook(row)
+}
+
+// GetOrCreateBook finds an existing book by author and title, or inserts a new one.
+func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*database.Book, error) {
+	cleanTitle := metadata.SanitizeTitle(book.Title)
+	if cleanTitle == "" {
+		return nil, ErrMissingTitle
+	}
+	if book.AuthorID == "" {
+		return nil, ErrMissingAuthor
+	}
+
+	existing, err := c.GetBookByAuthorAndTitle(ctx, book.AuthorID, cleanTitle)
+	if err == nil {
+		// Update missing series info if newly provided
+		if (existing.SeriesID == nil && book.SeriesID != nil) ||
+			(existing.ReleaseDate == nil && book.ReleaseDate != nil) {
+			if book.SeriesID != nil {
+				existing.SeriesID = book.SeriesID
+				existing.SeriesIndex = book.SeriesIndex
+				existing.SeriesIndexDisplay = book.SeriesIndexDisplay
+			}
+			if book.ReleaseDate != nil {
+				existing.ReleaseDate = book.ReleaseDate
+			}
+			_ = c.UpsertBook(ctx, existing)
+		}
+		return existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("lookup book: %w", err)
+	}
+
+	if book.ID == "" {
+		book.ID = uuid.New().String()
+	}
+	book.Title = cleanTitle
+	if book.Genres == "" {
+		book.Genres = "[]"
+	}
+	book.Monitored = true
+
+	query := `
+		INSERT INTO books (id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, monitored, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+	`
+	_, err = c.db.ExecContext(ctx, query,
+		book.ID, book.AuthorID, book.SeriesID, book.SeriesIndex, book.SeriesIndexDisplay,
+		book.Title, book.Subtitle, book.ReleaseDate, book.Synopsis, book.Genres, book.Monitored,
+	)
+	if err != nil {
+		if b, lookupErr := c.GetBookByAuthorAndTitle(ctx, book.AuthorID, cleanTitle); lookupErr == nil {
+			return b, nil
+		}
+		return nil, fmt.Errorf("create book: %w", err)
+	}
+
+	return book, nil
+}
+
+// UpsertBook inserts or updates a book record.
+func (c *Catalog) UpsertBook(ctx context.Context, b *database.Book) error {
+	if b.ID == "" {
+		b.ID = uuid.New().String()
+	}
+	if b.Genres == "" {
+		b.Genres = "[]"
+	}
+	query := `
+		INSERT INTO books (id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, monitored, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		ON CONFLICT(id) DO UPDATE SET
+			author_id = excluded.author_id,
+			series_id = excluded.series_id,
+			series_index = excluded.series_index,
+			series_index_display = excluded.series_index_display,
+			title = excluded.title,
+			subtitle = excluded.subtitle,
+			release_date = excluded.release_date,
+			synopsis = excluded.synopsis,
+			genres = excluded.genres,
+			monitored = excluded.monitored,
+			updated_at = CURRENT_TIMESTAMP;
+	`
+	_, err := c.db.ExecContext(ctx, query,
+		b.ID, b.AuthorID, b.SeriesID, b.SeriesIndex, b.SeriesIndexDisplay,
+		b.Title, b.Subtitle, b.ReleaseDate, b.Synopsis, b.Genres, b.Monitored,
+	)
+	return err
+}
+
+// GetEditionByID retrieves a book edition by ID.
+func (c *Catalog) GetEditionByID(ctx context.Context, id string) (*database.BookEdition, error) {
+	query := `SELECT id, book_id, format, isbn13, asin, hardcover_id, openlibrary_id, goodreads_id, publisher, publication_date, language, monitored, created_at, updated_at FROM book_editions WHERE id = ?;`
+	row := c.db.QueryRowContext(ctx, query, id)
+	return scanEdition(row)
+}
+
+// GetEditionByBookAndFormat retrieves an edition by book ID and format.
+func (c *Catalog) GetEditionByBookAndFormat(ctx context.Context, bookID, format string) (*database.BookEdition, error) {
+	query := `SELECT id, book_id, format, isbn13, asin, hardcover_id, openlibrary_id, goodreads_id, publisher, publication_date, language, monitored, created_at, updated_at FROM book_editions WHERE book_id = ? AND format = ? LIMIT 1;`
+	row := c.db.QueryRowContext(ctx, query, bookID, strings.ToLower(format))
+	return scanEdition(row)
+}
+
+// GetEditionsByBookID retrieves all editions for a book work.
+func (c *Catalog) GetEditionsByBookID(ctx context.Context, bookID string) ([]database.BookEdition, error) {
+	query := `SELECT id, book_id, format, isbn13, asin, hardcover_id, openlibrary_id, goodreads_id, publisher, publication_date, language, monitored, created_at, updated_at FROM book_editions WHERE book_id = ?;`
+	rows, err := c.db.QueryContext(ctx, query, bookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var editions []database.BookEdition
+	for rows.Next() {
+		ed, err := scanEdition(rows)
+		if err != nil {
+			return nil, err
+		}
+		editions = append(editions, *ed)
+	}
+	return editions, rows.Err()
+}
+
+// GetOrCreateEdition finds an edition by book ID and format or creates one.
+func (c *Catalog) GetOrCreateEdition(ctx context.Context, ed *database.BookEdition) (*database.BookEdition, error) {
+	cleanFormat := strings.ToLower(ed.Format)
+	existing, err := c.GetEditionByBookAndFormat(ctx, ed.BookID, cleanFormat)
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("lookup edition: %w", err)
+	}
+
+	if ed.ID == "" {
+		ed.ID = uuid.New().String()
+	}
+	ed.Format = cleanFormat
+	if ed.Language == "" {
+		ed.Language = "en"
+	}
+	ed.Monitored = true
+
+	query := `
+		INSERT INTO book_editions (id, book_id, format, isbn13, asin, hardcover_id, openlibrary_id, goodreads_id, publisher, publication_date, language, monitored, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+	`
+	_, err = c.db.ExecContext(ctx, query,
+		ed.ID, ed.BookID, ed.Format, ed.ISBN13, ed.ASIN, ed.HardcoverID, ed.OpenLibraryID, ed.GoodreadsID,
+		ed.Publisher, ed.PublicationDate, ed.Language, ed.Monitored,
+	)
+	if err != nil {
+		if e, lookupErr := c.GetEditionByBookAndFormat(ctx, ed.BookID, cleanFormat); lookupErr == nil {
+			return e, nil
+		}
+		return nil, fmt.Errorf("create edition: %w", err)
+	}
+
+	return ed, nil
+}
+
+// UpsertEdition inserts or updates a book edition.
+func (c *Catalog) UpsertEdition(ctx context.Context, ed *database.BookEdition) error {
+	if ed.ID == "" {
+		ed.ID = uuid.New().String()
+	}
+	ed.Format = strings.ToLower(ed.Format)
+	if ed.Language == "" {
+		ed.Language = "en"
+	}
+	query := `
+		INSERT INTO book_editions (id, book_id, format, isbn13, asin, hardcover_id, openlibrary_id, goodreads_id, publisher, publication_date, language, monitored, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		ON CONFLICT(id) DO UPDATE SET
+			format = excluded.format,
+			isbn13 = excluded.isbn13,
+			asin = excluded.asin,
+			hardcover_id = excluded.hardcover_id,
+			openlibrary_id = excluded.openlibrary_id,
+			goodreads_id = excluded.goodreads_id,
+			publisher = excluded.publisher,
+			publication_date = excluded.publication_date,
+			language = excluded.language,
+			monitored = excluded.monitored,
+			updated_at = CURRENT_TIMESTAMP;
+	`
+	_, err := c.db.ExecContext(ctx, query,
+		ed.ID, ed.BookID, ed.Format, ed.ISBN13, ed.ASIN, ed.HardcoverID, ed.OpenLibraryID, ed.GoodreadsID,
+		ed.Publisher, ed.PublicationDate, ed.Language, ed.Monitored,
+	)
+	return err
+}
+
+// GetMediaAssetByID retrieves a media asset by ID.
+func (c *Catalog) GetMediaAssetByID(ctx context.Context, id string) (*database.MediaAsset, error) {
+	query := `SELECT id, edition_id, file_path, file_size, checksum, audio_codec, bitrate, sample_rate, channels, duration_seconds, chapters, is_verified, created_at, updated_at FROM media_assets WHERE id = ?;`
+	row := c.db.QueryRowContext(ctx, query, id)
+	return scanMediaAsset(row)
+}
+
+// GetMediaAssetByPath retrieves a media asset by canonical file path.
+func (c *Catalog) GetMediaAssetByPath(ctx context.Context, filePath string) (*database.MediaAsset, error) {
+	query := `SELECT id, edition_id, file_path, file_size, checksum, audio_codec, bitrate, sample_rate, channels, duration_seconds, chapters, is_verified, created_at, updated_at FROM media_assets WHERE file_path = ?;`
+	row := c.db.QueryRowContext(ctx, query, filepath.Clean(filePath))
+	return scanMediaAsset(row)
+}
+
+// GetMediaAssetsByEditionID retrieves all media assets associated with an edition.
+func (c *Catalog) GetMediaAssetsByEditionID(ctx context.Context, editionID string) ([]database.MediaAsset, error) {
+	query := `SELECT id, edition_id, file_path, file_size, checksum, audio_codec, bitrate, sample_rate, channels, duration_seconds, chapters, is_verified, created_at, updated_at FROM media_assets WHERE edition_id = ?;`
+	rows, err := c.db.QueryContext(ctx, query, editionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var assets []database.MediaAsset
+	for rows.Next() {
+		ma, err := scanMediaAsset(rows)
+		if err != nil {
+			return nil, err
+		}
+		assets = append(assets, *ma)
+	}
+	return assets, rows.Err()
+}
+
+// UpsertMediaAsset inserts or updates a media asset record.
+func (c *Catalog) UpsertMediaAsset(ctx context.Context, ma *database.MediaAsset) error {
+	if ma.ID == "" {
+		ma.ID = uuid.New().String()
+	}
+	ma.FilePath = filepath.Clean(ma.FilePath)
+	if ma.Chapters == "" {
+		ma.Chapters = "[]"
+	}
+
+	query := `
+		INSERT INTO media_assets (id, edition_id, file_path, file_size, checksum, audio_codec, bitrate, sample_rate, channels, duration_seconds, chapters, is_verified, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		ON CONFLICT(file_path) DO UPDATE SET
+			edition_id = excluded.edition_id,
+			file_size = excluded.file_size,
+			checksum = excluded.checksum,
+			audio_codec = excluded.audio_codec,
+			bitrate = excluded.bitrate,
+			sample_rate = excluded.sample_rate,
+			channels = excluded.channels,
+			duration_seconds = excluded.duration_seconds,
+			chapters = excluded.chapters,
+			is_verified = excluded.is_verified,
+			updated_at = CURRENT_TIMESTAMP;
+	`
+	_, err := c.db.ExecContext(ctx, query,
+		ma.ID, ma.EditionID, ma.FilePath, ma.FileSize, ma.Checksum,
+		ma.AudioCodec, ma.Bitrate, ma.SampleRate, ma.Channels, ma.DurationSeconds,
+		ma.Chapters, ma.IsVerified,
+	)
+	return err
+}
+
+// IngestBook performs canonical file placement and sidecar generation via OrganizeBook,
+// and records the Author, Series, Book, BookEdition, and MediaAsset in the database.
+func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookDetails, mediaSrcPath string, coverData []byte) (*IngestResult, error) {
+	org, err := OrganizeBook(libraryRoot, book, mediaSrcPath, coverData)
+	if err != nil {
+		return nil, fmt.Errorf("organize book: %w", err)
+	}
+
+	fi, err := os.Stat(org.MediaPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat destination media file: %w", err)
+	}
+
+	// 1. Author
+	author, err := c.GetOrCreateAuthor(ctx, book.Author)
+	if err != nil {
+		return nil, fmt.Errorf("persist author: %w", err)
+	}
+
+	// 2. Series (if present)
+	var series *database.Series
+	if book.Series != "" {
+		s, err := c.GetOrCreateSeries(ctx, book.Series)
+		if err != nil {
+			return nil, fmt.Errorf("persist series: %w", err)
+		}
+		series = s
+	}
+
+	// 3. Book
+	var seriesID *string
+	if series != nil {
+		seriesID = &series.ID
+	}
+	var releaseDate *string
+	if book.Year > 0 {
+		d := fmt.Sprintf("%04d-01-01", book.Year)
+		releaseDate = &d
+	}
+
+	var indexDisplay *string
+	if book.SeriesIndex != nil {
+		d := fmt.Sprintf("#%v", *book.SeriesIndex)
+		indexDisplay = &d
+	}
+
+	dbBook, err := c.GetOrCreateBook(ctx, &database.Book{
+		AuthorID:           author.ID,
+		SeriesID:           seriesID,
+		SeriesIndex:        book.SeriesIndex,
+		SeriesIndexDisplay: indexDisplay,
+		Title:              book.Title,
+		ReleaseDate:        releaseDate,
+		Synopsis:           &book.Description,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("persist book: %w", err)
+	}
+
+	// 4. Edition
+	format := strings.ToLower(strings.TrimPrefix(filepath.Ext(org.MediaPath), "."))
+	var isbn *string
+	if book.ISBN13 != "" {
+		isbn = &book.ISBN13
+	}
+	var asin *string
+	if book.ASIN != "" {
+		asin = &book.ASIN
+	}
+	var publisher *string
+	if book.Publisher != "" {
+		publisher = &book.Publisher
+	}
+
+	edition, err := c.GetOrCreateEdition(ctx, &database.BookEdition{
+		BookID:          dbBook.ID,
+		Format:          format,
+		ISBN13:          isbn,
+		ASIN:            asin,
+		Publisher:       publisher,
+		PublicationDate: releaseDate,
+		Language:        book.Language,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("persist edition: %w", err)
+	}
+
+	// 5. Media Asset
+	asset := database.MediaAsset{
+		ID:         uuid.New().String(),
+		EditionID:  edition.ID,
+		FilePath:   org.MediaPath,
+		FileSize:   fi.Size(),
+		IsVerified: true,
+	}
+	if err := c.UpsertMediaAsset(ctx, &asset); err != nil {
+		return nil, fmt.Errorf("persist media asset: %w", err)
+	}
+
+	return &IngestResult{
+		Organized:   org,
+		Author:      author,
+		Series:      series,
+		Book:        dbBook,
+		Edition:     edition,
+		MediaAssets: []database.MediaAsset{asset},
+	}, nil
+}
+
+// ReconcileScannedBook stores/updates a ScannedBook discovered by the library scanner into the database.
+func (c *Catalog) ReconcileScannedBook(ctx context.Context, sb *ScannedBook) (*IngestResult, error) {
+	if sb.Author == "" {
+		return nil, ErrMissingAuthor
+	}
+	if sb.Title == "" {
+		return nil, ErrMissingTitle
+	}
+
+	author, err := c.GetOrCreateAuthor(ctx, sb.Author)
+	if err != nil {
+		return nil, fmt.Errorf("reconcile author: %w", err)
+	}
+
+	var series *database.Series
+	if sb.Series != "" {
+		s, err := c.GetOrCreateSeries(ctx, sb.Series)
+		if err != nil {
+			return nil, fmt.Errorf("reconcile series: %w", err)
+		}
+		series = s
+	}
+
+	var seriesID *string
+	if series != nil {
+		seriesID = &series.ID
+	}
+	var releaseDate *string
+	if sb.Year > 0 {
+		d := fmt.Sprintf("%04d-01-01", sb.Year)
+		releaseDate = &d
+	}
+	var indexDisplay *string
+	if sb.SeriesIndex != nil {
+		d := fmt.Sprintf("#%v", *sb.SeriesIndex)
+		indexDisplay = &d
+	}
+
+	dbBook, err := c.GetOrCreateBook(ctx, &database.Book{
+		AuthorID:           author.ID,
+		SeriesID:           seriesID,
+		SeriesIndex:        sb.SeriesIndex,
+		SeriesIndexDisplay: indexDisplay,
+		Title:              sb.Title,
+		ReleaseDate:        releaseDate,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reconcile book: %w", err)
+	}
+
+	var assets []database.MediaAsset
+	var primaryEdition *database.BookEdition
+
+	for _, m := range sb.MediaFiles {
+		ed, err := c.GetOrCreateEdition(ctx, &database.BookEdition{
+			BookID: dbBook.ID,
+			Format: m.Format,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("reconcile edition: %w", err)
+		}
+		if primaryEdition == nil {
+			primaryEdition = ed
+		}
+
+		asset := database.MediaAsset{
+			ID:         uuid.New().String(),
+			EditionID:  ed.ID,
+			FilePath:   m.Path,
+			FileSize:   m.FileSize,
+			IsVerified: true,
+		}
+		if err := c.UpsertMediaAsset(ctx, &asset); err != nil {
+			return nil, fmt.Errorf("reconcile media asset: %w", err)
+		}
+		assets = append(assets, asset)
+	}
+
+	return &IngestResult{
+		Author:      author,
+		Series:      series,
+		Book:        dbBook,
+		Edition:     primaryEdition,
+		MediaAssets: assets,
+	}, nil
+}
+
+// ReconcileScanReport reconciles all scanned books in a ScanReport into the database.
+func (c *Catalog) ReconcileScanReport(ctx context.Context, report *ScanReport) ([]*IngestResult, error) {
+	var results []*IngestResult
+	for _, sb := range report.Books {
+		res, err := c.ReconcileScannedBook(ctx, sb)
+		if err != nil {
+			return nil, fmt.Errorf("reconcile book %s: %w", sb.Title, err)
+		}
+		results = append(results, res)
+	}
+	return results, nil
+}
+
+// Scanner interface abstraction allowing both *sql.Row and *sql.Rows
+type scannable interface {
+	Scan(dest ...any) error
+}
+
+func scanAuthor(s scannable) (*database.Author, error) {
+	var a database.Author
+	var createdAt, updatedAt any
+	err := s.Scan(&a.ID, &a.Name, &a.SortName, &a.Aliases, &a.PhotoURL, &a.Biography, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	a.CreatedAt = parseDBTime(createdAt)
+	a.UpdatedAt = parseDBTime(updatedAt)
+	return &a, nil
+}
+
+func scanSeries(s scannable) (*database.Series, error) {
+	var ser database.Series
+	var createdAt, updatedAt any
+	err := s.Scan(&ser.ID, &ser.Title, &ser.Description, &ser.TotalBooks, &ser.Status, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	ser.CreatedAt = parseDBTime(createdAt)
+	ser.UpdatedAt = parseDBTime(updatedAt)
+	return &ser, nil
+}
+
+func scanBook(s scannable) (*database.Book, error) {
+	var b database.Book
+	var createdAt, updatedAt any
+	err := s.Scan(
+		&b.ID, &b.AuthorID, &b.SeriesID, &b.SeriesIndex, &b.SeriesIndexDisplay,
+		&b.Title, &b.Subtitle, &b.ReleaseDate, &b.Synopsis, &b.Genres, &b.Monitored,
+		&createdAt, &updatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	b.CreatedAt = parseDBTime(createdAt)
+	b.UpdatedAt = parseDBTime(updatedAt)
+	return &b, nil
+}
+
+func scanEdition(s scannable) (*database.BookEdition, error) {
+	var ed database.BookEdition
+	var createdAt, updatedAt any
+	err := s.Scan(
+		&ed.ID, &ed.BookID, &ed.Format, &ed.ISBN13, &ed.ASIN,
+		&ed.HardcoverID, &ed.OpenLibraryID, &ed.GoodreadsID,
+		&ed.Publisher, &ed.PublicationDate, &ed.Language, &ed.Monitored,
+		&createdAt, &updatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	ed.CreatedAt = parseDBTime(createdAt)
+	ed.UpdatedAt = parseDBTime(updatedAt)
+	return &ed, nil
+}
+
+func scanMediaAsset(s scannable) (*database.MediaAsset, error) {
+	var ma database.MediaAsset
+	var createdAt, updatedAt any
+	err := s.Scan(
+		&ma.ID, &ma.EditionID, &ma.FilePath, &ma.FileSize, &ma.Checksum,
+		&ma.AudioCodec, &ma.Bitrate, &ma.SampleRate, &ma.Channels, &ma.DurationSeconds,
+		&ma.Chapters, &ma.IsVerified, &createdAt, &updatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	ma.CreatedAt = parseDBTime(createdAt)
+	ma.UpdatedAt = parseDBTime(updatedAt)
+	return &ma, nil
+}
+
+func parseDBTime(val any) time.Time {
+	switch v := val.(type) {
+	case time.Time:
+		return v
+	case string:
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			return t
+		}
+		if t, err := time.Parse("2006-01-02 15:04:05", v); err == nil {
+			return t
+		}
+		if t, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", v); err == nil {
+			return t
+		}
+	}
+	return time.Now().UTC()
+}

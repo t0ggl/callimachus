@@ -101,6 +101,16 @@ func generateSidecarXML(m Metadata, targetOpfPath string) []byte {
 	return buf.Bytes()
 }
 
+// GenerateSidecarXML produces Calibre-compatible companion XML sidecar content.
+func GenerateSidecarXML(m Metadata, targetOpfPath string) []byte {
+	return generateSidecarXML(m, targetOpfPath)
+}
+
+// WriteSidecarFile writes the Calibre-compatible companion XML sidecar file.
+func WriteSidecarFile(m Metadata, targetOpfPath string) error {
+	return writeSidecarFile(m, targetOpfPath)
+}
+
 // writeSidecarFile writes the Calibre-compatible companion XML sidecar file.
 func writeSidecarFile(m Metadata, targetOpfPath string) error {
 	targetDir := filepath.Dir(targetOpfPath)

@@ -63,6 +63,15 @@ type parsedOPF struct {
 	isEPUB3          bool
 }
 
+// ParseOPF parses standalone OPF XML data and returns the extracted Metadata.
+func ParseOPF(data []byte) (Metadata, error) {
+	parsed, err := parseOPF(data)
+	if err != nil {
+		return Metadata{}, err
+	}
+	return parsed.metadata, nil
+}
+
 // parseOPF parses the OPF XML bytes and extracts metadata and manifest items.
 func parseOPF(data []byte) (*parsedOPF, error) {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
