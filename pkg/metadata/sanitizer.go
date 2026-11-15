@@ -1,0 +1,561 @@
+// Package metadata provides release string parsing, title and author sanitization,
+// series and index extraction, and filesystem character safety normalization.
+package metadata
+
+import (
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+// ParsedRelease holds the structured metadata extracted from a raw scene or P2P release name.
+type ParsedRelease struct {
+	RawTitle     string   `json:"raw_title"`
+	Title        string   `json:"title"`
+	Author       string   `json:"author"`
+	Series       string   `json:"series"`
+	SeriesIndex  *float64 `json:"series_index"`
+	Year         int      `json:"year"`
+	Format       string   `json:"format"`       // "epub", "m4b", "mp3", "pdf", "azw3"
+	BitrateKbps  int      `json:"bitrate_kbps"` // e.g. 64, 128, 320 (or -1 for VBR)
+	Language     string   `json:"language"`     // ISO-639-1 code, e.g. "en", "de", "fr"
+	Group        string   `json:"group"`        // Scene or p2p group (e.g. "GARGiLE", "OPUS")
+	IsUnabridged bool     `json:"is_unabridged"`
+}
+
+// Pre-compiled regular expressions for performance (< 100 microseconds per parse).
+var (
+	// Language tags
+	reLanguageTag = regexp.MustCompile(`(?i)(?:^|[\[\(\.\-_])(german|deutsch|french|français|spanish|español|italian|italiano|dutch|nederlands|russian|english|eng|de|fr|es|it|nl|ru|en)(?:$|[\]\)\.\-_])`)
+
+	// Formats
+	reFormats = regexp.MustCompile(`(?i)\b(epub|m4b|mp3|pdf|azw3|mobi|flac|aac|cbr|cbz)\b`)
+
+	// Bitrates
+	reBitrateKbps = regexp.MustCompile(`(?i)\b(\d+)\s*kbps\b`)
+	reBitrateVBR  = regexp.MustCompile(`(?i)\bvbr\b`)
+	reBitrateK    = regexp.MustCompile(`(?i)\b(\d+)\s*k\b`)
+
+	// Unabridged / Abridged
+	reUnabridged = regexp.MustCompile(`(?i)\bunabridged\b`)
+	reAbridged   = regexp.MustCompile(`(?i)\babridged\b`)
+
+	// Years: (2020), [2018], or standalone 4-digit years 1900-2099
+	reYearParen      = regexp.MustCompile(`[\(\[]\s*(19\d{2}|20\d{2})\s*[\)\]]`)
+	reYearStandalone = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
+
+	// Scene / P2P groups
+	reTrailingDashGroup    = regexp.MustCompile(`-([A-Za-z0-9_]+)$`)
+	reTrailingBracketGroup = regexp.MustCompile(`\[([A-Za-z0-9_]+)\]$`)
+	reLeadingBracketGroup  = regexp.MustCompile(`^\[([A-Za-z0-9_]+)\]\s*`)
+
+	// Narrator credits
+	reNarratorDot   = regexp.MustCompile(`(?i)\bread\.by\.[A-Za-z\.]+\b`)
+	reNarratorSpace = regexp.MustCompile(`(?i)\b(?:read|narrated)\s+by\s+[A-Za-z\s\.\-]+`)
+
+	// Packaging and scene tags to strip
+	reSceneTags = regexp.MustCompile(`(?i)\b(retail|web-rip|webrip|web|ebook|audiobook|unabridged|abridged|v\d+(?:\.\d+)?|repack|internal|readnfo|bundle|trilogy|complete|proper|scan)\b`)
+
+	// Series patterns
+	reParenSeries   = regexp.MustCompile(`(?i)[\(\[]([^()\[\]]*?(?:book|bk|volume|vol|part|no|#)[^()\[\]]*?)[\)\]]`)
+	reSeriesPattern = regexp.MustCompile(`(?i)^(.*?)[,_\s\-\(\[]*(?:book|bk|volume|vol|part|no)\.?[._\s#]*(\d+(?:\.\d+)?)\s*[\)\]]?`)
+	reSeriesHash    = regexp.MustCompile(`(?i)^(.*?)\s*#\s*(\d+(?:\.\d+)?)\s*[\)\]]?$`)
+	reSeriesNumOnly = regexp.MustCompile(`(?i)^(?:book|bk|volume|vol|part|no|#)\.?[._\s#]*(\d+(?:\.\d+)?)$`)
+	reSeriesTailNum = regexp.MustCompile(`^(.*?)[,_\s\-]+(\d+(?:\.\d+)?)$`)
+	reVolumeInTitle = regexp.MustCompile(`(?i)\b(?:vol(?:ume)?|book)\.?\s*(\d+(?:\.\d+)?)\b`)
+
+	// Authors
+	reCoAuthorSplit = regexp.MustCompile(`(?i)\s+(?:&|and|with|feat\.?|ft\.?)\s+|;\s*|\s*/\s*`)
+	reDotWord       = regexp.MustCompile(`(\b[A-Za-z]{2,})\.([A-Za-z])`)
+
+	// Brackets
+	reEmptyBrackets = regexp.MustCompile(`\[\s*\]|\(\s*\)`)
+	reBracketNoise  = regexp.MustCompile(`\[[^\]]*?\]`)
+
+	// Illegal filesystem characters
+	reIllegalChars  = regexp.MustCompile(`[\\/*?:"<>|]`)
+	reMultipleDash  = regexp.MustCompile(`[-–—]{2,}`)
+	reMultipleSpace = regexp.MustCompile(`\s+`)
+	reVersion       = regexp.MustCompile(`(?i)\bv\d+(?:\.\d+)?\b`)
+)
+
+var knownNonGroups = map[string]bool{
+	"epub": true, "m4b": true, "mp3": true, "pdf": true, "azw3": true,
+	"mobi": true, "flac": true, "aac": true, "cbr": true, "cbz": true,
+	"audiobook": true, "ebook": true, "unabridged": true, "abridged": true,
+	"retail": true, "webrip": true, "scan": true, "repack": true,
+	"internal": true, "readnfo": true, "vbr": true, "bundle": true,
+	"proper": true, "de": true, "fr": true, "es": true, "en": true,
+	"it": true, "nl": true, "ru": true,
+}
+
+var languageCodeMap = map[string]string{
+	"german":     "de",
+	"deutsch":    "de",
+	"de":         "de",
+	"french":     "fr",
+	"français":   "fr",
+	"fr":         "fr",
+	"spanish":    "es",
+	"español":    "es",
+	"es":         "es",
+	"italian":    "it",
+	"italiano":   "it",
+	"it":         "it",
+	"dutch":      "nl",
+	"nederlands": "nl",
+	"nl":         "nl",
+	"russian":    "ru",
+	"ru":         "ru",
+	"english":    "en",
+	"eng":        "en",
+	"en":         "en",
+}
+
+// ParseRelease parses a raw release name into a structured ParsedRelease.
+func ParseRelease(raw string) ParsedRelease {
+	s := strings.TrimSpace(raw)
+	res := ParsedRelease{
+		RawTitle: raw,
+		Language: "en",
+	}
+	if s == "" {
+		return res
+	}
+
+	// 1. Language extraction
+	if mLang := reLanguageTag.FindStringSubmatch(s); len(mLang) > 1 {
+		tag := strings.ToLower(mLang[1])
+		if code, ok := languageCodeMap[tag]; ok {
+			res.Language = code
+			// Strip the language tag
+			s = strings.TrimSpace(reLanguageTag.ReplaceAllString(s, " "))
+		}
+	}
+
+	// 2. Scene / P2P group extraction
+	// Trailing -GROUP
+	if m := reTrailingDashGroup.FindStringSubmatch(s); len(m) > 1 {
+		g := m[1]
+		gLower := strings.ToLower(g)
+		if !knownNonGroups[gLower] && !reBitrateKbps.MatchString(g) && !reYearStandalone.MatchString(g) {
+			res.Group = g
+			s = strings.TrimSpace(s[:len(s)-len(m[0])])
+		}
+	}
+
+	// Trailing [GROUP]
+	if res.Group == "" {
+		if m := reTrailingBracketGroup.FindStringSubmatch(s); len(m) > 1 {
+			g := m[1]
+			gLower := strings.ToLower(g)
+			if !knownNonGroups[gLower] && !reBitrateKbps.MatchString(g) && !reYearStandalone.MatchString(g) {
+				res.Group = g
+				s = strings.TrimSpace(s[:len(s)-len(m[0])])
+			}
+		}
+	}
+
+	// Leading [GROUP]
+	if res.Group == "" {
+		if m := reLeadingBracketGroup.FindStringSubmatch(s); len(m) > 1 {
+			g := m[1]
+			gLower := strings.ToLower(g)
+			if !knownNonGroups[gLower] {
+				res.Group = g
+				s = strings.TrimSpace(s[len(m[0]):])
+			}
+		}
+	}
+
+	// 3. Unabridged / Abridged
+	if reUnabridged.MatchString(s) {
+		res.IsUnabridged = true
+	}
+
+	// 4. Bitrate extraction
+	if m := reBitrateKbps.FindStringSubmatch(s); len(m) > 1 {
+		if val, err := strconv.Atoi(m[1]); err == nil {
+			res.BitrateKbps = val
+		}
+	} else if reBitrateVBR.MatchString(s) {
+		res.BitrateKbps = -1
+	} else if m := reBitrateK.FindStringSubmatch(s); len(m) > 1 {
+		if val, err := strconv.Atoi(m[1]); err == nil {
+			res.BitrateKbps = val
+		}
+	}
+
+	// 5. Format extraction
+	if m := reFormats.FindStringSubmatch(s); len(m) > 1 {
+		res.Format = strings.ToLower(m[1])
+	}
+
+	// 6. Year extraction
+	if m := reYearParen.FindStringSubmatch(s); len(m) > 1 {
+		if val, err := strconv.Atoi(m[1]); err == nil {
+			res.Year = val
+		}
+	} else if m := reYearStandalone.FindStringSubmatch(s); len(m) > 1 {
+		if val, err := strconv.Atoi(m[1]); err == nil {
+			res.Year = val
+		}
+	}
+
+	// 7. Strip narrator credits
+	s = reNarratorDot.ReplaceAllString(s, "")
+	s = reNarratorSpace.ReplaceAllString(s, "")
+
+	// 8. Strip bracket bundles (e.g. [EPUB+MOBI], [Audiobook MP3 320kbps])
+	sCore := reBracketNoise.ReplaceAllString(s, "")
+
+	// 9. Author, Series, and Title extraction
+	if strings.Contains(sCore, " - ") {
+		parts := strings.SplitN(sCore, " - ", 3)
+		if len(parts) == 2 {
+			p0 := strings.TrimSpace(parts[0])
+			p1 := strings.TrimSpace(parts[1])
+
+			// If p0 starts with an article, it might be Title with no Author
+			p0Lower := strings.ToLower(p0)
+			if strings.HasPrefix(p0Lower, "the ") || strings.HasPrefix(p0Lower, "a ") || strings.HasPrefix(p0Lower, "an ") {
+				// Title - Subtitle / tag
+				res.Title = SanitizeTitle(sCore)
+			} else {
+				res.Author = NormalizeAuthor(p0)
+				// Check if p1 has embedded series: "Synthetic Series, Book 2.5 - Novella Title"
+				if strings.Contains(p1, " - ") {
+					subParts := strings.SplitN(p1, " - ", 2)
+					if ser, idx := ExtractSeries(subParts[0]); idx != nil {
+						res.Series = ser
+						res.SeriesIndex = idx
+						res.Title = SanitizeTitle(subParts[1])
+					} else {
+						res.Title = SanitizeTitle(p1)
+					}
+				} else if ser, idx := ExtractSeries(p1); idx != nil && ser != "" {
+					res.Series = ser
+					res.SeriesIndex = idx
+					res.Title = SanitizeTitle(p1)
+				} else {
+					res.Title = SanitizeTitle(p1)
+				}
+			}
+		} else if len(parts) >= 3 {
+			res.Author = NormalizeAuthor(parts[0])
+			if ser, idx := ExtractSeries(parts[1]); idx != nil {
+				res.Series = ser
+				res.SeriesIndex = idx
+				res.Title = SanitizeTitle(parts[2])
+			} else {
+				res.Title = SanitizeTitle(parts[1] + " - " + parts[2])
+			}
+		}
+	} else if strings.Contains(sCore, "-") {
+		parts := strings.Split(sCore, "-")
+		cleanParts := make([]string, 0, len(parts))
+		for _, p := range parts {
+			trimmed := strings.TrimSpace(p)
+			if trimmed != "" {
+				cleanParts = append(cleanParts, trimmed)
+			}
+		}
+
+		if len(cleanParts) >= 2 {
+			res.Author = NormalizeAuthor(cleanParts[0])
+
+			// Check if cleanParts[1] is a series indicator
+			p1Lower := strings.ToLower(cleanParts[1])
+			if len(cleanParts) >= 3 && (strings.Contains(p1Lower, "book") || strings.Contains(p1Lower, "vol")) {
+				if ser, idx := ExtractSeries(cleanParts[1]); idx != nil {
+					res.Series = ser
+					res.SeriesIndex = idx
+				}
+				res.Title = SanitizeTitle(cleanParts[2])
+			} else {
+				res.Title = SanitizeTitle(cleanParts[1])
+			}
+		} else if len(cleanParts) == 1 {
+			res.Title = SanitizeTitle(cleanParts[0])
+		}
+	} else {
+		// No hyphens separating author and title.
+		// If dots are used throughout (scene format, no spaces), first 2 words are author.
+		// If spaces are used (regular text like "Synthetic Book Alpha"), it's a standalone title.
+		trimmedCore := strings.TrimSpace(sCore)
+		hasSceneDots := strings.Contains(trimmedCore, ".") && !strings.Contains(trimmedCore, " ")
+
+		if hasSceneDots {
+			clean := cleanDotSeparated(sCore)
+			words := strings.Fields(clean)
+			if len(words) >= 3 && !isArticle(words[0]) {
+				res.Author = NormalizeAuthor(words[0] + " " + words[1])
+				res.Title = SanitizeTitle(strings.Join(words[2:], " "))
+			} else {
+				res.Title = SanitizeTitle(clean)
+			}
+		} else {
+			// Space-separated with no hyphen: title without author
+			res.Title = SanitizeTitle(sCore)
+		}
+	}
+
+	// 10. Extract series index from title if still not extracted (e.g. Vol.5 or Book 2)
+	if res.SeriesIndex == nil {
+		if m := reVolumeInTitle.FindStringSubmatchIndex(res.Title); len(m) >= 4 {
+			idxStr := res.Title[m[2]:m[3]]
+			if val, err := strconv.ParseFloat(idxStr, 64); err == nil {
+				res.SeriesIndex = &val
+				// Strip Vol.X from title
+				res.Title = SanitizeTitle(res.Title[:m[0]] + " " + res.Title[m[1]:])
+			}
+		}
+	}
+
+	// Final cleanup on Title and Author
+	res.Title = SanitizeTitle(res.Title)
+	res.Author = NormalizeAuthor(res.Author)
+	if res.Series != "" {
+		res.Series = SanitizeTitle(res.Series)
+	}
+
+	return res
+}
+
+func isArticle(w string) bool {
+	l := strings.ToLower(w)
+	return l == "the" || l == "a" || l == "an"
+}
+
+func cleanDotSeparated(s string) string {
+	s = reDotWord.ReplaceAllString(s, "$1 $2")
+	s = strings.ReplaceAll(s, ".", " ")
+	s = strings.ReplaceAll(s, "_", " ")
+	return reMultipleSpace.ReplaceAllString(strings.TrimSpace(s), " ")
+}
+
+// SanitizeTitle cleans a book title by stripping scene tags, packaging noise,
+// file formats, bitrates, narrator tags, versions, and duplicate whitespace,
+// returning a clean, human-readable book title.
+func SanitizeTitle(title string) string {
+	t := title
+
+	// Fast paths for narrator credits
+	tLower := strings.ToLower(t)
+	if strings.Contains(tLower, "read") || strings.Contains(tLower, "narrat") {
+		t = reNarratorDot.ReplaceAllString(t, "")
+		t = reNarratorSpace.ReplaceAllString(t, "")
+	}
+
+	// Strip bracket tags like [EPUB+MOBI], [Audiobook MP3 320kbps]
+	if strings.Contains(t, "[") {
+		t = reBracketNoise.ReplaceAllString(t, "")
+	}
+
+	// Strip parenthesized 4-digit years: (2020), (1998)
+	if strings.Contains(t, "(") {
+		t = reYearParen.ReplaceAllString(t, "")
+	}
+
+	// Strip scene packaging noise tags
+	if reSceneTags.MatchString(t) {
+		t = reSceneTags.ReplaceAllString(t, "")
+	}
+
+	// Strip bitrates
+	if strings.Contains(tLower, "kbps") || strings.Contains(tLower, "vbr") || strings.Contains(tLower, "k") {
+		t = reBitrateKbps.ReplaceAllString(t, "")
+		t = reBitrateVBR.ReplaceAllString(t, "")
+		t = reBitrateK.ReplaceAllString(t, "")
+	}
+
+	// Strip formats
+	if reFormats.MatchString(t) {
+		t = reFormats.ReplaceAllString(t, "")
+	}
+
+	// Strip version numbers like v2.0 or v1
+	if strings.ContainsAny(t, "vV") && reVersion.MatchString(t) {
+		t = reVersion.ReplaceAllString(t, "")
+	}
+
+	// Replace dots and underscores with spaces
+	if strings.ContainsAny(t, "._") {
+		t = cleanDotSeparated(t)
+	}
+
+	// Clean dashes and empty brackets
+	if strings.ContainsAny(t, "[]()") {
+		t = reEmptyBrackets.ReplaceAllString(t, "")
+	}
+	if strings.ContainsAny(t, "-–—") {
+		t = reMultipleDash.ReplaceAllString(t, " - ")
+	}
+	if strings.Contains(t, "  ") {
+		t = reMultipleSpace.ReplaceAllString(t, " ")
+	}
+
+	// Trim edge punctuation (hyphens, colons, commas, parens, brackets, spaces)
+	return strings.Trim(t, " -:,_./()[]{}#")
+}
+
+// NormalizeAuthor normalizes an author string, converting "Last, First" into "First Last",
+// separating multiple co-authors (with " & "), cleaning dot-separated names ("First.Last" -> "First Last"),
+// while preserving initials and multi-part surnames.
+func NormalizeAuthor(author string) string {
+	a := strings.TrimSpace(author)
+	if a == "" {
+		return ""
+	}
+
+	// Normalize dot-separated words like Alina.Starkova -> Alina Starkova
+	// while preserving initials like J. R. R. or J.R.R.
+	a = reDotWord.ReplaceAllString(a, "$1 $2")
+	a = strings.ReplaceAll(a, "_", " ")
+	a = reMultipleSpace.ReplaceAllString(a, " ")
+
+	// Check for multiple co-authors separated by &, and, with, ;, or /
+	delims := reCoAuthorSplit.Split(a, -1)
+	if len(delims) > 1 {
+		normParts := make([]string, 0, len(delims))
+		for _, part := range delims {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				normParts = append(normParts, normalizeSingleAuthor(trimmed))
+			}
+		}
+		if len(normParts) > 0 {
+			return strings.Join(normParts, " & ")
+		}
+	}
+
+	// Check if a single string has a comma separating two full authors:
+	// e.g. "Author One, Author Two"
+	if strings.Contains(a, ",") {
+		parts := strings.Split(a, ",")
+		if len(parts) == 2 {
+			w0 := strings.Fields(parts[0])
+			w1 := strings.Fields(parts[1])
+			if len(w0) >= 2 && len(w1) >= 2 {
+				// Two distinct authors
+				return normalizeSingleAuthor(parts[0]) + " & " + normalizeSingleAuthor(parts[1])
+			}
+		}
+	}
+
+	return normalizeSingleAuthor(a)
+}
+
+func normalizeSingleAuthor(s string) string {
+	s = strings.Trim(s, " -:,_()[]{}#")
+	if s == "" {
+		return ""
+	}
+
+	// Check for "Last, First Middle" format
+	if strings.Contains(s, ",") {
+		parts := strings.SplitN(s, ",", 2)
+		last := strings.TrimSpace(parts[0])
+		first := strings.TrimSpace(parts[1])
+		if last != "" && first != "" {
+			return strings.TrimSpace(first + " " + last)
+		}
+	}
+
+	return reMultipleSpace.ReplaceAllString(s, " ")
+}
+
+// ExtractSeries extracts a series name and its numeric index (e.g. 1.0, 2.5) from a string.
+// Handles formats like "Book 2.5", "#01", "Vol. 3", "Synthetic Series Book 05", "Series, Book 2", etc.
+func ExtractSeries(raw string) (series string, index *float64) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", nil
+	}
+
+	// Check for parenthesized series: e.g. "Title (Series Name #2)"
+	if m := reParenSeries.FindStringSubmatch(s); len(m) > 1 {
+		ser, idx := ExtractSeries(m[1])
+		if idx != nil {
+			return ser, idx
+		}
+	}
+
+	// Pattern 1: Standalone series index only: "Book 2.5", "#01", "Vol. 3", "Volume 03"
+	if m := reSeriesNumOnly.FindStringSubmatch(s); len(m) > 1 {
+		if val, err := strconv.ParseFloat(m[1], 64); err == nil {
+			return "", &val
+		}
+	}
+
+	// Pattern 2: "Synthetic Series, Book 2.5" or "Synthetic.Series.Book.05"
+	if m := reSeriesPattern.FindStringSubmatch(s); len(m) > 2 {
+		ser := cleanSeriesName(m[1])
+		if val, err := strconv.ParseFloat(m[2], 64); err == nil {
+			return ser, &val
+		}
+	}
+
+	// Pattern 3: "The Dresden Files #01"
+	if m := reSeriesHash.FindStringSubmatch(s); len(m) > 2 {
+		ser := cleanSeriesName(m[1])
+		if val, err := strconv.ParseFloat(m[2], 64); err == nil {
+			return ser, &val
+		}
+	}
+
+	// Pattern 4: "Synthetic Series 02"
+	if m := reSeriesTailNum.FindStringSubmatch(s); len(m) > 2 {
+		ser := cleanSeriesName(m[1])
+		if val, err := strconv.ParseFloat(m[2], 64); err == nil {
+			// Ensure ser is not empty
+			if ser != "" {
+				return ser, &val
+			}
+		}
+	}
+
+	return "", nil
+}
+
+func cleanSeriesName(s string) string {
+	s = strings.ReplaceAll(s, ".", " ")
+	s = strings.ReplaceAll(s, "_", " ")
+	s = reMultipleSpace.ReplaceAllString(s, " ")
+	return strings.Trim(s, " -:,_./()[]{}#")
+}
+
+// StripIllegalFileChars strips or replaces characters that are illegal in file and directory
+// names across Linux, macOS, and Windows (/ \ : * ? " < > |).
+// Colons and pipes are replaced with " - ", slashes replaced with "-", and invalid characters removed.
+func StripIllegalFileChars(s string) string {
+	// Replace colons and pipes with " - "
+	s = strings.ReplaceAll(s, ":", " - ")
+	s = strings.ReplaceAll(s, "|", " - ")
+	// Replace slashes with "-"
+	s = strings.ReplaceAll(s, "/", "-")
+	s = strings.ReplaceAll(s, "\\", "-")
+	// Remove invalid chars
+	s = reIllegalChars.ReplaceAllString(s, "")
+	// Clean duplicate dashes and spaces
+	s = reMultipleDash.ReplaceAllString(s, " - ")
+	s = reMultipleSpace.ReplaceAllString(s, " ")
+	// Trim edge dots, spaces, dashes (Windows disallows trailing dots and spaces)
+	return strings.Trim(s, " .-\t\r\n")
+}
+
+// SanitizeFilename produces a safe filesystem name for a library file or directory.
+func SanitizeFilename(name string) string {
+	return StripIllegalFileChars(name)
+}
+
+// FormatBitrate returns a formatted string for bitrates, e.g. "320kbps" or "VBR".
+func FormatBitrate(bitrateKbps int) string {
+	if bitrateKbps < 0 {
+		return "VBR"
+	}
+	if bitrateKbps == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%dkbps", bitrateKbps)
+}
