@@ -1,0 +1,27 @@
+# Binaries and build artifacts
+bin/
+dist/
+*.exe
+*.test
+
+# Go workspace and dependencies
+vendor/
+
+# Node / Frontend
+node_modules/
+.pnpm-store/
+
+# SQLite databases
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Project-local memory and agent workspace data (Never committed)
+.memory/
+.gemini/
+.t3/
+.agents/
+.env
+.env.local
