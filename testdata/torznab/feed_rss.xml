@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+  <channel>
+    <title>MockTorznabIndexer - Books &amp; Audiobooks</title>
+    <description>Synthetic Torznab RSS Feed</description>
+    <link>https://indexer.example.local/</link>
+    <language>en-us</language>
+    <category>7000,3000</category>
+
+    <!-- Item 1: eBook Release -->
+    <item>
+      <title>Synthetic.Author.One-Test.Book.Alpha.(2021).EPUB-RETAIL-SYNTH</title>
+      <guid isPermaLink="false">mock-torrent-guid-1001</guid>
+      <link>https://indexer.example.local/download/mock-torrent-guid-1001.torrent</link>
+      <comments>https://indexer.example.local/details/mock-torrent-guid-1001</comments>
+      <pubDate>Mon, 15 Nov 2021 12:00:00 +0000</pubDate>
+      <size>2097152</size>
+      <enclosure url="https://indexer.example.local/download/mock-torrent-guid-1001.torrent" length="2097152" type="application/x-bittorrent"/>
+      <torznab:attr name="category" value="7000"/>
+      <torznab:attr name="category" value="7020"/>
+      <torznab:attr name="type" value="book"/>
+      <torznab:attr name="size" value="2097152"/>
+      <torznab:attr name="files" value="1"/>
+      <torznab:attr name="seeders" value="45"/>
+      <torznab:attr name="peers" value="48"/>
+      <torznab:attr name="infohash" value="a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e"/>
+      <torznab:attr name="booktitle" value="Test Book Alpha"/>
+      <torznab:attr name="author" value="Synthetic Author One"/>
+      <torznab:attr name="year" value="2021"/>
+      <torznab:attr name="format" value="EPUB"/>
+    </item>
+
+    <!-- Item 2: Audiobook Release -->
+    <item>
+      <title>Synthetic.Author.Two-Test.Audiobook.Beta.(2022).M4B-Audiobook-64kbps-SYNTH</title>
+      <guid isPermaLink="false">mock-torrent-guid-1002</guid>
+      <link>https://indexer.example.local/download/mock-torrent-guid-1002.torrent</link>
+      <comments>https://indexer.example.local/details/mock-torrent-guid-1002</comments>
+      <pubDate>Tue, 22 Feb 2022 15:30:00 +0000</pubDate>
+      <size>268435456</size>
+      <enclosure url="https://indexer.example.local/download/mock-torrent-guid-1002.torrent" length="268435456" type="application/x-bittorrent"/>
+      <torznab:attr name="category" value="3000"/>
+      <torznab:attr name="category" value="3030"/>
+      <torznab:attr name="type" value="audiobook"/>
+      <torznab:attr name="size" value="268435456"/>
+      <torznab:attr name="files" value="1"/>
+      <torznab:attr name="seeders" value="28"/>
+      <torznab:attr name="peers" value="32"/>
+      <torznab:attr name="infohash" value="f1e2d3c4b5a697887766554433221100aabbccdd"/>
+      <torznab:attr name="booktitle" value="Test Audiobook Beta"/>
+      <torznab:attr name="author" value="Synthetic Author Two"/>
+      <torznab:attr name="narrator" value="Synthetic Narrator One"/>
+      <torznab:attr name="year" value="2022"/>
+      <torznab:attr name="format" value="M4B"/>
+      <torznab:attr name="bitrate" value="64000"/>
+    </item>
+
+    <!-- Item 3: Multi-format Release -->
+    <item>
+      <title>Synthetic.Author.Three-Test.Omnibus.Volume.(2023).[EPUB+M4B]-SYNTH</title>
+      <guid isPermaLink="false">mock-torrent-guid-1003</guid>
+      <link>https://indexer.example.local/download/mock-torrent-guid-1003.torrent</link>
+      <comments>https://indexer.example.local/details/mock-torrent-guid-1003</comments>
+      <pubDate>Wed, 10 May 2023 09:15:00 +0000</pubDate>
+      <size>536870912</size>
+      <enclosure url="https://indexer.example.local/download/mock-torrent-guid-1003.torrent" length="536870912" type="application/x-bittorrent"/>
+      <torznab:attr name="category" value="7000"/>
+      <torznab:attr name="category" value="7020"/>
+      <torznab:attr name="category" value="3030"/>
+      <torznab:attr name="size" value="536870912"/>
+      <torznab:attr name="files" value="4"/>
+      <torznab:attr name="seeders" value="15"/>
+      <torznab:attr name="peers" value="18"/>
+      <torznab:attr name="infohash" value="1234567890abcdef1234567890abcdef12345678"/>
+      <torznab:attr name="booktitle" value="Test Omnibus Volume"/>
+      <torznab:attr name="author" value="Synthetic Author Three"/>
+      <torznab:attr name="year" value="2023"/>
+    </item>
+  </channel>
+</rss>

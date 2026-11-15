@@ -1,0 +1,52 @@
+{
+  "data": {
+    "search": {
+      "results": [
+        {
+          "id": 1001,
+          "title": "Test Book Alpha",
+          "slug": "test-book-alpha",
+          "release_year": 2021,
+          "rating": 4.35,
+          "ratings_count": 850,
+          "users_read_count": 2100,
+          "contributions": [
+            {
+              "author": {
+                "id": 501,
+                "name": "Synthetic Author One",
+                "slug": "synthetic-author-one"
+              },
+              "contribution": "Author"
+            }
+          ],
+          "image": {
+            "url": "https://assets.hardcover.app/books/covers/test-book-alpha.jpg"
+          }
+        },
+        {
+          "id": 1002,
+          "title": "Test Book Beta",
+          "slug": "test-book-beta",
+          "release_year": 2022,
+          "rating": 4.15,
+          "ratings_count": 420,
+          "users_read_count": 980,
+          "contributions": [
+            {
+              "author": {
+                "id": 502,
+                "name": "Synthetic Author Two",
+                "slug": "synthetic-author-two"
+              },
+              "contribution": "Author"
+            }
+          ],
+          "image": {
+            "url": "https://assets.hardcover.app/books/covers/test-book-beta.jpg"
+          }
+        }
+      ]
+    }
+  }
+}

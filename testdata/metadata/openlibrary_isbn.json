@@ -1,0 +1,50 @@
+{
+  "key": "/books/OL12345678M",
+  "title": "Test Book Alpha",
+  "subtitle": "The Genesis of Testing",
+  "authors": [
+    {
+      "key": "/authors/OL9876543A"
+    }
+  ],
+  "publishers": [
+    "Synthetic Press"
+  ],
+  "publish_date": "June 15, 2021",
+  "number_of_pages": 412,
+  "isbn_10": [
+    "0123456789"
+  ],
+  "isbn_13": [
+    "9780123456789"
+  ],
+  "physical_format": "Hardcover",
+  "covers": [
+    10987654
+  ],
+  "works": [
+    {
+      "key": "/works/OL55667788W"
+    }
+  ],
+  "languages": [
+    {
+      "key": "/languages/eng"
+    }
+  ],
+  "subjects": [
+    "Science Fiction",
+    "Space Opera",
+    "Artificial Intelligence"
+  ],
+  "latest_revision": 3,
+  "revision": 3,
+  "created": {
+    "type": "/type/datetime",
+    "value": "2021-06-15T10:00:00Z"
+  },
+  "last_modified": {
+    "type": "/type/datetime",
+    "value": "2023-01-01T12:00:00Z"
+  }
+}

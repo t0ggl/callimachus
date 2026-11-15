@@ -1,0 +1,78 @@
+{
+  "data": {
+    "books_by_pk": {
+      "id": 1001,
+      "title": "Test Book Alpha",
+      "subtitle": "The Genesis of Testing",
+      "slug": "test-book-alpha",
+      "description": "<p>A synthetic fiction novel created specifically for offline test fixtures and harness validations.</p>",
+      "release_date": "2021-06-15",
+      "release_year": 2021,
+      "pages": 412,
+      "rating": 4.35,
+      "ratings_count": 850,
+      "users_read_count": 2100,
+      "cached_tags": [
+        {"tag": "Science Fiction"},
+        {"tag": "Space Opera"},
+        {"tag": "Adventure"}
+      ],
+      "contributions": [
+        {
+          "author": {
+            "id": 501,
+            "name": "Synthetic Author One",
+            "slug": "synthetic-author-one",
+            "bio": "Prolific synthetic author of mock literature."
+          },
+          "contribution": "Author"
+        }
+      ],
+      "book_series": [
+        {
+          "series_position": 1.0,
+          "series": {
+            "id": 301,
+            "name": "Synthetic Chronicles",
+            "slug": "synthetic-chronicles",
+            "books_count": 3
+          }
+        }
+      ],
+      "editions": [
+        {
+          "id": 7001,
+          "title": "Test Book Alpha",
+          "isbn_10": "0123456789",
+          "isbn_13": "9780123456789",
+          "asin": "B08TEST123",
+          "format": "Hardcover",
+          "pages": 412,
+          "release_date": "2021-06-15",
+          "publisher": {
+            "id": 901,
+            "name": "Synthetic Press"
+          }
+        },
+        {
+          "id": 7002,
+          "title": "Test Book Alpha (Digital Edition)",
+          "isbn_10": null,
+          "isbn_13": "9780123456796",
+          "asin": null,
+          "format": "Ebook",
+          "pages": 412,
+          "release_date": "2021-06-15",
+          "publisher": {
+            "id": 901,
+            "name": "Synthetic Press"
+          }
+        }
+      ],
+      "image": {
+        "url": "https://assets.hardcover.app/books/covers/test-book-alpha.jpg",
+        "color": "#1e3a8a"
+      }
+    }
+  }
+}

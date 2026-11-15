@@ -1,0 +1,81 @@
+{
+  "asin": "B08TEST123",
+  "title": "Test Book Alpha",
+  "subtitle": "The Genesis of Testing",
+  "summary": "<p>A synthetic audiobook designed to validate Audnexus integration.</p>",
+  "releaseDate": "2021-06-15T00:00:00.000Z",
+  "authors": [
+    {
+      "name": "Synthetic Author One",
+      "asin": "B00AUTH001"
+    }
+  ],
+  "narrators": [
+    {
+      "name": "Synthetic Narrator One"
+    },
+    {
+      "name": "Synthetic Narrator Two"
+    }
+  ],
+  "series": [
+    {
+      "name": "Synthetic Chronicles",
+      "position": "1",
+      "asin": "B00SERIES1"
+    }
+  ],
+  "genres": [
+    {
+      "name": "Sci-Fi & Fantasy",
+      "asin": "18580606011"
+    },
+    {
+      "name": "Audiobook",
+      "asin": "18580606012"
+    }
+  ],
+  "publisherName": "Synthetic Audio Press",
+  "runtimeLengthMin": 624,
+  "language": "english",
+  "formatType": "unabridged",
+  "coverUrl": "https://m.media-amazon.com/images/I/synthetic-cover-test.jpg",
+  "sku": "BK_SYNTH_001",
+  "chapters": [
+    {
+      "title": "Opening Credits",
+      "startOffsetMs": 0,
+      "lengthMs": 15000,
+      "startOffsetSec": 0,
+      "durationSec": 15
+    },
+    {
+      "title": "Prologue",
+      "startOffsetMs": 15000,
+      "lengthMs": 1800000,
+      "startOffsetSec": 15,
+      "durationSec": 1800
+    },
+    {
+      "title": "Chapter 1: The Departure",
+      "startOffsetMs": 1815000,
+      "lengthMs": 2400000,
+      "startOffsetSec": 1815,
+      "durationSec": 2400
+    },
+    {
+      "title": "Chapter 2: The Crossing",
+      "startOffsetMs": 4215000,
+      "lengthMs": 2100000,
+      "startOffsetSec": 4215,
+      "durationSec": 2100
+    },
+    {
+      "title": "Closing Credits",
+      "startOffsetMs": 6315000,
+      "lengthMs": 20000,
+      "startOffsetSec": 6315,
+      "durationSec": 20
+    }
+  ]
+}

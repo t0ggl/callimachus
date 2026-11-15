@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+  <channel>
+    <title>MockTorznabIndexer - Search Results</title>
+    <description>Synthetic Search Response for query 'Test Book Alpha'</description>
+    <link>https://indexer.example.local/api?t=book&amp;title=Test+Book+Alpha</link>
+    <language>en-us</language>
+
+    <item>
+      <title>Synthetic.Author.One-Test.Book.Alpha.(2021).EPUB-RETAIL-SYNTH</title>
+      <guid isPermaLink="false">mock-search-guid-2001</guid>
+      <link>https://indexer.example.local/download/mock-search-guid-2001.torrent</link>
+      <comments>https://indexer.example.local/details/mock-search-guid-2001</comments>
+      <pubDate>Mon, 15 Nov 2021 12:00:00 +0000</pubDate>
+      <size>2097152</size>
+      <enclosure url="https://indexer.example.local/download/mock-search-guid-2001.torrent" length="2097152" type="application/x-bittorrent"/>
+      <torznab:attr name="category" value="7000"/>
+      <torznab:attr name="category" value="7020"/>
+      <torznab:attr name="size" value="2097152"/>
+      <torznab:attr name="files" value="1"/>
+      <torznab:attr name="seeders" value="52"/>
+      <torznab:attr name="peers" value="55"/>
+      <torznab:attr name="infohash" value="a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e"/>
+      <torznab:attr name="booktitle" value="Test Book Alpha"/>
+      <torznab:attr name="author" value="Synthetic Author One"/>
+      <torznab:attr name="isbn" value="9780123456789"/>
+      <torznab:attr name="year" value="2021"/>
+      <torznab:attr name="format" value="EPUB"/>
+      <torznab:attr name="downloadvolumefactor" value="0"/>
+      <torznab:attr name="uploadvolumefactor" value="1"/>
+    </item>
+
+    <item>
+      <title>Synthetic.Author.One-Test.Book.Alpha.Deluxe.Edition.(2022).M4B-Audiobook-128kbps-SYNTH</title>
+      <guid isPermaLink="false">mock-search-guid-2002</guid>
+      <link>https://indexer.example.local/download/mock-search-guid-2002.torrent</link>
+      <comments>https://indexer.example.local/details/mock-search-guid-2002</comments>
+      <pubDate>Thu, 10 Mar 2022 18:00:00 +0000</pubDate>
+      <size>524288000</size>
+      <enclosure url="https://indexer.example.local/download/mock-search-guid-2002.torrent" length="524288000" type="application/x-bittorrent"/>
+      <torznab:attr name="category" value="3000"/>
+      <torznab:attr name="category" value="3030"/>
+      <torznab:attr name="size" value="524288000"/>
+      <torznab:attr name="files" value="1"/>
+      <torznab:attr name="seeders" value="34"/>
+      <torznab:attr name="peers" value="38"/>
+      <torznab:attr name="infohash" value="9876543210fedcba9876543210fedcba98765432"/>
+      <torznab:attr name="booktitle" value="Test Book Alpha"/>
+      <torznab:attr name="author" value="Synthetic Author One"/>
+      <torznab:attr name="narrator" value="Synthetic Narrator Two"/>
+      <torznab:attr name="year" value="2022"/>
+      <torznab:attr name="format" value="M4B"/>
+      <torznab:attr name="bitrate" value="128000"/>
+    </item>
+  </channel>
+</rss>
