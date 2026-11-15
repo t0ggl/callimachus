@@ -1,0 +1,69 @@
+name: Callimachus CI
+
+on:
+  pull_request:
+    branches:
+      - '*'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend Tests & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Verify Go Modules & Tests
+        shell: bash
+        run: |
+          if [ -f go.mod ]; then
+            go vet ./...
+            go test -v -race -timeout 3m ./...
+          else
+            echo "go.mod not yet initialized; skipping Go tests."
+          fi
+
+  frontend:
+    name: Frontend Lint & Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Build Web UI
+        shell: bash
+        run: |
+          if [ -d web ] && [ -f web/package.json ]; then
+            cd web
+            pnpm install --frozen-lockfile
+            pnpm run build
+          else
+            echo "web/package.json not yet initialized; skipping frontend build."
+          fi
