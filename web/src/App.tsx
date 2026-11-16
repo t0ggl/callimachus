@@ -16,8 +16,11 @@ import {
   ImportLog,
   IndexerConfig,
   DownloadClientConfig,
+  LibrarySettings,
+  ProwlarrSettings,
   QualityProfile,
   AuthSettings,
+  SettingsOverridesMap,
   UserProfile,
   RequestType,
   RequestStatus,
@@ -37,6 +40,16 @@ export const App: React.FC = () => {
   const [logs, setLogs] = useState<ImportLog[]>([]);
   const [indexers, setIndexers] = useState<IndexerConfig[]>([]);
   const [downloadClients, setDownloadClients] = useState<DownloadClientConfig[]>([]);
+  const [librarySettings, setLibrarySettings] = useState<LibrarySettings>({
+    rootPath: './books',
+    stagingPollInterval: '5s',
+    indexerSyncInterval: '15m0s',
+  });
+  const [prowlarrSettings, setProwlarrSettings] = useState<ProwlarrSettings>({
+    url: '',
+    apiKeyConfigured: false,
+    syncInterval: '1h0m0s',
+  });
   const [qualityProfile, setQualityProfile] = useState<QualityProfile>({
     id: 'default',
     name: 'Standard Audiobook',
@@ -45,14 +58,21 @@ export const App: React.FC = () => {
     audioMinBitrateKbps: 32,
     audioTargetBitrateKbps: 64,
     preferSingleFileM4b: true,
+    maxFileSizeMb: 2048,
   });
   const [authSettings, setAuthSettings] = useState<AuthSettings>({
     oidcEnabled: false,
     oidcIssuerUrl: '',
     oidcClientId: '',
+    oidcClientSecretConfigured: false,
+    oidcRedirectUrl: '',
+    oidcAdminGroups: [],
+    oidcCuratorGroups: [],
+    oidcDefaultRole: 'requester',
     localAuthEnabled: false,
     sessionTimeoutHours: 720,
   });
+  const [settingsOverrides, setSettingsOverrides] = useState<SettingsOverridesMap>({});
 
   // Real-time SSE hook for live pipeline updates
   const {
@@ -144,18 +164,75 @@ export const App: React.FC = () => {
     }
   }, [setTranscodeJobs, setDownloads]);
 
+  const applySettingsResponse = useCallback((data: any) => {
+    if (!data || typeof data !== 'object') return;
+    if (Array.isArray(data.indexers)) setIndexers(data.indexers);
+    if (Array.isArray(data.downloadClients)) setDownloadClients(data.downloadClients);
+    if (data.library) {
+      setLibrarySettings((prev) => ({ ...prev, ...data.library }));
+    }
+    if (data.prowlarr) {
+      setProwlarrSettings((prev) => ({ ...prev, ...data.prowlarr }));
+    }
+    if (data.qualityProfile) {
+      setQualityProfile((prev) => ({
+        ...prev,
+        ...data.qualityProfile,
+        allowedLanguages: Array.isArray(data.qualityProfile.allowedLanguages)
+          ? data.qualityProfile.allowedLanguages
+          : prev.allowedLanguages,
+        allowedFormats: Array.isArray(data.qualityProfile.allowedFormats)
+          ? data.qualityProfile.allowedFormats
+          : prev.allowedFormats,
+      }));
+    }
+    if (data.authSettings) {
+      setAuthSettings((prev) => ({
+        ...prev,
+        ...data.authSettings,
+        oidcAdminGroups: Array.isArray(data.authSettings.oidcAdminGroups)
+          ? data.authSettings.oidcAdminGroups
+          : prev.oidcAdminGroups,
+        oidcCuratorGroups: Array.isArray(data.authSettings.oidcCuratorGroups)
+          ? data.authSettings.oidcCuratorGroups
+          : prev.oidcCuratorGroups,
+      }));
+    }
+    if (data.overrides && typeof data.overrides === 'object') {
+      setSettingsOverrides(data.overrides);
+    }
+  }, []);
+
   const fetchSettings = useCallback(async () => {
     try {
       const res = await fetch('/api/settings');
       if (res.ok) {
         const data = await res.json();
-        if (data.indexers) setIndexers(data.indexers);
-        if (data.downloadClients) setDownloadClients(data.downloadClients);
-        if (data.qualityProfile) setQualityProfile(data.qualityProfile);
-        if (data.authSettings) setAuthSettings(data.authSettings);
+        applySettingsResponse(data);
       }
     } catch (err) {
       console.error('Failed to load settings', err);
+    }
+  }, [applySettingsResponse]);
+
+  const handleSaveSettings = useCallback(async (payload: any) => {
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data?.error || 'Failed to save settings');
+    }
+    applySettingsResponse(data);
+  }, [applySettingsResponse]);
+
+  const handleSyncIndexers = useCallback(async () => {
+    try {
+      await fetch('/api/settings/prowlarr/sync', { method: 'POST' });
+    } catch (err) {
+      console.error('Failed to sync indexers', err);
     }
   }, []);
 
@@ -338,8 +415,13 @@ export const App: React.FC = () => {
           <SettingsView
             indexers={indexers}
             downloadClients={downloadClients}
+            librarySettings={librarySettings}
+            prowlarrSettings={prowlarrSettings}
             qualityProfile={qualityProfile}
             authSettings={authSettings}
+            overrides={settingsOverrides}
+            onSyncIndexers={handleSyncIndexers}
+            onSaveSettings={handleSaveSettings}
           />
         )}
       </Layout>

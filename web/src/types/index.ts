@@ -154,6 +154,26 @@ export interface DownloadClientConfig {
   status: 'connected' | 'error';
 }
 
+export interface SettingOverrideInfo {
+  isOverridden: boolean;
+  overriddenBy?: string;
+  envVar: string;
+}
+
+export type SettingsOverridesMap = Record<string, SettingOverrideInfo>;
+
+export interface LibrarySettings {
+  rootPath: string;
+  stagingPollInterval: string;
+  indexerSyncInterval: string;
+}
+
+export interface ProwlarrSettings {
+  url: string;
+  apiKeyConfigured: boolean;
+  syncInterval: string;
+}
+
 export interface QualityProfile {
   id: string;
   name: string;
@@ -162,12 +182,19 @@ export interface QualityProfile {
   audioMinBitrateKbps: number;
   audioTargetBitrateKbps: number;
   preferSingleFileM4b: boolean;
+  maxFileSizeMb: number;
 }
 
 export interface AuthSettings {
   oidcEnabled: boolean;
   oidcIssuerUrl: string;
   oidcClientId: string;
+  oidcClientSecretConfigured?: boolean;
+  oidcRedirectUrl?: string;
+  oidcAdminGroups?: string[];
+  oidcCuratorGroups?: string[];
+  oidcDefaultRole?: string;
   localAuthEnabled: boolean;
   sessionTimeoutHours: number;
 }
+

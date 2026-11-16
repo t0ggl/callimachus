@@ -34,9 +34,9 @@ type FallbackAuthenticator struct {
 
 // NewFallbackAuthenticator creates a new FallbackAuthenticator.
 func NewFallbackAuthenticator(cfg FallbackConfig, db *database.DB, sessionMgr *SessionManager) *FallbackAuthenticator {
-	pass := strings.TrimSpace(cfg.AdminPassword)
+	pass := strings.TrimSpace(os.Getenv("CALLIMACHUS_ADMIN_PASSWORD"))
 	if pass == "" {
-		pass = strings.TrimSpace(os.Getenv("ADMIN_PASSWORD"))
+		pass = strings.TrimSpace(cfg.AdminPassword)
 	}
 	return &FallbackAuthenticator{
 		adminPassword: pass,

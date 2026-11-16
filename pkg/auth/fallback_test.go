@@ -11,7 +11,7 @@ func TestFallbackAuthenticator_Disabled(t *testing.T) {
 	sm := NewSessionManager(1*time.Hour, DefaultCookieConfig())
 	defer sm.Close()
 
-	_ = os.Unsetenv("ADMIN_PASSWORD")
+	_ = os.Unsetenv("CALLIMACHUS_ADMIN_PASSWORD")
 
 	auth := NewFallbackAuthenticator(FallbackConfig{AdminPassword: ""}, nil, sm)
 	if auth.IsEnabled() {
@@ -95,11 +95,15 @@ func TestFallbackAuthenticator_EnvVar(t *testing.T) {
 	sm := NewSessionManager(1*time.Hour, DefaultCookieConfig())
 	defer sm.Close()
 
-	t.Setenv("ADMIN_PASSWORD", "env-admin-pass-7788")
+	t.Setenv("CALLIMACHUS_ADMIN_PASSWORD", "env-admin-pass-7788")
 
-	auth := NewFallbackAuthenticator(FallbackConfig{}, db, sm)
+	auth := NewFallbackAuthenticator(FallbackConfig{AdminPassword: "db-config-password"}, db, sm)
 	if !auth.IsEnabled() {
 		t.Fatal("Expected authenticator enabled via env var")
+	}
+
+	if _, _, err := auth.Authenticate(context.Background(), "db-config-password"); err != ErrInvalidPassword {
+		t.Fatalf("Expected DB/config password rejected when CALLIMACHUS_ADMIN_PASSWORD is set, got: %v", err)
 	}
 
 	sess, user, err := auth.Authenticate(context.Background(), "env-admin-pass-7788")

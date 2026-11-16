@@ -364,3 +364,32 @@ func TestPackageEvaluateRelease(t *testing.T) {
 		t.Fatalf("expected accepted, got reason: %s", reason)
 	}
 }
+
+func TestQualityProfile_EvaluateRelease_MaxFileSizeMB(t *testing.T) {
+	t.Parallel()
+
+	profile := QualityProfile{
+		AllowedLanguages: []string{"en"},
+		AllowedFormats:   []string{"epub", "m4b"},
+		MaxFileSizeMB:    500,
+	}
+
+	okCandidate := ReleaseCandidate{
+		Title:  "Synthetic Novel Alpha",
+		Format: "m4b",
+		Size:   400 * 1024 * 1024,
+	}
+	if accepted, reason := profile.EvaluateRelease(okCandidate); !accepted {
+		t.Fatalf("expected 400MB candidate accepted, got: %s", reason)
+	}
+
+	tooBigCandidate := ReleaseCandidate{
+		Title:  "Synthetic Novel Beta",
+		Format: "m4b",
+		Size:   600 * 1024 * 1024,
+	}
+	if accepted, _ := profile.EvaluateRelease(tooBigCandidate); accepted {
+		t.Fatalf("expected 600MB candidate rejected by 500MB limit")
+	}
+}
+

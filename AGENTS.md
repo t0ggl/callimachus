@@ -49,9 +49,18 @@ Welcome to the **Callimachus** project codebase. These guidelines govern all sub
 
 6. **Authentication & Multi-User:**
    - Primary: OIDC (Authentik, Authelia, Keycloak) with role mapping (Admin, Curator, User/Requester, Guest).
-   - Fallback: `ADMIN_PASSWORD` env var. Login page displays a single password field logging directly in as Admin.
+   - Fallback: `CALLIMACHUS_ADMIN_PASSWORD` env var. Login page displays a single password field logging directly in as Admin.
 
 7. **Domain Rules:**
    - Narrators are first-class entities for audiobooks.
    - Series index is float-based (`float64`) to handle novellas (`#2.5`), prequels (`#0.5`), and ARCs.
    - Quality profiles enforce strict language filtering (default English) and format cutoffs.
+
+8. **Configuration & Environment Variable Overrides:**
+   - **Standardized Naming & Automatic Env Var Derivation:** All configuration settings must be registered in `pkg/config` using a canonical `lowercase_snake_case` key (e.g., `library_root`, `prowlarr_url`, `max_file_size_mb`). The corresponding environment variable `CALLIMACHUS_{SETTING_NAME}` (uppercased `snake_case`, e.g., `CALLIMACHUS_LIBRARY_ROOT`, `CALLIMACHUS_PROWLARR_URL`) is derived automatically by `pkg/config` for every registered setting so no setting can be missed or diverge.
+   - **Absolute Precedence:** Whenever a configuration environment variable is set (non-empty), it takes absolute precedence over values stored in the SQLite `settings` table and built-in defaults across all server and worker workflows.
+   - **No Ad-Hoc Env Lookups:** Runtime configuration must be resolved through `pkg/config` rather than scattered `os.Getenv` calls (excluding explicit test opt-in gates like `CALLIMACHUS_REAL_CALIBRE`).
+   - **API Metadata:** `GET /api/settings` must expose override metadata (`isOverridden: boolean`, `overriddenBy: string`) for every configurable setting.
+   - **UI Enforcement:** In `SettingsView.tsx`, any setting with `isOverridden: true` must disable/grey out the corresponding input, toggle, or selector and display an explanatory lock badge or note (e.g., *"Managed via environment variable {overriddenBy} and cannot be modified here."*).
+   - **Write Protection:** `PUT /api/settings` must ignore/refuse database mutations for any setting currently overridden by an environment variable.
+

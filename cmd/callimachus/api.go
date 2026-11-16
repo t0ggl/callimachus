@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/t0ggl/callimachus/pkg/config"
 )
 
 type APIMediaAsset struct {
@@ -122,24 +126,83 @@ type APIDownloadClientConfig struct {
 	} `json:"categories"`
 }
 
+type APILibrarySettings struct {
+	RootPath            string `json:"rootPath"`
+	StagingPollInterval string `json:"stagingPollInterval"`
+	IndexerSyncInterval string `json:"indexerSyncInterval"`
+}
+
+type APIProwlarrSettings struct {
+	URL              string `json:"url"`
+	APIKeyConfigured bool   `json:"apiKeyConfigured"`
+	SyncInterval     string `json:"syncInterval"`
+}
+
+type APIQualityProfileSettings struct {
+	ID                     string   `json:"id"`
+	Name                   string   `json:"name"`
+	AllowedLanguages       []string `json:"allowedLanguages"`
+	AllowedFormats         []string `json:"allowedFormats"`
+	AudioMinBitrateKbps    int      `json:"audioMinBitrateKbps"`
+	AudioTargetBitrateKbps int      `json:"audioTargetBitrateKbps"`
+	PreferSingleFileM4b    bool     `json:"preferSingleFileM4b"`
+	MaxFileSizeMb          int      `json:"maxFileSizeMb"`
+}
+
+type APIAuthSettings struct {
+	OIDCEnabled                bool     `json:"oidcEnabled"`
+	OIDCIssuerURL              string   `json:"oidcIssuerUrl"`
+	OIDCClientID               string   `json:"oidcClientId"`
+	OIDCClientSecretConfigured bool     `json:"oidcClientSecretConfigured"`
+	OIDCRedirectURL            string   `json:"oidcRedirectUrl"`
+	OIDCAdminGroups            []string `json:"oidcAdminGroups"`
+	OIDCCuratorGroups          []string `json:"oidcCuratorGroups"`
+	OIDCDefaultRole            string   `json:"oidcDefaultRole"`
+	LocalAuthEnabled           bool     `json:"localAuthEnabled"`
+	SessionTimeoutHours        int      `json:"sessionTimeoutHours"`
+}
+
 type APISettingsResponse struct {
-	Indexers        []APIIndexerConfig        `json:"indexers"`
-	DownloadClients []APIDownloadClientConfig `json:"downloadClients"`
-	QualityProfile  struct {
-		ID                     string   `json:"id"`
-		Name                   string   `json:"name"`
-		AllowedLanguages       []string `json:"allowedLanguages"`
-		AllowedFormats         []string `json:"allowedFormats"`
-		AudioMinBitrateKbps    int      `json:"audioMinBitrateKbps"`
-		AudioTargetBitrateKbps int      `json:"audioTargetBitrateKbps"`
-		PreferSingleFileM4b    bool     `json:"preferSingleFileM4b"`
+	Indexers        []APIIndexerConfig           `json:"indexers"`
+	DownloadClients []APIDownloadClientConfig    `json:"downloadClients"`
+	Library         APILibrarySettings           `json:"library"`
+	Prowlarr        APIProwlarrSettings          `json:"prowlarr"`
+	QualityProfile  APIQualityProfileSettings    `json:"qualityProfile"`
+	AuthSettings    APIAuthSettings              `json:"authSettings"`
+	Overrides       map[string]config.OverrideInfo `json:"overrides"`
+}
+
+type APISettingsUpdateRequest struct {
+	Library *struct {
+		RootPath            *string `json:"rootPath"`
+		StagingPollInterval *string `json:"stagingPollInterval"`
+		IndexerSyncInterval *string `json:"indexerSyncInterval"`
+	} `json:"library"`
+	Prowlarr *struct {
+		URL          *string `json:"url"`
+		APIKey       *string `json:"apiKey"`
+		SyncInterval *string `json:"syncInterval"`
+	} `json:"prowlarr"`
+	QualityProfile *struct {
+		Name                   *string   `json:"name"`
+		AllowedLanguages       *[]string `json:"allowedLanguages"`
+		AllowedFormats         *[]string `json:"allowedFormats"`
+		AudioMinBitrateKbps    *int      `json:"audioMinBitrateKbps"`
+		AudioTargetBitrateKbps *int      `json:"audioTargetBitrateKbps"`
+		PreferSingleFileM4b    *bool     `json:"preferSingleFileM4b"`
+		MaxFileSizeMb          *int      `json:"maxFileSizeMb"`
 	} `json:"qualityProfile"`
-	AuthSettings struct {
-		OIDCEnabled         bool   `json:"oidcEnabled"`
-		OIDCIssuerURL       string `json:"oidcIssuerUrl"`
-		OIDCClientID        string `json:"oidcClientId"`
-		LocalAuthEnabled    bool   `json:"localAuthEnabled"`
-		SessionTimeoutHours int    `json:"sessionTimeoutHours"`
+	AuthSettings *struct {
+		OIDCEnabled         *bool     `json:"oidcEnabled"`
+		OIDCIssuerURL       *string   `json:"oidcIssuerUrl"`
+		OIDCClientID        *string   `json:"oidcClientId"`
+		OIDCClientSecret    *string   `json:"oidcClientSecret"`
+		OIDCRedirectURL     *string   `json:"oidcRedirectUrl"`
+		OIDCAdminGroups     *[]string `json:"oidcAdminGroups"`
+		OIDCCuratorGroups   *[]string `json:"oidcCuratorGroups"`
+		OIDCDefaultRole     *string   `json:"oidcDefaultRole"`
+		AdminPassword       *string   `json:"adminPassword"`
+		SessionTimeoutHours *int      `json:"sessionTimeoutHours"`
 	} `json:"authSettings"`
 }
 
@@ -152,6 +215,7 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/series/", s.handleGetSeries)
 	mux.HandleFunc("GET /api/activity", s.handleGetActivity)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 	mux.HandleFunc("POST /api/settings/prowlarr/sync", s.handleSyncProwlarr)
 	mux.HandleFunc("GET /api/events", s.handleEventsSSE)
 }
@@ -379,31 +443,66 @@ func (s *Server) handleGetActivity(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.ResolvedSettings) APISettingsResponse {
 	var resp APISettingsResponse
 	resp.Indexers = make([]APIIndexerConfig, 0)
 	resp.DownloadClients = make([]APIDownloadClientConfig, 0)
 
-	// Default Quality Profile
-	resp.QualityProfile.ID = "default"
-	resp.QualityProfile.Name = "Standard Audiobook"
-	resp.QualityProfile.AllowedLanguages = []string{"en"}
-	resp.QualityProfile.AllowedFormats = []string{"EPUB", "M4B"}
-	resp.QualityProfile.AudioMinBitrateKbps = 32
-	resp.QualityProfile.AudioTargetBitrateKbps = 64
-	resp.QualityProfile.PreferSingleFileM4b = true
+	if resolved == nil {
+		var err error
+		resolved, err = config.Load(ctx, s.db, s.baseOverrides)
+		if err != nil {
+			log.Printf("[api] warning: failed to load resolved config: %v", err)
+			resolved = &config.ResolvedSettings{Overrides: map[string]config.OverrideInfo{}}
+		}
+	}
 
-	// Auth settings
-	resp.AuthSettings.OIDCEnabled = s.cfg.OIDCIssuerURL != "" && s.cfg.OIDCClientID != ""
-	resp.AuthSettings.OIDCIssuerURL = s.cfg.OIDCIssuerURL
-	resp.AuthSettings.OIDCClientID = s.cfg.OIDCClientID
-	resp.AuthSettings.LocalAuthEnabled = s.cfg.FallbackPassword != ""
-	resp.AuthSettings.SessionTimeoutHours = 720
+	cfg := resolved.Settings
+	resp.Overrides = resolved.Overrides
+
+	// Library & Storage
+	resp.Library = APILibrarySettings{
+		RootPath:            cfg.LibraryRoot,
+		StagingPollInterval: cfg.StagingPollInterval.String(),
+		IndexerSyncInterval: cfg.IndexerSyncInterval.String(),
+	}
+
+	// Prowlarr Integration (never expose raw API key)
+	resp.Prowlarr = APIProwlarrSettings{
+		URL:              cfg.ProwlarrURL,
+		APIKeyConfigured: cfg.ProwlarrAPIKey != "",
+		SyncInterval:     cfg.ProwlarrSyncInterval.String(),
+	}
+
+	// Quality Profile
+	resp.QualityProfile = APIQualityProfileSettings{
+		ID:                     "default",
+		Name:                   cfg.QualityProfileName,
+		AllowedLanguages:       cfg.AllowedLanguages,
+		AllowedFormats:         cfg.AllowedFormats,
+		AudioMinBitrateKbps:    cfg.AudioMinBitrateKbps,
+		AudioTargetBitrateKbps: cfg.AudioTargetBitrateKbps,
+		PreferSingleFileM4b:    cfg.PreferSingleFileM4B,
+		MaxFileSizeMb:          cfg.MaxFileSizeMB,
+	}
+
+	// Auth Settings (never expose raw secrets)
+	resp.AuthSettings = APIAuthSettings{
+		OIDCEnabled:                cfg.OIDCEnabled,
+		OIDCIssuerURL:              cfg.OIDCIssuerURL,
+		OIDCClientID:               cfg.OIDCClientID,
+		OIDCClientSecretConfigured: cfg.OIDCClientSecret != "",
+		OIDCRedirectURL:            cfg.OIDCRedirectURL,
+		OIDCAdminGroups:            cfg.OIDCAdminGroups,
+		OIDCCuratorGroups:          cfg.OIDCCuratorGroups,
+		OIDCDefaultRole:            cfg.OIDCDefaultRole,
+		LocalAuthEnabled:           cfg.AdminPassword != "",
+		SessionTimeoutHours:        cfg.SessionTimeoutHours,
+	}
 
 	if s.db != nil {
 		// Query indexers
-		if rows, err := s.db.QueryContext(r.Context(), `SELECT id, name, protocol, priority, enabled, COALESCE(last_sync_at, '') FROM indexers ORDER BY priority ASC`); err == nil {
+		if rows, err := s.db.QueryContext(ctx, `SELECT id, name, protocol, priority, enabled, COALESCE(last_sync_at, '') FROM indexers ORDER BY priority ASC`); err == nil {
 			defer rows.Close()
 			for rows.Next() {
 				var idx APIIndexerConfig
@@ -419,7 +518,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Query download clients
-		if rows, err := s.db.QueryContext(r.Context(), `SELECT id, name, type, host, port, enabled, category_ebook, category_audiobook FROM download_clients`); err == nil {
+		if rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, host, port, enabled, category_ebook, category_audiobook FROM download_clients`); err == nil {
 			defer rows.Close()
 			for rows.Next() {
 				var dc APIDownloadClientConfig
@@ -433,6 +532,119 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	return resp
+}
+
+func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	resp := s.buildSettingsResponse(r.Context(), nil)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if s.db == nil {
+		http.Error(w, `{"error":"database unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req APISettingsUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	updates := make(map[string]string)
+
+	if req.Library != nil {
+		if req.Library.RootPath != nil {
+			updates[config.KeyLibraryRoot] = *req.Library.RootPath
+		}
+		if req.Library.StagingPollInterval != nil {
+			updates[config.KeyStagingPollInterval] = *req.Library.StagingPollInterval
+		}
+		if req.Library.IndexerSyncInterval != nil {
+			updates[config.KeyIndexerSyncInterval] = *req.Library.IndexerSyncInterval
+		}
+	}
+
+	if req.Prowlarr != nil {
+		if req.Prowlarr.URL != nil {
+			updates[config.KeyProwlarrURL] = *req.Prowlarr.URL
+		}
+		if req.Prowlarr.APIKey != nil && strings.TrimSpace(*req.Prowlarr.APIKey) != "" {
+			updates[config.KeyProwlarrAPIKey] = *req.Prowlarr.APIKey
+		}
+		if req.Prowlarr.SyncInterval != nil {
+			updates[config.KeyProwlarrSyncInterval] = *req.Prowlarr.SyncInterval
+		}
+	}
+
+	if req.QualityProfile != nil {
+		if req.QualityProfile.Name != nil {
+			updates[config.KeyQualityProfileName] = *req.QualityProfile.Name
+		}
+		if req.QualityProfile.AllowedLanguages != nil {
+			updates[config.KeyAllowedLanguages] = strings.Join(*req.QualityProfile.AllowedLanguages, ",")
+		}
+		if req.QualityProfile.AllowedFormats != nil {
+			updates[config.KeyAllowedFormats] = strings.Join(*req.QualityProfile.AllowedFormats, ",")
+		}
+		if req.QualityProfile.AudioMinBitrateKbps != nil {
+			updates[config.KeyAudioMinBitrateKbps] = strconv.Itoa(*req.QualityProfile.AudioMinBitrateKbps)
+		}
+		if req.QualityProfile.AudioTargetBitrateKbps != nil {
+			updates[config.KeyAudioTargetBitrateKbps] = strconv.Itoa(*req.QualityProfile.AudioTargetBitrateKbps)
+		}
+		if req.QualityProfile.PreferSingleFileM4b != nil {
+			updates[config.KeyPreferSingleFileM4B] = strconv.FormatBool(*req.QualityProfile.PreferSingleFileM4b)
+		}
+		if req.QualityProfile.MaxFileSizeMb != nil {
+			updates[config.KeyMaxFileSizeMB] = strconv.Itoa(*req.QualityProfile.MaxFileSizeMb)
+		}
+	}
+
+	if req.AuthSettings != nil {
+		if req.AuthSettings.OIDCEnabled != nil {
+			updates[config.KeyOIDCEnabled] = strconv.FormatBool(*req.AuthSettings.OIDCEnabled)
+		}
+		if req.AuthSettings.OIDCIssuerURL != nil {
+			updates[config.KeyOIDCIssuerURL] = *req.AuthSettings.OIDCIssuerURL
+		}
+		if req.AuthSettings.OIDCClientID != nil {
+			updates[config.KeyOIDCClientID] = *req.AuthSettings.OIDCClientID
+		}
+		if req.AuthSettings.OIDCClientSecret != nil && strings.TrimSpace(*req.AuthSettings.OIDCClientSecret) != "" {
+			updates[config.KeyOIDCClientSecret] = *req.AuthSettings.OIDCClientSecret
+		}
+		if req.AuthSettings.OIDCRedirectURL != nil {
+			updates[config.KeyOIDCRedirectURL] = *req.AuthSettings.OIDCRedirectURL
+		}
+		if req.AuthSettings.OIDCAdminGroups != nil {
+			updates[config.KeyOIDCAdminGroups] = strings.Join(*req.AuthSettings.OIDCAdminGroups, ",")
+		}
+		if req.AuthSettings.OIDCCuratorGroups != nil {
+			updates[config.KeyOIDCCuratorGroups] = strings.Join(*req.AuthSettings.OIDCCuratorGroups, ",")
+		}
+		if req.AuthSettings.OIDCDefaultRole != nil {
+			updates[config.KeyOIDCDefaultRole] = *req.AuthSettings.OIDCDefaultRole
+		}
+		if req.AuthSettings.AdminPassword != nil && strings.TrimSpace(*req.AuthSettings.AdminPassword) != "" {
+			updates[config.KeyAdminPassword] = *req.AuthSettings.AdminPassword
+		}
+		if req.AuthSettings.SessionTimeoutHours != nil {
+			updates[config.KeySessionTimeoutHours] = strconv.Itoa(*req.AuthSettings.SessionTimeoutHours)
+		}
+	}
+
+	resolved, err := config.SaveNonOverridden(r.Context(), s.db, updates, s.baseOverrides)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	resp := s.buildSettingsResponse(r.Context(), resolved)
 	_ = json.NewEncoder(w).Encode(resp)
 }
 

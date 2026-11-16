@@ -1,43 +1,319 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Globe,
   Download,
   Sliders,
   Shield,
+  HardDrive,
   RefreshCw,
   CheckCircle2,
+  Lock,
+  Save,
+  AlertCircle,
 } from 'lucide-react';
 import {
   IndexerConfig,
   DownloadClientConfig,
+  LibrarySettings,
+  ProwlarrSettings,
   QualityProfile,
   AuthSettings,
+  SettingsOverridesMap,
+  FormatType,
 } from '../types';
+
+export interface SettingsUpdatePayload {
+  library?: {
+    rootPath?: string;
+    stagingPollInterval?: string;
+    indexerSyncInterval?: string;
+  };
+  prowlarr?: {
+    url?: string;
+    apiKey?: string;
+    syncInterval?: string;
+  };
+  qualityProfile?: {
+    name?: string;
+    allowedLanguages?: string[];
+    allowedFormats?: FormatType[];
+    audioMinBitrateKbps?: number;
+    audioTargetBitrateKbps?: number;
+    preferSingleFileM4b?: boolean;
+    maxFileSizeMb?: number;
+  };
+  authSettings?: {
+    oidcEnabled?: boolean;
+    oidcIssuerUrl?: string;
+    oidcClientId?: string;
+    oidcClientSecret?: string;
+    oidcRedirectUrl?: string;
+    oidcAdminGroups?: string[];
+    oidcCuratorGroups?: string[];
+    oidcDefaultRole?: string;
+    adminPassword?: string;
+    sessionTimeoutHours?: number;
+  };
+}
 
 interface SettingsViewProps {
   indexers: IndexerConfig[];
   downloadClients: DownloadClientConfig[];
+  librarySettings?: LibrarySettings;
+  prowlarrSettings?: ProwlarrSettings;
   qualityProfile: QualityProfile;
   authSettings: AuthSettings;
+  overrides?: SettingsOverridesMap;
   onSyncIndexers?: () => void;
+  onSaveSettings?: (payload: SettingsUpdatePayload) => Promise<void>;
 }
+
+const DEFAULT_LIBRARY: LibrarySettings = {
+  rootPath: './books',
+  stagingPollInterval: '5s',
+  indexerSyncInterval: '15m0s',
+};
+
+const DEFAULT_PROWLARR: ProwlarrSettings = {
+  url: '',
+  apiKeyConfigured: false,
+  syncInterval: '1h0m0s',
+};
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   indexers: initialIndexers,
   downloadClients: initialClients,
+  librarySettings: initialLibrary = DEFAULT_LIBRARY,
+  prowlarrSettings: initialProwlarr = DEFAULT_PROWLARR,
   qualityProfile: initialQuality,
   authSettings: initialAuth,
+  overrides = {},
   onSyncIndexers,
+  onSaveSettings,
 }) => {
-  const [activeTab, setActiveTab] = useState<'indexers' | 'downloaders' | 'quality' | 'auth'>('indexers');
+  const [activeTab, setActiveTab] = useState<'indexers' | 'downloaders' | 'library' | 'quality' | 'auth'>('indexers');
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncSuccess, setSyncSuccess] = useState(false);
 
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
   const [indexers, setIndexers] = useState<IndexerConfig[]>(initialIndexers);
-  const [downloadClients] = useState<DownloadClientConfig[]>(initialClients);
-  const [qualityProfile, setQualityProfile] = useState<QualityProfile>(initialQuality);
-  const [authSettings, setAuthSettings] = useState<AuthSettings>(initialAuth);
+  const [downloadClients, setDownloadClients] = useState<DownloadClientConfig[]>(initialClients);
+  const [librarySettings, setLibrarySettings] = useState<LibrarySettings>(initialLibrary);
+  const [prowlarrSettings, setProwlarrSettings] = useState<ProwlarrSettings>(initialProwlarr);
+  const [prowlarrApiKeyDraft, setProwlarrApiKeyDraft] = useState('');
+
+  const [qualityProfile, setQualityProfile] = useState<QualityProfile>({
+    ...initialQuality,
+    allowedLanguages: initialQuality.allowedLanguages ?? ['en'],
+    allowedFormats: initialQuality.allowedFormats ?? ['EPUB', 'M4B'],
+    maxFileSizeMb: initialQuality.maxFileSizeMb ?? 2048,
+  });
+  const [languagesInput, setLanguagesInput] = useState(
+    (initialQuality.allowedLanguages ?? ['en']).join(', ')
+  );
+
+  const [authSettings, setAuthSettings] = useState<AuthSettings>({
+    ...initialAuth,
+    oidcRedirectUrl: initialAuth.oidcRedirectUrl ?? '',
+    oidcAdminGroups: initialAuth.oidcAdminGroups ?? [],
+    oidcCuratorGroups: initialAuth.oidcCuratorGroups ?? [],
+    oidcDefaultRole: initialAuth.oidcDefaultRole ?? 'requester',
+  });
+  const [oidcSecretDraft, setOidcSecretDraft] = useState('');
+  const [adminPasswordDraft, setAdminPasswordDraft] = useState('');
+  const [adminGroupsInput, setAdminGroupsInput] = useState(
+    (initialAuth.oidcAdminGroups ?? []).join(', ')
+  );
+  const [curatorGroupsInput, setCuratorGroupsInput] = useState(
+    (initialAuth.oidcCuratorGroups ?? []).join(', ')
+  );
+
   const [testResult, setTestResult] = useState<{ id: string; success: boolean } | null>(null);
+
+  useEffect(() => {
+    setIndexers(initialIndexers);
+  }, [initialIndexers]);
+
+  useEffect(() => {
+    setDownloadClients(initialClients);
+  }, [initialClients]);
+
+  useEffect(() => {
+    setLibrarySettings(initialLibrary);
+  }, [initialLibrary]);
+
+  useEffect(() => {
+    setProwlarrSettings(initialProwlarr);
+  }, [initialProwlarr]);
+
+  useEffect(() => {
+    const langs = initialQuality.allowedLanguages ?? ['en'];
+    setQualityProfile({
+      ...initialQuality,
+      allowedLanguages: langs,
+      allowedFormats: initialQuality.allowedFormats ?? ['EPUB', 'M4B'],
+      maxFileSizeMb: initialQuality.maxFileSizeMb ?? 2048,
+    });
+    setLanguagesInput(langs.join(', '));
+  }, [initialQuality]);
+
+  useEffect(() => {
+    const adminGroups = initialAuth.oidcAdminGroups ?? [];
+    const curatorGroups = initialAuth.oidcCuratorGroups ?? [];
+    setAuthSettings({
+      ...initialAuth,
+      oidcRedirectUrl: initialAuth.oidcRedirectUrl ?? '',
+      oidcAdminGroups: adminGroups,
+      oidcCuratorGroups: curatorGroups,
+      oidcDefaultRole: initialAuth.oidcDefaultRole ?? 'requester',
+    });
+    setAdminGroupsInput(adminGroups.join(', '));
+    setCuratorGroupsInput(curatorGroups.join(', '));
+  }, [initialAuth]);
+
+  const isOverridden = (key: string): boolean => Boolean(overrides[key]?.isOverridden);
+
+  const overriddenCount = Object.values(overrides).filter((o) => o?.isOverridden).length;
+
+  const OverrideNote: React.FC<{ settingKey: string }> = ({ settingKey }) => {
+    const info = overrides[settingKey];
+    if (!info?.isOverridden) return null;
+    return (
+      <p
+        data-testid={`override-note-${settingKey}`}
+        className="mt-1.5 flex items-center gap-1.5 text-[11px] text-amber-300/90"
+      >
+        <Lock className="w-3 h-3 shrink-0 text-amber-400" />
+        <span>
+          Managed via environment variable <code className="font-mono font-semibold text-amber-200">{info.overriddenBy}</code> and cannot be modified here.
+        </span>
+      </p>
+    );
+  };
+
+  const OverrideBadge: React.FC<{ settingKey: string }> = ({ settingKey }) => {
+    const info = overrides[settingKey];
+    if (!info?.isOverridden) return null;
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-950/60 border border-amber-800/60 text-[10px] font-mono text-amber-300">
+        <Lock className="w-2.5 h-2.5" />
+        {info.overriddenBy}
+      </span>
+    );
+  };
+
+  const inputClass = (locked: boolean) =>
+    `w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-md text-zinc-200 text-xs focus:outline-none focus:border-blue-500/70 transition-colors ${
+      locked ? 'opacity-60 cursor-not-allowed bg-zinc-900/50 text-zinc-400' : ''
+    }`;
+
+  const splitList = (val: string) =>
+    val
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    setSaveSuccess(false);
+    setSaveError(null);
+
+    const payload: SettingsUpdatePayload = {
+      library: {
+        ...(!isOverridden('library_root') ? { rootPath: librarySettings.rootPath } : {}),
+        ...(!isOverridden('staging_poll_interval')
+          ? { stagingPollInterval: librarySettings.stagingPollInterval }
+          : {}),
+        ...(!isOverridden('indexer_sync_interval')
+          ? { indexerSyncInterval: librarySettings.indexerSyncInterval }
+          : {}),
+      },
+      prowlarr: {
+        ...(!isOverridden('prowlarr_url') ? { url: prowlarrSettings.url } : {}),
+        ...(!isOverridden('prowlarr_api_key') && prowlarrApiKeyDraft.trim() !== ''
+          ? { apiKey: prowlarrApiKeyDraft.trim() }
+          : {}),
+        ...(!isOverridden('prowlarr_sync_interval')
+          ? { syncInterval: prowlarrSettings.syncInterval }
+          : {}),
+      },
+      qualityProfile: {
+        ...(!isOverridden('quality_profile_name') ? { name: qualityProfile.name } : {}),
+        ...(!isOverridden('allowed_languages')
+          ? { allowedLanguages: splitList(languagesInput) }
+          : {}),
+        ...(!isOverridden('allowed_formats')
+          ? { allowedFormats: qualityProfile.allowedFormats }
+          : {}),
+        ...(!isOverridden('audio_min_bitrate_kbps')
+          ? { audioMinBitrateKbps: qualityProfile.audioMinBitrateKbps }
+          : {}),
+        ...(!isOverridden('audio_target_bitrate_kbps')
+          ? { audioTargetBitrateKbps: qualityProfile.audioTargetBitrateKbps }
+          : {}),
+        ...(!isOverridden('prefer_single_file_m4b')
+          ? { preferSingleFileM4b: qualityProfile.preferSingleFileM4b }
+          : {}),
+        ...(!isOverridden('max_file_size_mb')
+          ? { maxFileSizeMb: qualityProfile.maxFileSizeMb }
+          : {}),
+      },
+      authSettings: {
+        ...(!isOverridden('oidc_enabled') ? { oidcEnabled: authSettings.oidcEnabled } : {}),
+        ...(!isOverridden('oidc_issuer_url') ? { oidcIssuerUrl: authSettings.oidcIssuerUrl } : {}),
+        ...(!isOverridden('oidc_client_id') ? { oidcClientId: authSettings.oidcClientId } : {}),
+        ...(!isOverridden('oidc_client_secret') && oidcSecretDraft.trim() !== ''
+          ? { oidcClientSecret: oidcSecretDraft.trim() }
+          : {}),
+        ...(!isOverridden('oidc_redirect_url')
+          ? { oidcRedirectUrl: authSettings.oidcRedirectUrl ?? '' }
+          : {}),
+        ...(!isOverridden('oidc_admin_groups')
+          ? { oidcAdminGroups: splitList(adminGroupsInput) }
+          : {}),
+        ...(!isOverridden('oidc_curator_groups')
+          ? { oidcCuratorGroups: splitList(curatorGroupsInput) }
+          : {}),
+        ...(!isOverridden('oidc_default_role')
+          ? { oidcDefaultRole: authSettings.oidcDefaultRole ?? 'requester' }
+          : {}),
+        ...(!isOverridden('admin_password') && adminPasswordDraft.trim() !== ''
+          ? { adminPassword: adminPasswordDraft.trim() }
+          : {}),
+        ...(!isOverridden('session_timeout_hours')
+          ? { sessionTimeoutHours: authSettings.sessionTimeoutHours }
+          : {}),
+      },
+    };
+
+    try {
+      if (onSaveSettings) {
+        await onSaveSettings(payload);
+      } else {
+        const res = await fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || 'Failed to save settings');
+        }
+      }
+      setProwlarrApiKeyDraft('');
+      setOidcSecretDraft('');
+      setAdminPasswordDraft('');
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (err: any) {
+      setSaveError(err?.message || 'Failed to save settings');
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   const handleSync = () => {
     setIsSyncing(true);
@@ -65,16 +341,61 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="border-b border-zinc-800 pb-4">
-        <h1 className="text-xl font-bold tracking-tight text-white">System Settings</h1>
-        <p className="text-xs text-zinc-400 mt-0.5">
-          Configure external metadata indexers, download daemons, transcode quality profiles, and security
-        </p>
+      <div className="border-b border-zinc-800 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold tracking-tight text-white">System Settings</h1>
+          <p className="text-xs text-zinc-400 mt-0.5">
+            Configure external metadata indexers, library storage, transcode quality profiles, and security
+          </p>
+        </div>
+
+        <div className="flex items-center gap-3">
+          {overriddenCount > 0 && (
+            <span
+              data-testid="env-override-summary"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-950/50 border border-amber-800/60 text-xs text-amber-300"
+            >
+              <Lock className="w-3.5 h-3.5 text-amber-400" />
+              {overriddenCount} env {overriddenCount === 1 ? 'override' : 'overrides'} active
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={isSaving}
+            data-testid="save-settings-btn"
+            className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 disabled:opacity-70 text-white rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors shadow"
+          >
+            <Save className="w-3.5 h-3.5" />
+            {isSaving ? 'Saving...' : 'Save Settings'}
+          </button>
+        </div>
       </div>
+
+      {saveSuccess && (
+        <div
+          data-testid="settings-save-success"
+          className="p-3 bg-emerald-950/60 border border-emerald-800 text-emerald-300 text-xs rounded-lg flex items-center gap-2"
+        >
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          Settings saved successfully.
+        </div>
+      )}
+
+      {saveError && (
+        <div
+          data-testid="settings-save-error"
+          className="p-3 bg-rose-950/60 border border-rose-800 text-rose-300 text-xs rounded-lg flex items-center gap-2"
+        >
+          <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+          {saveError}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex bg-zinc-900 border border-zinc-800 rounded-lg p-0.5 text-xs font-medium w-full sm:w-auto overflow-x-auto">
         <button
+          type="button"
           onClick={() => setActiveTab('indexers')}
           data-testid="tab-settings-indexers"
           className={`px-3 py-1.5 rounded-md flex items-center gap-2 whitespace-nowrap transition-colors ${
@@ -85,6 +406,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           Indexers & Prowlarr
         </button>
         <button
+          type="button"
           onClick={() => setActiveTab('downloaders')}
           data-testid="tab-settings-downloaders"
           className={`px-3 py-1.5 rounded-md flex items-center gap-2 whitespace-nowrap transition-colors ${
@@ -95,6 +417,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           Download Clients
         </button>
         <button
+          type="button"
+          onClick={() => setActiveTab('library')}
+          data-testid="tab-settings-library"
+          className={`px-3 py-1.5 rounded-md flex items-center gap-2 whitespace-nowrap transition-colors ${
+            activeTab === 'library' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200'
+          }`}
+        >
+          <HardDrive className="w-3.5 h-3.5 text-amber-400" />
+          Library & Storage
+        </button>
+        <button
+          type="button"
           onClick={() => setActiveTab('quality')}
           data-testid="tab-settings-quality"
           className={`px-3 py-1.5 rounded-md flex items-center gap-2 whitespace-nowrap transition-colors ${
@@ -105,6 +439,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           Quality & Profiles
         </button>
         <button
+          type="button"
           onClick={() => setActiveTab('auth')}
           data-testid="tab-settings-auth"
           className={`px-3 py-1.5 rounded-md flex items-center gap-2 whitespace-nowrap transition-colors ${
@@ -116,29 +451,93 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </button>
       </div>
 
-      {/* TAB 1: INDEXERS */}
+      {/* TAB 1: INDEXERS & PROWLARR */}
       {activeTab === 'indexers' && (
         <div className="space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-            <div>
-              <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-                <Globe className="w-4 h-4 text-blue-400" />
-                Prowlarr Integration
-              </h3>
-              <p className="text-xs text-zinc-400 mt-0.5">
-                Automatically synchronizes Torznab and Newznab indexers directly from your Prowlarr instance
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+                  <Globe className="w-4 h-4 text-blue-400" />
+                  Prowlarr Integration
+                </h3>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  Automatically synchronizes Torznab and Newznab indexers directly from your Prowlarr instance
+                </p>
+              </div>
               <button
+                type="button"
                 onClick={handleSync}
                 data-testid="prowlarr-sync-btn"
                 disabled={isSyncing}
-                className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors shadow"
+                className="px-3.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 text-zinc-100 border border-zinc-700 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
                 {isSyncing ? 'Syncing...' : 'Sync Prowlarr Indexers'}
               </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs pt-2 border-t border-zinc-800/80">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="prowlarr-url" className="block text-zinc-400 font-medium">
+                    Prowlarr URL
+                  </label>
+                  <OverrideBadge settingKey="prowlarr_url" />
+                </div>
+                <input
+                  id="prowlarr-url"
+                  type="url"
+                  placeholder="http://prowlarr:9696"
+                  value={prowlarrSettings.url}
+                  disabled={isOverridden('prowlarr_url')}
+                  onChange={(e) =>
+                    setProwlarrSettings((prev) => ({ ...prev, url: e.target.value }))
+                  }
+                  className={inputClass(isOverridden('prowlarr_url'))}
+                />
+                <OverrideNote settingKey="prowlarr_url" />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="prowlarr-api-key" className="block text-zinc-400 font-medium">
+                    Prowlarr API Key
+                  </label>
+                  <OverrideBadge settingKey="prowlarr_api_key" />
+                </div>
+                <input
+                  id="prowlarr-api-key"
+                  type="password"
+                  placeholder={prowlarrSettings.apiKeyConfigured ? '•••••••• (configured)' : 'Enter API key'}
+                  value={prowlarrApiKeyDraft}
+                  disabled={isOverridden('prowlarr_api_key')}
+                  onChange={(e) => setProwlarrApiKeyDraft(e.target.value)}
+                  className={inputClass(isOverridden('prowlarr_api_key'))}
+                />
+                <OverrideNote settingKey="prowlarr_api_key" />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="prowlarr-sync-interval" className="block text-zinc-400 font-medium">
+                    Prowlarr Sync Interval
+                  </label>
+                  <OverrideBadge settingKey="prowlarr_sync_interval" />
+                </div>
+                <input
+                  id="prowlarr-sync-interval"
+                  type="text"
+                  placeholder="1h0m0s"
+                  value={prowlarrSettings.syncInterval}
+                  disabled={isOverridden('prowlarr_sync_interval')}
+                  onChange={(e) =>
+                    setProwlarrSettings((prev) => ({ ...prev, syncInterval: e.target.value }))
+                  }
+                  className={inputClass(isOverridden('prowlarr_sync_interval'))}
+                />
+                <OverrideNote settingKey="prowlarr_sync_interval" />
+              </div>
             </div>
           </div>
 
@@ -159,50 +558,50 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
             </div>
           ) : (
-          <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="border-b border-zinc-800 bg-zinc-950/50 text-zinc-400 font-medium">
-                  <th className="py-3 px-4">Indexer Name</th>
-                  <th className="py-3 px-4">Protocol</th>
-                  <th className="py-3 px-4">Priority</th>
-                  <th className="py-3 px-4">Latency</th>
-                  <th className="py-3 px-4">Last Sync</th>
-                  <th className="py-3 px-4 text-right">Enabled</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-zinc-800/60">
-                {indexers.map((idx) => (
-                  <tr key={idx.id} className="hover:bg-zinc-800/40 text-zinc-300">
-                    <td className="py-3 px-4 font-semibold text-zinc-100 flex items-center gap-2">
-                      <span
-                        className={`w-2 h-2 rounded-full ${
-                          idx.status === 'online'
-                            ? 'bg-emerald-400'
-                            : idx.status === 'degraded'
-                            ? 'bg-amber-400'
-                            : 'bg-rose-400'
-                        }`}
-                      />
-                      {idx.name}
-                    </td>
-                    <td className="py-3 px-4 font-mono text-zinc-400">{idx.type}</td>
-                    <td className="py-3 px-4 font-mono">{idx.priority}</td>
-                    <td className="py-3 px-4 font-mono text-zinc-400">{idx.responseTimeMs}ms</td>
-                    <td className="py-3 px-4 text-zinc-500">{idx.lastSync}</td>
-                    <td className="py-3 px-4 text-right">
-                      <input
-                        type="checkbox"
-                        checked={idx.enabled}
-                        onChange={() => toggleIndexer(idx.id)}
-                        className="rounded bg-zinc-950 border-zinc-700 text-blue-500 focus:ring-0 cursor-pointer"
-                      />
-                    </td>
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-zinc-800 bg-zinc-950/50 text-zinc-400 font-medium">
+                    <th className="py-3 px-4">Indexer Name</th>
+                    <th className="py-3 px-4">Protocol</th>
+                    <th className="py-3 px-4">Priority</th>
+                    <th className="py-3 px-4">Latency</th>
+                    <th className="py-3 px-4">Last Sync</th>
+                    <th className="py-3 px-4 text-right">Enabled</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-zinc-800/60">
+                  {indexers.map((idx) => (
+                    <tr key={idx.id} className="hover:bg-zinc-800/40 text-zinc-300">
+                      <td className="py-3 px-4 font-semibold text-zinc-100 flex items-center gap-2">
+                        <span
+                          className={`w-2 h-2 rounded-full ${
+                            idx.status === 'online'
+                              ? 'bg-emerald-400'
+                              : idx.status === 'degraded'
+                              ? 'bg-amber-400'
+                              : 'bg-rose-400'
+                          }`}
+                        />
+                        {idx.name}
+                      </td>
+                      <td className="py-3 px-4 font-mono text-zinc-400">{idx.type}</td>
+                      <td className="py-3 px-4 font-mono">{idx.priority}</td>
+                      <td className="py-3 px-4 font-mono text-zinc-400">{idx.responseTimeMs}ms</td>
+                      <td className="py-3 px-4 text-zinc-500">{idx.lastSync}</td>
+                      <td className="py-3 px-4 text-right">
+                        <input
+                          type="checkbox"
+                          checked={idx.enabled}
+                          onChange={() => toggleIndexer(idx.id)}
+                          className="rounded bg-zinc-950 border-zinc-700 text-blue-500 focus:ring-0 cursor-pointer"
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       )}
@@ -219,70 +618,150 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
             </div>
           ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {downloadClients.map((client) => (
-              <div
-                key={client.id}
-                className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4 shadow-sm"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
-                      <Download className="w-4 h-4" />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {downloadClients.map((client) => (
+                <div
+                  key={client.id}
+                  className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4 shadow-sm"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+                        <Download className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-zinc-100">{client.name}</h4>
+                        <p className="text-xs text-zinc-400">{client.type}</p>
+                      </div>
                     </div>
-                    <div>
-                      <h4 className="text-sm font-bold text-zinc-100">{client.name}</h4>
-                      <p className="text-xs text-zinc-400">{client.type}</p>
-                    </div>
-                  </div>
-                  <span
-                    className={`text-[10px] font-mono px-2 py-0.5 rounded border capitalize ${
-                      client.enabled
-                        ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800/60'
-                        : 'bg-zinc-800 text-zinc-500 border-zinc-700'
-                    }`}
-                  >
-                    {client.enabled ? 'Enabled' : 'Disabled'}
-                  </span>
-                </div>
-
-                <div className="space-y-2 text-xs font-mono bg-zinc-950/60 p-3 rounded-lg border border-zinc-800">
-                  <div className="flex justify-between text-zinc-400">
-                    <span>Host / Endpoint:</span>
-                    <span className="text-zinc-200">
-                      {client.useSsl ? 'https://' : 'http://'}{client.host}:{client.port}
+                    <span
+                      className={`text-[10px] font-mono px-2 py-0.5 rounded border capitalize ${
+                        client.enabled
+                          ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800/60'
+                          : 'bg-zinc-800 text-zinc-500 border-zinc-700'
+                      }`}
+                    >
+                      {client.enabled ? 'Enabled' : 'Disabled'}
                     </span>
                   </div>
-                  <div className="flex justify-between text-zinc-400">
-                    <span>Category Path:</span>
-                    <span className="text-zinc-200">{client.categoryPath}</span>
-                  </div>
-                </div>
 
-                <div className="flex items-center justify-between pt-1">
-                  <div className="text-xs">
-                    {testResult?.id === client.id && (
-                      <span className="text-emerald-400 flex items-center gap-1 font-medium">
-                        <CheckCircle2 className="w-3.5 h-3.5" /> Connection verified!
+                  <div className="space-y-2 text-xs font-mono bg-zinc-950/60 p-3 rounded-lg border border-zinc-800">
+                    <div className="flex justify-between text-zinc-400">
+                      <span>Host / Endpoint:</span>
+                      <span className="text-zinc-200">
+                        {client.useSsl ? 'https://' : 'http://'}{client.host}:{client.port}
                       </span>
-                    )}
+                    </div>
+                    <div className="flex justify-between text-zinc-400">
+                      <span>Category Path:</span>
+                      <span className="text-zinc-200">{client.categoryPath}</span>
+                    </div>
                   </div>
-                  <button
-                    onClick={() => handleTestClient(client.id)}
-                    data-testid={`test-client-${client.id}`}
-                    className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium rounded-md transition-colors"
-                  >
-                    Test Connection
-                  </button>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <div className="text-xs">
+                      {testResult?.id === client.id && (
+                        <span className="text-emerald-400 flex items-center gap-1 font-medium">
+                          <CheckCircle2 className="w-3.5 h-3.5" /> Connection verified!
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleTestClient(client.id)}
+                      data-testid={`test-client-${client.id}`}
+                      className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium rounded-md transition-colors"
+                    >
+                      Test Connection
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
           )}
         </div>
       )}
 
-      {/* TAB 3: QUALITY PROFILES */}
+      {/* TAB 3: LIBRARY & STORAGE */}
+      {activeTab === 'library' && (
+        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 space-y-5 max-w-2xl">
+          <div>
+            <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+              <HardDrive className="w-4 h-4 text-amber-400" />
+              Library Storage & Background Polling
+            </h3>
+            <p className="text-xs text-zinc-400 mt-0.5">
+              Controls the root filesystem directory for imported books and background monitor intervals
+            </p>
+          </div>
+
+          <div className="space-y-4 text-xs">
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label htmlFor="library-root" className="block text-zinc-400 font-medium">
+                  Library Root Directory
+                </label>
+                <OverrideBadge settingKey="library_root" />
+              </div>
+              <input
+                id="library-root"
+                type="text"
+                value={librarySettings.rootPath}
+                disabled={isOverridden('library_root')}
+                onChange={(e) =>
+                  setLibrarySettings((prev) => ({ ...prev, rootPath: e.target.value }))
+                }
+                className={inputClass(isOverridden('library_root'))}
+              />
+              <OverrideNote settingKey="library_root" />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="staging-poll-interval" className="block text-zinc-400 font-medium">
+                    Staging Poll Interval
+                  </label>
+                  <OverrideBadge settingKey="staging_poll_interval" />
+                </div>
+                <input
+                  id="staging-poll-interval"
+                  type="text"
+                  value={librarySettings.stagingPollInterval}
+                  disabled={isOverridden('staging_poll_interval')}
+                  onChange={(e) =>
+                    setLibrarySettings((prev) => ({ ...prev, stagingPollInterval: e.target.value }))
+                  }
+                  className={inputClass(isOverridden('staging_poll_interval'))}
+                />
+                <OverrideNote settingKey="staging_poll_interval" />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="indexer-sync-interval" className="block text-zinc-400 font-medium">
+                    Indexer Sync Interval
+                  </label>
+                  <OverrideBadge settingKey="indexer_sync_interval" />
+                </div>
+                <input
+                  id="indexer-sync-interval"
+                  type="text"
+                  value={librarySettings.indexerSyncInterval}
+                  disabled={isOverridden('indexer_sync_interval')}
+                  onChange={(e) =>
+                    setLibrarySettings((prev) => ({ ...prev, indexerSyncInterval: e.target.value }))
+                  }
+                  className={inputClass(isOverridden('indexer_sync_interval'))}
+                />
+                <OverrideNote settingKey="indexer_sync_interval" />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: QUALITY PROFILES */}
       {activeTab === 'quality' && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 space-y-6 max-w-2xl">
           <div>
@@ -291,106 +770,193 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               Standard Library Quality Profile
             </h3>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Defines codec targets and accepted formats when transcoding and organizing audiobooks
+              Defines codec targets, file size limits, and accepted formats when evaluating and transcoding releases
             </p>
           </div>
 
           <div className="space-y-4 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="quality-profile-name" className="block text-zinc-400 font-medium">
+                    Profile Name
+                  </label>
+                  <OverrideBadge settingKey="quality_profile_name" />
+                </div>
+                <input
+                  id="quality-profile-name"
+                  type="text"
+                  value={qualityProfile.name}
+                  disabled={isOverridden('quality_profile_name')}
+                  onChange={(e) =>
+                    setQualityProfile((prev) => ({ ...prev, name: e.target.value }))
+                  }
+                  className={inputClass(isOverridden('quality_profile_name'))}
+                />
+                <OverrideNote settingKey="quality_profile_name" />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="allowed-languages" className="block text-zinc-400 font-medium">
+                    Allowed Languages (comma-separated)
+                  </label>
+                  <OverrideBadge settingKey="allowed_languages" />
+                </div>
+                <input
+                  id="allowed-languages"
+                  type="text"
+                  value={languagesInput}
+                  disabled={isOverridden('allowed_languages')}
+                  onChange={(e) => setLanguagesInput(e.target.value)}
+                  className={inputClass(isOverridden('allowed_languages'))}
+                />
+                <OverrideNote settingKey="allowed_languages" />
+              </div>
+            </div>
+
             <div>
-              <label className="block text-zinc-400 font-medium mb-1.5">
-                Allowed File Formats
-              </label>
-              <div className="flex gap-2">
-                {['EPUB', 'M4B', 'PDF', 'MP3'].map((fmt) => {
-                  const isChecked = qualityProfile.allowedFormats.includes(fmt as any);
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="block text-zinc-400 font-medium">Allowed File Formats</span>
+                <OverrideBadge settingKey="allowed_formats" />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {(['EPUB', 'M4B', 'PDF', 'MP3'] as FormatType[]).map((fmt) => {
+                  const isChecked = (qualityProfile.allowedFormats ?? []).includes(fmt);
+                  const locked = isOverridden('allowed_formats');
                   return (
                     <button
                       key={fmt}
                       type="button"
+                      disabled={locked}
                       onClick={() => {
                         setQualityProfile((prev) => ({
                           ...prev,
                           allowedFormats: isChecked
-                            ? prev.allowedFormats.filter((f) => f !== fmt)
-                            : [...prev.allowedFormats, fmt as any],
+                            ? (prev.allowedFormats ?? []).filter((f) => f !== fmt)
+                            : [...(prev.allowedFormats ?? []), fmt],
                         }));
                       }}
                       className={`px-3 py-1.5 rounded-md font-mono border transition-colors ${
                         isChecked
                           ? 'bg-blue-600/20 text-blue-300 border-blue-600/50'
                           : 'bg-zinc-950 text-zinc-500 border-zinc-800'
-                      }`}
+                      } ${locked ? 'opacity-60 cursor-not-allowed' : ''}`}
                     >
                       {fmt}
                     </button>
                   );
                 })}
               </div>
+              <OverrideNote settingKey="allowed_formats" />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
-                <label className="block text-zinc-400 font-medium mb-1">
-                  Audio Min Bitrate (kbps)
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="audio-min-bitrate" className="block text-zinc-400 font-medium">
+                    Audio Min Bitrate (kbps)
+                  </label>
+                  <OverrideBadge settingKey="audio_min_bitrate_kbps" />
+                </div>
                 <select
+                  id="audio-min-bitrate"
                   value={qualityProfile.audioMinBitrateKbps}
+                  disabled={isOverridden('audio_min_bitrate_kbps')}
                   onChange={(e) =>
                     setQualityProfile((prev) => ({
                       ...prev,
                       audioMinBitrateKbps: Number(e.target.value),
                     }))
                   }
-                  className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-md text-zinc-200 text-xs focus:outline-none"
+                  className={inputClass(isOverridden('audio_min_bitrate_kbps'))}
                 >
                   <option value={32}>32 kbps (Mono)</option>
                   <option value={64}>64 kbps (Standard Audiobook)</option>
+                  <option value={96}>96 kbps (Enhanced)</option>
                   <option value={128}>128 kbps (High Fidelity)</option>
                 </select>
+                <OverrideNote settingKey="audio_min_bitrate_kbps" />
               </div>
 
               <div>
-                <label className="block text-zinc-400 font-medium mb-1">
-                  Audio Target Bitrate (kbps)
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="audio-target-bitrate" className="block text-zinc-400 font-medium">
+                    Audio Target Bitrate (kbps)
+                  </label>
+                  <OverrideBadge settingKey="audio_target_bitrate_kbps" />
+                </div>
                 <select
+                  id="audio-target-bitrate"
                   value={qualityProfile.audioTargetBitrateKbps}
+                  disabled={isOverridden('audio_target_bitrate_kbps')}
                   onChange={(e) =>
                     setQualityProfile((prev) => ({
                       ...prev,
                       audioTargetBitrateKbps: Number(e.target.value),
                     }))
                   }
-                  className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-md text-zinc-200 text-xs focus:outline-none"
+                  className={inputClass(isOverridden('audio_target_bitrate_kbps'))}
                 >
                   <option value={64}>64 kbps AAC</option>
                   <option value={96}>96 kbps AAC</option>
                   <option value={128}>128 kbps AAC</option>
                 </select>
+                <OverrideNote settingKey="audio_target_bitrate_kbps" />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="max-file-size-mb" className="block text-zinc-400 font-medium">
+                    Max File Size (MB)
+                  </label>
+                  <OverrideBadge settingKey="max_file_size_mb" />
+                </div>
+                <input
+                  id="max-file-size-mb"
+                  type="number"
+                  min={0}
+                  value={qualityProfile.maxFileSizeMb}
+                  disabled={isOverridden('max_file_size_mb')}
+                  onChange={(e) =>
+                    setQualityProfile((prev) => ({
+                      ...prev,
+                      maxFileSizeMb: Number(e.target.value),
+                    }))
+                  }
+                  className={inputClass(isOverridden('max_file_size_mb'))}
+                />
+                <OverrideNote settingKey="max_file_size_mb" />
               </div>
             </div>
 
             <div className="pt-2">
-              <label className="flex items-center gap-2 cursor-pointer text-zinc-300">
-                <input
-                  type="checkbox"
-                  checked={qualityProfile.preferSingleFileM4b}
-                  onChange={(e) =>
-                    setQualityProfile((prev) => ({
-                      ...prev,
-                      preferSingleFileM4b: e.target.checked,
-                    }))
-                  }
-                  className="rounded bg-zinc-950 border-zinc-800 text-blue-500 focus:ring-0"
-                />
-                <span>Automatically mux multi-part MP3/FLAC into a single chaptered .m4b</span>
-              </label>
+              <div className="flex items-center justify-between">
+                <label className={`flex items-center gap-2 text-zinc-300 ${isOverridden('prefer_single_file_m4b') ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
+                  <input
+                    id="prefer-single-file-m4b"
+                    type="checkbox"
+                    checked={qualityProfile.preferSingleFileM4b}
+                    disabled={isOverridden('prefer_single_file_m4b')}
+                    onChange={(e) =>
+                      setQualityProfile((prev) => ({
+                        ...prev,
+                        preferSingleFileM4b: e.target.checked,
+                      }))
+                    }
+                    className="rounded bg-zinc-950 border-zinc-800 text-blue-500 focus:ring-0 disabled:cursor-not-allowed"
+                  />
+                  <span>Automatically mux multi-part MP3/FLAC into a single chaptered .m4b</span>
+                </label>
+                <OverrideBadge settingKey="prefer_single_file_m4b" />
+              </div>
+              <OverrideNote settingKey="prefer_single_file_m4b" />
             </div>
           </div>
         </div>
       )}
 
-      {/* TAB 4: AUTH & OIDC */}
+      {/* TAB 5: AUTH & OIDC */}
       {activeTab === 'auth' && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 space-y-6 max-w-2xl">
           <div>
@@ -404,56 +970,231 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
 
           <div className="space-y-4 text-xs">
-            <div className="flex items-center justify-between p-3 bg-zinc-950 border border-zinc-800 rounded-lg">
+            <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="font-semibold text-zinc-200 flex items-center gap-2">
+                    <label htmlFor="oidc-enabled">Enable OIDC Authentication</label>
+                    <OverrideBadge settingKey="oidc_enabled" />
+                  </div>
+                  <div className="text-zinc-500 text-[11px]">
+                    Redirects unauthenticated users to the identity provider
+                  </div>
+                </div>
+                <input
+                  id="oidc-enabled"
+                  type="checkbox"
+                  checked={authSettings.oidcEnabled}
+                  disabled={isOverridden('oidc_enabled')}
+                  onChange={(e) =>
+                    setAuthSettings((prev) => ({ ...prev, oidcEnabled: e.target.checked }))
+                  }
+                  className="rounded bg-zinc-900 border-zinc-700 text-blue-500 focus:ring-0 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                />
+              </div>
+              <OverrideNote settingKey="oidc_enabled" />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <div className="font-semibold text-zinc-200">Enable OIDC Authentication</div>
-                <div className="text-zinc-500 text-[11px]">
-                  Redirects unauthenticated users to the identity provider
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="oidc-issuer-url" className="block text-zinc-400 font-medium">
+                    OIDC Issuer URL
+                  </label>
+                  <OverrideBadge settingKey="oidc_issuer_url" />
+                </div>
+                <input
+                  id="oidc-issuer-url"
+                  type="url"
+                  value={authSettings.oidcIssuerUrl}
+                  disabled={isOverridden('oidc_issuer_url')}
+                  onChange={(e) =>
+                    setAuthSettings((prev) => ({ ...prev, oidcIssuerUrl: e.target.value }))
+                  }
+                  className={inputClass(isOverridden('oidc_issuer_url'))}
+                />
+                <OverrideNote settingKey="oidc_issuer_url" />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="oidc-client-id" className="block text-zinc-400 font-medium">
+                    OIDC Client ID
+                  </label>
+                  <OverrideBadge settingKey="oidc_client_id" />
+                </div>
+                <input
+                  id="oidc-client-id"
+                  type="text"
+                  value={authSettings.oidcClientId}
+                  disabled={isOverridden('oidc_client_id')}
+                  onChange={(e) =>
+                    setAuthSettings((prev) => ({ ...prev, oidcClientId: e.target.value }))
+                  }
+                  className={inputClass(isOverridden('oidc_client_id'))}
+                />
+                <OverrideNote settingKey="oidc_client_id" />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="oidc-client-secret" className="block text-zinc-400 font-medium">
+                    OIDC Client Secret
+                  </label>
+                  <OverrideBadge settingKey="oidc_client_secret" />
+                </div>
+                <input
+                  id="oidc-client-secret"
+                  type="password"
+                  placeholder={authSettings.oidcClientSecretConfigured ? '•••••••• (configured)' : 'Enter client secret'}
+                  value={oidcSecretDraft}
+                  disabled={isOverridden('oidc_client_secret')}
+                  onChange={(e) => setOidcSecretDraft(e.target.value)}
+                  className={inputClass(isOverridden('oidc_client_secret'))}
+                />
+                <OverrideNote settingKey="oidc_client_secret" />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="oidc-redirect-url" className="block text-zinc-400 font-medium">
+                    OIDC Redirect URL
+                  </label>
+                  <OverrideBadge settingKey="oidc_redirect_url" />
+                </div>
+                <input
+                  id="oidc-redirect-url"
+                  type="url"
+                  value={authSettings.oidcRedirectUrl ?? ''}
+                  disabled={isOverridden('oidc_redirect_url')}
+                  onChange={(e) =>
+                    setAuthSettings((prev) => ({ ...prev, oidcRedirectUrl: e.target.value }))
+                  }
+                  className={inputClass(isOverridden('oidc_redirect_url'))}
+                />
+                <OverrideNote settingKey="oidc_redirect_url" />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="oidc-admin-groups" className="block text-zinc-400 font-medium">
+                    OIDC Admin Groups
+                  </label>
+                  <OverrideBadge settingKey="oidc_admin_groups" />
+                </div>
+                <input
+                  id="oidc-admin-groups"
+                  type="text"
+                  placeholder="callimachus-admins"
+                  value={adminGroupsInput}
+                  disabled={isOverridden('oidc_admin_groups')}
+                  onChange={(e) => setAdminGroupsInput(e.target.value)}
+                  className={inputClass(isOverridden('oidc_admin_groups'))}
+                />
+                <OverrideNote settingKey="oidc_admin_groups" />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="oidc-curator-groups" className="block text-zinc-400 font-medium">
+                    OIDC Curator Groups
+                  </label>
+                  <OverrideBadge settingKey="oidc_curator_groups" />
+                </div>
+                <input
+                  id="oidc-curator-groups"
+                  type="text"
+                  placeholder="callimachus-curators"
+                  value={curatorGroupsInput}
+                  disabled={isOverridden('oidc_curator_groups')}
+                  onChange={(e) => setCuratorGroupsInput(e.target.value)}
+                  className={inputClass(isOverridden('oidc_curator_groups'))}
+                />
+                <OverrideNote settingKey="oidc_curator_groups" />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="oidc-default-role" className="block text-zinc-400 font-medium">
+                    OIDC Default Role
+                  </label>
+                  <OverrideBadge settingKey="oidc_default_role" />
+                </div>
+                <select
+                  id="oidc-default-role"
+                  value={authSettings.oidcDefaultRole ?? 'requester'}
+                  disabled={isOverridden('oidc_default_role')}
+                  onChange={(e) =>
+                    setAuthSettings((prev) => ({ ...prev, oidcDefaultRole: e.target.value }))
+                  }
+                  className={inputClass(isOverridden('oidc_default_role'))}
+                >
+                  <option value="guest">guest</option>
+                  <option value="requester">requester</option>
+                  <option value="curator">curator</option>
+                  <option value="admin">admin</option>
+                </select>
+                <OverrideNote settingKey="oidc_default_role" />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="session-timeout-hours" className="block text-zinc-400 font-medium">
+                    Session Timeout (hours)
+                  </label>
+                  <OverrideBadge settingKey="session_timeout_hours" />
+                </div>
+                <input
+                  id="session-timeout-hours"
+                  type="number"
+                  min={1}
+                  value={authSettings.sessionTimeoutHours}
+                  disabled={isOverridden('session_timeout_hours')}
+                  onChange={(e) =>
+                    setAuthSettings((prev) => ({
+                      ...prev,
+                      sessionTimeoutHours: Number(e.target.value),
+                    }))
+                  }
+                  className={inputClass(isOverridden('session_timeout_hours'))}
+                />
+                <OverrideNote settingKey="session_timeout_hours" />
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-zinc-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <label htmlFor="admin-password" className="text-zinc-400 font-medium">
+                  Local Admin Fallback Password
+                </label>
+                <div className="flex items-center gap-2">
+                  <OverrideBadge settingKey="admin_password" />
+                  <span
+                    className={`font-mono text-[11px] flex items-center gap-1 ${
+                      authSettings.localAuthEnabled ? 'text-emerald-400' : 'text-zinc-500'
+                    }`}
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    {authSettings.localAuthEnabled ? 'Configured' : 'Not configured'}
+                  </span>
                 </div>
               </div>
               <input
-                type="checkbox"
-                checked={authSettings.oidcEnabled}
-                onChange={(e) =>
-                  setAuthSettings((prev) => ({ ...prev, oidcEnabled: e.target.checked }))
-                }
-                className="rounded bg-zinc-900 border-zinc-700 text-blue-500 focus:ring-0 cursor-pointer"
+                id="admin-password"
+                type="password"
+                placeholder={authSettings.localAuthEnabled ? '•••••••• (set new password to update)' : 'Set local admin password'}
+                value={adminPasswordDraft}
+                disabled={isOverridden('admin_password')}
+                onChange={(e) => setAdminPasswordDraft(e.target.value)}
+                className={inputClass(isOverridden('admin_password'))}
               />
-            </div>
-
-            <div>
-              <label className="block text-zinc-400 font-medium mb-1">
-                OIDC Issuer URL
-              </label>
-              <input
-                type="text"
-                value={authSettings.oidcIssuerUrl}
-                onChange={(e) =>
-                  setAuthSettings((prev) => ({ ...prev, oidcIssuerUrl: e.target.value }))
-                }
-                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-md text-zinc-200 text-xs focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-zinc-400 font-medium mb-1">
-                OIDC Client ID
-              </label>
-              <input
-                type="text"
-                value={authSettings.oidcClientId}
-                onChange={(e) =>
-                  setAuthSettings((prev) => ({ ...prev, oidcClientId: e.target.value }))
-                }
-                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-md text-zinc-200 text-xs focus:outline-none"
-              />
-            </div>
-
-            <div className="pt-2 border-t border-zinc-800 flex items-center justify-between text-zinc-400">
-              <span>Local Admin Fallback Password:</span>
-              <span className="text-emerald-400 font-mono text-[11px] flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5" /> Configured & Encrypted (Argon2id)
-              </span>
+              <OverrideNote settingKey="admin_password" />
             </div>
           </div>
         </div>

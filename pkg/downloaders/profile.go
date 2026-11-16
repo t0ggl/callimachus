@@ -30,6 +30,7 @@ type QualityProfile struct {
 	AllowedFormats      []string
 	MinAudioBitrateKbps int
 	PreferSingleM4B     bool
+	MaxFileSizeMB       int
 	RejectPatterns      []*regexp.Regexp
 }
 
@@ -231,6 +232,14 @@ func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string)
 	if isAudioRelease(release, format) && bitrate > 0 && p.MinAudioBitrateKbps > 0 {
 		if bitrate < p.MinAudioBitrateKbps {
 			return false, fmt.Sprintf("audio bitrate %dkbps below minimum %dkbps", bitrate, p.MinAudioBitrateKbps)
+		}
+	}
+
+	// 5. Evaluate Max File Size
+	if p.MaxFileSizeMB > 0 && release.Size > 0 {
+		maxBytes := int64(p.MaxFileSizeMB) * 1024 * 1024
+		if release.Size > maxBytes {
+			return false, fmt.Sprintf("release size %d bytes exceeds maximum %d MB", release.Size, p.MaxFileSizeMB)
 		}
 	}
 

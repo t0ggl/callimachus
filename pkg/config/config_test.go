@@ -1,0 +1,229 @@
+package config
+
+import (
+	"context"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/t0ggl/callimachus/pkg/testutil"
+)
+
+func TestEnvVarName(t *testing.T) {
+	cases := map[string]string{
+		"library_root":            "CALLIMACHUS_LIBRARY_ROOT",
+		"prowlarr_url":            "CALLIMACHUS_PROWLARR_URL",
+		"prowlarr_api_key":        "CALLIMACHUS_PROWLARR_API_KEY",
+		"max_file_size_mb":        "CALLIMACHUS_MAX_FILE_SIZE_MB",
+		"allowed_formats":         "CALLIMACHUS_ALLOWED_FORMATS",
+		"audio_min_bitrate_kbps":  "CALLIMACHUS_AUDIO_MIN_BITRATE_KBPS",
+		"oidc.issuer-url":         "CALLIMACHUS_OIDC_ISSUER_URL",
+		"  session_timeout_hours ": "CALLIMACHUS_SESSION_TIMEOUT_HOURS",
+	}
+	for input, want := range cases {
+		if got := EnvVarName(input); got != want {
+			t.Errorf("EnvVarName(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestAllRegisteredSettings_AutoEnvOverridePrecedence(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Seed every registered setting in SQLite with DB-specific values.
+	for _, spec := range AllSettings() {
+		dbVal := "db-val-" + spec.Key
+		switch spec.Kind {
+		case KindInt:
+			dbVal = "111"
+		case KindBool:
+			dbVal = "false"
+		case KindDuration:
+			dbVal = "2m"
+		case KindStringList:
+			dbVal = `["DB1","DB2"]`
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES (?, ?)`, spec.Key, dbVal); err != nil {
+			t.Fatalf("seed setting %s: %v", spec.Key, err)
+		}
+	}
+
+	// Set CALLIMACHUS_{SETTING_NAME} for EVERY registered setting.
+	for _, spec := range AllSettings() {
+		envName := EnvVarName(spec.Key)
+		envVal := "env-val-" + spec.Key
+		switch spec.Kind {
+		case KindInt:
+			envVal = "777"
+		case KindBool:
+			envVal = "true"
+		case KindDuration:
+			envVal = "45s"
+		case KindStringList:
+			envVal = "ENV1,ENV2"
+		}
+		t.Setenv(envName, envVal)
+	}
+
+	resolved, err := Load(ctx, db, Overrides{
+		LibraryRoot: "/caller/books",
+		ProwlarrURL: "http://caller-prowlarr",
+	})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	// Every single registered setting must report overridden by CALLIMACHUS_{SETTING_NAME}.
+	for _, spec := range AllSettings() {
+		expectedEnv := EnvVarName(spec.Key)
+		info, ok := resolved.Overrides[spec.Key]
+		if !ok {
+			t.Fatalf("missing override metadata for %q", spec.Key)
+		}
+		if !info.IsOverridden {
+			t.Errorf("setting %q expected IsOverridden=true, got false", spec.Key)
+		}
+		if info.OverriddenBy != expectedEnv {
+			t.Errorf("setting %q OverriddenBy = %q, want %q", spec.Key, info.OverriddenBy, expectedEnv)
+		}
+		if info.EnvVar != expectedEnv {
+			t.Errorf("setting %q EnvVar = %q, want %q", spec.Key, info.EnvVar, expectedEnv)
+		}
+	}
+
+	// Spot-check effective values match env, NOT DB or caller.
+	s := resolved.Settings
+	if s.LibraryRoot != "env-val-library_root" {
+		t.Errorf("LibraryRoot = %q, want env-val-library_root", s.LibraryRoot)
+	}
+	if s.ProwlarrURL != "env-val-prowlarr_url" {
+		t.Errorf("ProwlarrURL = %q, want env-val-prowlarr_url", s.ProwlarrURL)
+	}
+	if s.ProwlarrAPIKey != "env-val-prowlarr_api_key" {
+		t.Errorf("ProwlarrAPIKey = %q, want env-val-prowlarr_api_key", s.ProwlarrAPIKey)
+	}
+	if s.ProwlarrSyncInterval != 45*time.Second {
+		t.Errorf("ProwlarrSyncInterval = %v, want 45s", s.ProwlarrSyncInterval)
+	}
+	if !reflect.DeepEqual(s.AllowedFormats, []string{"ENV1", "ENV2"}) {
+		t.Errorf("AllowedFormats = %v, want [ENV1 ENV2]", s.AllowedFormats)
+	}
+	if !reflect.DeepEqual(s.AllowedLanguages, []string{"env1", "env2"}) {
+		t.Errorf("AllowedLanguages = %v, want [env1 env2]", s.AllowedLanguages)
+	}
+	if s.AudioMinBitrateKbps != 777 || s.AudioTargetBitrateKbps != 777 || s.MaxFileSizeMB != 777 || s.SessionTimeoutHours != 777 {
+		t.Errorf("unexpected int values: min=%d target=%d maxSize=%d session=%d",
+			s.AudioMinBitrateKbps, s.AudioTargetBitrateKbps, s.MaxFileSizeMB, s.SessionTimeoutHours)
+	}
+	if !s.PreferSingleFileM4B || !s.OIDCEnabled {
+		t.Errorf("expected boolean env overrides true, got preferM4B=%v oidcEnabled=%v", s.PreferSingleFileM4B, s.OIDCEnabled)
+	}
+}
+
+func TestLoad_DatabaseAndDefaultFallbackWhenEnvUnset(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Persist a subset of settings in SQLite
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO settings (key, value) VALUES
+		('library_root', '/mnt/audiobooks'),
+		('prowlarr_url', 'http://prowlarr.local:9696/'),
+		('allowed_formats', '["EPUB","PDF"]'),
+		('max_file_size_mb', '4096'),
+		('audio_min_bitrate_kbps', '64')
+	`)
+	if err != nil {
+		t.Fatalf("insert settings: %v", err)
+	}
+
+	resolved, err := Load(ctx, db, Overrides{})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	s := resolved.Settings
+	if s.LibraryRoot != "/mnt/audiobooks" {
+		t.Errorf("LibraryRoot = %q, want /mnt/audiobooks", s.LibraryRoot)
+	}
+	if s.ProwlarrURL != "http://prowlarr.local:9696" {
+		t.Errorf("ProwlarrURL = %q, want http://prowlarr.local:9696", s.ProwlarrURL)
+	}
+	if !reflect.DeepEqual(s.AllowedFormats, []string{"EPUB", "PDF"}) {
+		t.Errorf("AllowedFormats = %v, want [EPUB PDF]", s.AllowedFormats)
+	}
+	if s.MaxFileSizeMB != 4096 {
+		t.Errorf("MaxFileSizeMB = %d, want 4096", s.MaxFileSizeMB)
+	}
+	if s.AudioMinBitrateKbps != 64 {
+		t.Errorf("AudioMinBitrateKbps = %d, want 64", s.AudioMinBitrateKbps)
+	}
+	// Default fallback for unset DB row
+	if s.AudioTargetBitrateKbps != 64 {
+		t.Errorf("AudioTargetBitrateKbps = %d, want 64 default", s.AudioTargetBitrateKbps)
+	}
+	if resolved.Overrides[KeyLibraryRoot].IsOverridden {
+		t.Errorf("expected library_root IsOverridden=false when env var unset")
+	}
+}
+
+func TestSaveNonOverridden_ProtectsEnvOverriddenKeys(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	t.Setenv("CALLIMACHUS_PROWLARR_URL", "http://env-prowlarr:9696")
+
+	resolved, err := SaveNonOverridden(ctx, db, map[string]string{
+		KeyProwlarrURL:   "http://attempted-db-overwrite:9696",
+		KeyLibraryRoot:   "/data/library",
+		KeyMaxFileSizeMB: "1536",
+		KeyAllowedFormats: "EPUB,M4B,MP3",
+	}, Overrides{})
+	if err != nil {
+		t.Fatalf("SaveNonOverridden failed: %v", err)
+	}
+
+	if resolved.Settings.ProwlarrURL != "http://env-prowlarr:9696" {
+		t.Errorf("ProwlarrURL = %q, want env value", resolved.Settings.ProwlarrURL)
+	}
+	if resolved.Settings.LibraryRoot != "/data/library" {
+		t.Errorf("LibraryRoot = %q, want /data/library", resolved.Settings.LibraryRoot)
+	}
+	if resolved.Settings.MaxFileSizeMB != 1536 {
+		t.Errorf("MaxFileSizeMB = %d, want 1536", resolved.Settings.MaxFileSizeMB)
+	}
+	if !reflect.DeepEqual(resolved.Settings.AllowedFormats, []string{"EPUB", "M4B", "MP3"}) {
+		t.Errorf("AllowedFormats = %v, want [EPUB M4B MP3]", resolved.Settings.AllowedFormats)
+	}
+
+	// Verify prowlarr_url was NOT written into the DB settings table
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM settings WHERE key = 'prowlarr_url'`).Scan(&count); err != nil {
+		t.Fatalf("query settings count: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected overridden key prowlarr_url NOT to be persisted, found %d rows", count)
+	}
+}
+
+func TestResolveBootstrap_EnvOverridesFlags(t *testing.T) {
+	t.Setenv("CALLIMACHUS_CONFIG_DIR", "/env/config")
+	t.Setenv("CALLIMACHUS_DATABASE_PATH", "/env/db/app.db")
+	t.Setenv("CALLIMACHUS_HOST", "127.0.0.1")
+	t.Setenv("CALLIMACHUS_PORT", "9090")
+
+	boot := ResolveBootstrap("/flag/config", "/flag/db.db", "0.0.0.0", 8080, true)
+	if boot.ConfigDir != "/env/config" {
+		t.Errorf("ConfigDir = %q, want /env/config", boot.ConfigDir)
+	}
+	if boot.DBPath != "/env/db/app.db" {
+		t.Errorf("DBPath = %q, want /env/db/app.db", boot.DBPath)
+	}
+	if boot.Host != "127.0.0.1" {
+		t.Errorf("Host = %q, want 127.0.0.1", boot.Host)
+	}
+	if boot.Port != 9090 {
+		t.Errorf("Port = %d, want 9090", boot.Port)
+	}
+}
