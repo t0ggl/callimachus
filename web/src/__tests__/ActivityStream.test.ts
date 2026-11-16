@@ -1,6 +1,6 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { useSSE } from '../hooks/useSSE';
+import { useActivityStream } from '../hooks/useActivityStream';
 import { testTranscodeJobs, testDownloads } from './testFixtures';
 
 // Mock EventSource
@@ -47,7 +47,7 @@ class MockEventSource {
   }
 }
 
-describe('useSSE Hook', () => {
+describe('useActivityStream Hook', () => {
   beforeEach(() => {
     MockEventSource.instances = [];
     // @ts-ignore
@@ -62,9 +62,9 @@ describe('useSSE Hook', () => {
     vi.restoreAllMocks();
   });
 
-  it('connects to SSE endpoint and registers listeners', async () => {
+  it('connects to activity stream endpoint and registers listeners', async () => {
     const { result } = renderHook(() =>
-      useSSE({
+      useActivityStream({
         url: '/api/events',
         initialTranscodeJobs: testTranscodeJobs,
         initialDownloads: testDownloads,
@@ -87,7 +87,7 @@ describe('useSSE Hook', () => {
 
   it('updates transcode job state when receiving transcode_progress event', () => {
     const { result } = renderHook(() =>
-      useSSE({
+      useActivityStream({
         url: '/api/events',
         initialTranscodeJobs: testTranscodeJobs,
         initialDownloads: testDownloads,
@@ -116,7 +116,7 @@ describe('useSSE Hook', () => {
 
   it('updates download item state when receiving download_progress event', () => {
     const { result } = renderHook(() =>
-      useSSE({
+      useActivityStream({
         url: '/api/events',
         initialTranscodeJobs: testTranscodeJobs,
         initialDownloads: testDownloads,
@@ -145,7 +145,7 @@ describe('useSSE Hook', () => {
 
   it('handles manual transcode and download updates gracefully', () => {
     const { result } = renderHook(() =>
-      useSSE({
+      useActivityStream({
         url: '/api/events',
         initialTranscodeJobs: testTranscodeJobs,
         initialDownloads: testDownloads,

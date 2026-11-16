@@ -13,8 +13,43 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
+
+func createTestSessionCookie(t *testing.T, srv *Server, userID, username, role string) *http.Cookie {
+	t.Helper()
+	if srv.db != nil {
+		if _, err := srv.db.ExecContext(context.Background(),
+			`INSERT OR REPLACE INTO users (id, username, email, role, auth_source) VALUES (?, ?, ?, ?, 'oidc')`,
+			userID, username, username+"@example.com", role,
+		); err != nil {
+			t.Fatalf("seed test user: %v", err)
+		}
+	}
+	sess, err := srv.sessionMgr.CreateSession(userID, username, role)
+	if err != nil {
+		t.Fatalf("create test session: %v", err)
+	}
+	return &http.Cookie{
+		Name:  auth.DefaultCookieConfig().Name,
+		Value: sess.Token,
+	}
+}
+
+func assertUnauthorizedJSON(t *testing.T, resp *http.Response, endpoint string) {
+	t.Helper()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for %s, got %d", endpoint, resp.StatusCode)
+	}
+	var errMap map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&errMap); err != nil {
+		t.Fatalf("decode 401 JSON for %s: %v", endpoint, err)
+	}
+	if errMap["error"] != "unauthorized" {
+		t.Errorf("expected error='unauthorized' for %s, got %q", endpoint, errMap["error"])
+	}
+}
 
 func TestServer_StartupHealthAndShutdown(t *testing.T) {
 	tempDir := t.TempDir()
@@ -50,6 +85,11 @@ func TestServer_StartupHealthAndShutdown(t *testing.T) {
 	}
 
 	baseURL := "http://" + srv.Addr()
+	noRedirectClient := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 
 	// 1. Verify /healthz endpoint
 	resp, err := http.Get(baseURL + "/healthz")
@@ -80,39 +120,109 @@ func TestServer_StartupHealthAndShutdown(t *testing.T) {
 		t.Fatalf("expected 200 OK from /api/health, got %d", apiHealthResp.StatusCode)
 	}
 
-	// 3. Verify SPA frontend routing: "/" should return 200 with HTML
-	spaResp, err := http.Get(baseURL + "/")
+	// 3. Unauthenticated web root "/" and SPA subpaths must redirect to /api/auth/oidc/login
+	unauthRootResp, err := noRedirectClient.Get(baseURL + "/")
 	if err != nil {
 		t.Fatalf("GET / failed: %v", err)
 	}
-	defer spaResp.Body.Close()
+	unauthRootResp.Body.Close()
+	if unauthRootResp.StatusCode != http.StatusFound {
+		t.Fatalf("expected 302 redirect for unauthenticated /, got %d", unauthRootResp.StatusCode)
+	}
+	if loc := unauthRootResp.Header.Get("Location"); loc != "/api/auth/oidc/login" {
+		t.Errorf("expected redirect to /api/auth/oidc/login, got %q", loc)
+	}
 
+	unauthRouteResp, err := noRedirectClient.Get(baseURL + "/requests")
+	if err != nil {
+		t.Fatalf("GET /requests failed: %v", err)
+	}
+	unauthRouteResp.Body.Close()
+	if unauthRouteResp.StatusCode != http.StatusFound {
+		t.Fatalf("expected 302 redirect for unauthenticated /requests, got %d", unauthRouteResp.StatusCode)
+	}
+	if loc := unauthRouteResp.Header.Get("Location"); loc != "/api/auth/oidc/login?redirect=%2Frequests" {
+		t.Errorf("expected redirect to /api/auth/oidc/login?redirect=%%2Frequests, got %q", loc)
+	}
+
+	// Unauthenticated static asset requests must also redirect without exposing SPA assets
+	unauthAssetResp, err := noRedirectClient.Get(baseURL + "/favicon.svg")
+	if err != nil {
+		t.Fatalf("GET /favicon.svg failed: %v", err)
+	}
+	unauthAssetResp.Body.Close()
+	if unauthAssetResp.StatusCode != http.StatusFound {
+		t.Fatalf("expected 302 redirect for unauthenticated /favicon.svg, got %d", unauthAssetResp.StatusCode)
+	}
+
+	// 4. All protected /api/* endpoints return 401 {"error":"unauthorized"} when unauthenticated
+	unauthAPIs := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/books"},
+		{http.MethodGet, "/api/books/123"},
+		{http.MethodGet, "/api/authors"},
+		{http.MethodGet, "/api/authors/123"},
+		{http.MethodGet, "/api/series"},
+		{http.MethodGet, "/api/series/123"},
+		{http.MethodGet, "/api/activity"},
+		{http.MethodGet, "/api/settings"},
+		{http.MethodPut, "/api/settings"},
+		{http.MethodPost, "/api/settings/prowlarr/sync"},
+		{http.MethodGet, "/api/events"},
+		{http.MethodGet, "/api/requests"},
+		{http.MethodGet, "/api/auth/me"},
+		{http.MethodPost, "/api/auth/logout"},
+		{http.MethodPost, "/api/auth/login"},
+		{http.MethodGet, "/api/nonexistent-route"},
+	}
+	for _, tc := range unauthAPIs {
+		req, _ := http.NewRequest(tc.method, baseURL+tc.path, nil)
+		r, err := noRedirectClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s failed: %v", tc.method, tc.path, err)
+		}
+		assertUnauthorizedJSON(t, r, tc.method+" "+tc.path)
+		r.Body.Close()
+	}
+
+	// 5. Create authenticated session cookie and verify SPA + API endpoints succeed
+	sessionCookie := createTestSessionCookie(t, srv, "test-admin-1", "testadmin", auth.RoleAdmin)
+
+	authGet := func(path string) *http.Response {
+		req, _ := http.NewRequest(http.MethodGet, baseURL+path, nil)
+		req.AddCookie(sessionCookie)
+		r, err := noRedirectClient.Do(req)
+		if err != nil {
+			t.Fatalf("authenticated GET %s failed: %v", path, err)
+		}
+		return r
+	}
+
+	// Authenticated "/" returns 200 with HTML
+	spaResp := authGet("/")
+	defer spaResp.Body.Close()
 	if spaResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 OK for root path, got %d", spaResp.StatusCode)
+		t.Fatalf("expected 200 OK for authenticated root path, got %d", spaResp.StatusCode)
 	}
 	body, _ := io.ReadAll(spaResp.Body)
 	if !strings.Contains(string(body), "<html") && !strings.Contains(string(body), "<!DOCTYPE") {
 		t.Errorf("expected HTML content on root path, got: %s", string(body))
 	}
 
-	// 4. Verify SPA frontend routing for non-API subpath: "/requests" returns HTML
-	clientRouteResp, err := http.Get(baseURL + "/requests")
-	if err != nil {
-		t.Fatalf("GET /requests failed: %v", err)
-	}
+	// Authenticated SPA subpath "/requests" returns HTML
+	clientRouteResp := authGet("/requests")
 	defer clientRouteResp.Body.Close()
 	if clientRouteResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 OK for client route /requests, got %d", clientRouteResp.StatusCode)
+		t.Fatalf("expected 200 OK for authenticated client route /requests, got %d", clientRouteResp.StatusCode)
 	}
 
-	// 5. Verify unknown /api/ route returns 404 JSON, NOT SPA HTML
-	unknownAPIResp, err := http.Get(baseURL + "/api/nonexistent-route")
-	if err != nil {
-		t.Fatalf("GET /api/nonexistent-route failed: %v", err)
-	}
+	// Authenticated unknown /api/ route returns 404 JSON, NOT SPA HTML
+	unknownAPIResp := authGet("/api/nonexistent-route")
 	defer unknownAPIResp.Body.Close()
 	if unknownAPIResp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404 Not Found for unknown API route, got %d", unknownAPIResp.StatusCode)
+		t.Fatalf("expected 404 Not Found for authenticated unknown API route, got %d", unknownAPIResp.StatusCode)
 	}
 	var errMap map[string]string
 	if err := json.NewDecoder(unknownAPIResp.Body).Decode(&errMap); err != nil {
@@ -122,29 +232,16 @@ func TestServer_StartupHealthAndShutdown(t *testing.T) {
 		t.Errorf("expected non-empty error message in 404 JSON response")
 	}
 
-	// 6. Verify Auth endpoints are registered (e.g. /api/auth/me unauthenticated returns 401)
-	authMeResp, err := http.Get(baseURL + "/api/auth/me")
-	if err != nil {
-		t.Fatalf("GET /api/auth/me failed: %v", err)
-	}
-	defer authMeResp.Body.Close()
-	if authMeResp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("expected 401 Unauthorized for unauthenticated /api/auth/me, got %d", authMeResp.StatusCode)
-	}
-
-	// 7. Verify real catalog, activity, and settings APIs return JSON
+	// Authenticated catalog, activity, and settings APIs return 200 JSON
 	for _, ep := range []string{"/api/books", "/api/authors", "/api/series", "/api/activity", "/api/settings"} {
-		res, err := http.Get(baseURL + ep)
-		if err != nil {
-			t.Fatalf("GET %s failed: %v", ep, err)
-		}
-		defer res.Body.Close()
+		res := authGet(ep)
 		if res.StatusCode != http.StatusOK {
-			t.Errorf("expected 200 OK for %s, got %d", ep, res.StatusCode)
+			t.Errorf("expected 200 OK for authenticated %s, got %d", ep, res.StatusCode)
 		}
+		res.Body.Close()
 	}
 
-	// 8. Verify Graceful Server Shutdown
+	// 6. Verify Graceful Server Shutdown
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 
@@ -188,8 +285,27 @@ func TestServer_FallbackHTMLWhenDistEmpty(t *testing.T) {
 	}()
 
 	baseURL := "http://" + srv.Addr()
+	noRedirectClient := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 
-	resp, err := http.Get(baseURL + "/")
+	// Unauthenticated "/" must redirect instead of exposing FallbackHTML
+	unauthResp, err := noRedirectClient.Get(baseURL + "/")
+	if err != nil {
+		t.Fatalf("unauthenticated GET / failed: %v", err)
+	}
+	unauthResp.Body.Close()
+	if unauthResp.StatusCode != http.StatusFound {
+		t.Fatalf("expected 302 redirect for unauthenticated GET /, got %d", unauthResp.StatusCode)
+	}
+
+	// Authenticated "/" with empty FS serves FallbackHTML
+	cookie := createTestSessionCookie(t, srv, "fallback-user", "fallbackuser", auth.RoleAdmin)
+	req, _ := http.NewRequest(http.MethodGet, baseURL+"/", nil)
+	req.AddCookie(cookie)
+	resp, err := noRedirectClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET / with empty FS failed: %v", err)
 	}
@@ -294,14 +410,24 @@ func TestServer_OIDCAndAuthWiring(t *testing.T) {
 
 	baseURL := "http://" + srv.Addr()
 
-	// 1. Verify OIDC login initiates redirect to mock authorization endpoint
-	client := &http.Client{
+	// 1. Visiting web root "/" without a session redirects to /api/auth/oidc/login -> OIDC provider
+	noRedirectClient := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
 
-	resp, err := client.Get(baseURL + "/api/auth/oidc/login")
+	rootResp, err := noRedirectClient.Get(baseURL + "/")
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	rootResp.Body.Close()
+	if rootResp.StatusCode != http.StatusFound || rootResp.Header.Get("Location") != "/api/auth/oidc/login" {
+		t.Fatalf("expected 302 -> /api/auth/oidc/login from /, got %d %q", rootResp.StatusCode, rootResp.Header.Get("Location"))
+	}
+
+	// Following the internal redirect reaches /api/auth/oidc/login and redirects to mock OIDC provider
+	resp, err := noRedirectClient.Get(baseURL + rootResp.Header.Get("Location"))
 	if err != nil {
 		t.Fatalf("GET /api/auth/oidc/login failed: %v", err)
 	}
@@ -315,7 +441,24 @@ func TestServer_OIDCAndAuthWiring(t *testing.T) {
 		t.Errorf("expected redirect to mock OIDC auth endpoint, got: %s", loc)
 	}
 
-	// 2. Verify fallback password authentication
+	// 2. Verify /api/events rejects unauthenticated and invalid cookies with 401 JSON
+	evUnauth, err := noRedirectClient.Get(baseURL + "/api/events")
+	if err != nil {
+		t.Fatalf("GET /api/events unauth failed: %v", err)
+	}
+	assertUnauthorizedJSON(t, evUnauth, "/api/events")
+	evUnauth.Body.Close()
+
+	evBadCookieReq, _ := http.NewRequest(http.MethodGet, baseURL+"/api/events", nil)
+	evBadCookieReq.AddCookie(&http.Cookie{Name: auth.DefaultCookieConfig().Name, Value: "invalid-token"})
+	evBadCookieResp, err := noRedirectClient.Do(evBadCookieReq)
+	if err != nil {
+		t.Fatalf("GET /api/events bogus cookie failed: %v", err)
+	}
+	assertUnauthorizedJSON(t, evBadCookieResp, "/api/events (bogus cookie)")
+	evBadCookieResp.Body.Close()
+
+	// 3. Verify fallback password authentication and authenticated SSE stream
 	loginBody := strings.NewReader(`{"password":"supersecretfallback"}`)
 	loginResp, err := http.Post(baseURL+"/api/auth/login", "application/json", loginBody)
 	if err != nil {
@@ -326,6 +469,34 @@ func TestServer_OIDCAndAuthWiring(t *testing.T) {
 	if loginResp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 OK from /api/auth/login, got %d", loginResp.StatusCode)
 	}
+	var sessionCookie *http.Cookie
+	for _, c := range loginResp.Cookies() {
+		if c.Name == auth.DefaultCookieConfig().Name {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil || sessionCookie.Value == "" {
+		t.Fatalf("expected session cookie from fallback login")
+	}
+
+	// Authenticated /api/events connects with 200 text/event-stream
+	sseCtx, sseCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer sseCancel()
+	sseReq, _ := http.NewRequestWithContext(sseCtx, http.MethodGet, baseURL+"/api/events", nil)
+	sseReq.AddCookie(sessionCookie)
+	sseResp, err := noRedirectClient.Do(sseReq)
+	if err != nil {
+		t.Fatalf("authenticated GET /api/events failed: %v", err)
+	}
+	defer sseResp.Body.Close()
+	if sseResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK from authenticated /api/events, got %d", sseResp.StatusCode)
+	}
+	if ct := sseResp.Header.Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Errorf("expected text/event-stream Content-Type, got %q", ct)
+	}
+	sseCancel()
 }
 
 func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
@@ -359,8 +530,19 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 		t.Fatalf("seed db setting: %v", err)
 	}
 
-	// 2. GET /api/settings returns resolved values + override metadata + no raw secrets
+	sessionCookie := createTestSessionCookie(t, srv, "settings-admin", "settingsadmin", auth.RoleAdmin)
+
+	// 2. Unauthenticated GET /api/settings returns 401
+	unauthReq := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	unauthRec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated GET /api/settings status = %d, want 401", unauthRec.Code)
+	}
+
+	// 3. Authenticated GET /api/settings returns resolved values + override metadata + no raw secrets
 	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	req.AddCookie(sessionCookie)
 	rec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -396,7 +578,7 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 		t.Errorf("overrides[audio_min_bitrate_kbps] = %+v, want IsOverridden=false", ov)
 	}
 
-	// 3. PUT /api/settings persists non-overridden fields and protects overridden ones
+	// 4. Authenticated PUT /api/settings persists non-overridden fields and protects overridden ones
 	putBody := `{
 		"library": {"rootPath": "/ui/attempted-override", "stagingPollInterval": "10s"},
 		"prowlarr": {"url": "http://ui-attempted:9696"},
@@ -404,6 +586,7 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 	}`
 	putReq := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(putBody))
 	putReq.Header.Set("Content-Type", "application/json")
+	putReq.AddCookie(sessionCookie)
 	putRec := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(putRec, putReq)
 	if putRec.Code != http.StatusOK {

@@ -139,6 +139,14 @@ func (h *AuthHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusBadRequest, "password is required")
 }
 
+// IsSafeRedirectTarget reports whether target is a safe relative application path
+// (starts with "/" and is not protocol-relative "//" or "/\").
+func IsSafeRedirectTarget(target string) bool {
+	return strings.HasPrefix(target, "/") &&
+		!strings.HasPrefix(target, "//") &&
+		!strings.HasPrefix(target, `/\`)
+}
+
 func (h *AuthHandler) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 	if h.oidcClient == nil {
 		writeError(w, http.StatusBadRequest, "OIDC authentication is not configured")
@@ -159,7 +167,7 @@ func (h *AuthHandler) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 	state := hex.EncodeToString(stateBytes)
 
 	redirectTarget := r.URL.Query().Get("redirect")
-	if redirectTarget == "" || !strings.HasPrefix(redirectTarget, "/") {
+	if !IsSafeRedirectTarget(redirectTarget) {
 		redirectTarget = "/"
 	}
 
@@ -243,7 +251,7 @@ func (h *AuthHandler) handleOIDCCallback(w http.ResponseWriter, r *http.Request)
 	h.sessionMgr.SetSessionCookie(w, sess.Token, sess.ExpiresAt)
 
 	target := stateData.RedirectTarget
-	if target == "" || !strings.HasPrefix(target, "/") {
+	if !IsSafeRedirectTarget(target) {
 		target = "/"
 	}
 

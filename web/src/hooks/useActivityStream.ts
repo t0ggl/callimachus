@@ -1,22 +1,22 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { TranscodeJob, DownloadItem } from '../types';
 
-export interface SSEMessage {
+export interface ActivityStreamEvent {
   type: 'transcode_progress' | 'download_progress' | 'job_status_change';
   payload: any;
 }
 
-interface UseSSEOptions {
+interface ActivityStreamOptions {
   url?: string;
   initialTranscodeJobs?: TranscodeJob[];
   initialDownloads?: DownloadItem[];
 }
 
-export function useSSE({
+export function useActivityStream({
   url = '/api/events',
   initialTranscodeJobs = [],
   initialDownloads = [],
-}: UseSSEOptions = {}) {
+}: ActivityStreamOptions = {}) {
   const [transcodeJobs, setTranscodeJobs] = useState<TranscodeJob[]>(initialTranscodeJobs);
   const [downloads, setDownloads] = useState<DownloadItem[]>(initialDownloads);
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'connecting' | 'disconnected'>('connecting');
@@ -57,7 +57,7 @@ export function useSSE({
             const data = JSON.parse(e.data);
             handleTranscodeUpdate(data);
           } catch (err) {
-            console.error('Failed to parse SSE transcode progress event', err);
+            console.error('Failed to parse activity stream transcode progress event', err);
           }
         });
 
@@ -66,7 +66,7 @@ export function useSSE({
             const data = JSON.parse(e.data);
             handleDownloadUpdate(data);
           } catch (err) {
-            console.error('Failed to parse SSE download progress event', err);
+            console.error('Failed to parse activity stream download progress event', err);
           }
         });
 

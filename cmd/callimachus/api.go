@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/config"
 )
 
@@ -662,6 +663,23 @@ func (s *Server) handleSyncProwlarr(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
+	if user, ok := auth.UserFromContext(r.Context()); !ok || user == nil {
+		authenticated := false
+		if s.sessionMgr != nil {
+			if token := s.sessionMgr.GetSessionToken(r); token != "" {
+				if _, sOK := s.sessionMgr.GetSession(token); sOK {
+					authenticated = true
+				}
+			}
+		}
+		if !authenticated {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)

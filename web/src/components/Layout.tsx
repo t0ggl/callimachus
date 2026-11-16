@@ -168,14 +168,13 @@ export const Layout: React.FC<LayoutProps> = ({
                 </button>
               </>
             ) : (
-              <a
-                href="/api/auth/oidc/login"
-                data-testid="login-link"
-                className="w-full py-1.5 px-3 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-300 rounded text-xs font-medium flex items-center justify-center gap-2 transition-colors"
+              <div
+                data-testid="auth-verifying"
+                className="w-full py-1.5 px-2 text-zinc-500 text-xs flex items-center gap-2"
               >
-                <ShieldCheck className="w-3.5 h-3.5" />
-                Sign In
-              </a>
+                <ShieldCheck className="w-3.5 h-3.5 text-zinc-600" />
+                <span>Verifying session...</span>
+              </div>
             )}
           </div>
         </div>

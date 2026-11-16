@@ -283,3 +283,25 @@ func TestHandler_RegisterRoutes(t *testing.T) {
 		t.Errorf("Expected 401 on registered route, got %d", rec.Code)
 	}
 }
+
+func TestHandler_OIDCOpenRedirectRejected(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		target string
+		want   bool
+	}{
+		{"/", true},
+		{"/requests?status=pending", true},
+		{"//evil.com", false},
+		{`/\evil.com`, false},
+		{"https://evil.com", false},
+		{"", false},
+	}
+
+	for _, tc := range cases {
+		if got := IsSafeRedirectTarget(tc.target); got != tc.want {
+			t.Errorf("IsSafeRedirectTarget(%q) = %v, want %v", tc.target, got, tc.want)
+		}
+	}
+}

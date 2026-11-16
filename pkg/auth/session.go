@@ -233,37 +233,56 @@ func UserFromContext(ctx context.Context) (*User, bool) {
 func Authenticate(sessionMgr *SessionManager, db *database.DB) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token := sessionMgr.GetSessionToken(r)
-			if token != "" {
-				if sess, ok := sessionMgr.GetSession(token); ok {
-					var user *User
-					if db != nil {
-						var u User
-						var sub sql.NullString
-						err := db.QueryRowContext(r.Context(),
-							"SELECT id, username, email, role, auth_source, oidc_sub, created_at FROM users WHERE id = ?",
-							sess.UserID,
-						).Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.AuthProvider, &sub, &u.CreatedAt)
-						if err == nil {
-							if sub.Valid {
-								u.SubjectID = sub.String
+			if sessionMgr != nil {
+				token := sessionMgr.GetSessionToken(r)
+				if token != "" {
+					if sess, ok := sessionMgr.GetSession(token); ok {
+						var user *User
+						if db != nil {
+							var u User
+							var sub sql.NullString
+							err := db.QueryRowContext(r.Context(),
+								"SELECT id, username, email, role, auth_source, oidc_sub, created_at FROM users WHERE id = ?",
+								sess.UserID,
+							).Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.AuthProvider, &sub, &u.CreatedAt)
+							if err == nil {
+								if sub.Valid {
+									u.SubjectID = sub.String
+								}
+								user = &u
 							}
-							user = &u
 						}
-					}
-					if user == nil && db == nil {
-						user = &User{
-							ID:           sess.UserID,
-							Username:     sess.Username,
-							Role:         sess.Role,
-							AuthProvider: "session",
-							CreatedAt:    sess.ExpiresAt.Add(-sessionMgr.ttl),
+						if user == nil && db == nil {
+							user = &User{
+								ID:           sess.UserID,
+								Username:     sess.Username,
+								Role:         sess.Role,
+								AuthProvider: "session",
+								CreatedAt:    sess.ExpiresAt.Add(-sessionMgr.ttl),
+							}
 						}
-					}
-					if user != nil {
-						r = r.WithContext(ContextWithUser(r.Context(), user))
+						if user != nil {
+							r = r.WithContext(ContextWithUser(r.Context(), user))
+						}
 					}
 				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// RequireAuth returns a middleware that enforces an authenticated user in the request context.
+// Unauthenticated requests are rejected with HTTP 401 Unauthorized and JSON {"error":"unauthorized"}.
+func RequireAuth() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, ok := UserFromContext(r.Context())
+			if !ok || user == nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+				return
 			}
 			next.ServeHTTP(w, r)
 		})

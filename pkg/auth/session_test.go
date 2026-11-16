@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -300,5 +301,72 @@ func TestMiddleware_NilDBFallback(t *testing.T) {
 	}
 	if observedUser == nil || observedUser.Username != "bob" || observedUser.Role != RoleAdmin {
 		t.Errorf("Expected fallback user populated in context, got %+v", observedUser)
+	}
+}
+
+func TestMiddleware_RequireAuth(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	sm := NewSessionManager(1*time.Hour, DefaultCookieConfig())
+	defer sm.Close()
+
+	_, err := db.ExecContext(context.Background(),
+		`INSERT INTO users (id, username, email, role, auth_source) VALUES ('u-1', 'reader', 'reader@example.com', 'requester', 'oidc')`,
+	)
+	if err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	sess, err := sm.CreateSession("u-1", "reader", RoleRequester)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	okHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, _ := UserFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok:" + user.Username))
+	})
+
+	protected := Authenticate(sm, db)(RequireAuth()(okHandler))
+
+	// 1. Unauthenticated -> 401 JSON {"error":"unauthorized"}
+	reqUnauth := httptest.NewRequest(http.MethodGet, "/api/books", nil)
+	recUnauth := httptest.NewRecorder()
+	protected.ServeHTTP(recUnauth, reqUnauth)
+	if recUnauth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", recUnauth.Code)
+	}
+	if recUnauth.Header().Get("Content-Type") != "application/json" {
+		t.Errorf("expected application/json Content-Type, got %q", recUnauth.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(recUnauth.Body.String(), `"unauthorized"`) {
+		t.Errorf("expected unauthorized JSON error, got %s", recUnauth.Body.String())
+	}
+
+	// 2. Invalid session cookie -> 401
+	reqBad := httptest.NewRequest(http.MethodGet, "/api/books", nil)
+	reqBad.AddCookie(&http.Cookie{Name: sm.cookie.Name, Value: "bogus-token"})
+	recBad := httptest.NewRecorder()
+	protected.ServeHTTP(recBad, reqBad)
+	if recBad.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for bogus cookie, got %d", recBad.Code)
+	}
+
+	// 3. Valid session cookie -> 200 OK
+	reqOK := httptest.NewRequest(http.MethodGet, "/api/books", nil)
+	reqOK.AddCookie(&http.Cookie{Name: sm.cookie.Name, Value: sess.Token})
+	recOK := httptest.NewRecorder()
+	protected.ServeHTTP(recOK, reqOK)
+	if recOK.Code != http.StatusOK || recOK.Body.String() != "ok:reader" {
+		t.Fatalf("expected 200 ok:reader, got %d %q", recOK.Code, recOK.Body.String())
+	}
+
+	// 4. Nil session manager does not panic and rejects with 401
+	nilProtected := Authenticate(nil, db)(RequireAuth()(okHandler))
+	recNil := httptest.NewRecorder()
+	nilProtected.ServeHTTP(recNil, httptest.NewRequest(http.MethodGet, "/api/books", nil))
+	if recNil.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with nil sessionMgr, got %d", recNil.Code)
 	}
 }

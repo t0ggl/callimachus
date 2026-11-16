@@ -7,7 +7,7 @@ import { SettingsView } from './views/SettingsView';
 import { CommandPalette } from './components/CommandPalette';
 import { BookDetailModal } from './components/BookDetailModal';
 import { useKeyboardNav } from './hooks/useKeyboardNav';
-import { useSSE } from './hooks/useSSE';
+import { useActivityStream } from './hooks/useActivityStream';
 import {
   Book,
   Author,
@@ -74,22 +74,31 @@ export const App: React.FC = () => {
   });
   const [settingsOverrides, setSettingsOverrides] = useState<SettingsOverridesMap>({});
 
-  // Real-time SSE hook for live pipeline updates
+  // Real-time activity stream for live pipeline updates
   const {
     transcodeJobs,
     setTranscodeJobs,
     downloads,
     setDownloads,
     connectionStatus,
-  } = useSSE({
+  } = useActivityStream({
     initialTranscodeJobs: [],
     initialDownloads: [],
   });
+
+  const redirectToOIDC = useCallback(() => {
+    window.location.assign('/api/auth/oidc/login');
+  }, []);
 
   // Fetch functions for real backend data
   const fetchAuthUser = useCallback(async () => {
     try {
       const res = await fetch('/api/auth/me');
+      if (res.status === 401) {
+        setCurrentUser(null);
+        redirectToOIDC();
+        return;
+      }
       if (res.ok) {
         const user = await res.json();
         setCurrentUser(user);
@@ -99,7 +108,7 @@ export const App: React.FC = () => {
     } catch {
       setCurrentUser(null);
     }
-  }, []);
+  }, [redirectToOIDC]);
 
   const fetchCatalog = useCallback(async () => {
     try {
@@ -108,6 +117,10 @@ export const App: React.FC = () => {
         fetch('/api/authors'),
         fetch('/api/series'),
       ]);
+      if (booksRes.status === 401 || authorsRes.status === 401 || seriesRes.status === 401) {
+        redirectToOIDC();
+        return;
+      }
       if (booksRes.ok) {
         const data = await booksRes.json();
         setBooks(Array.isArray(data) ? data : []);
@@ -123,11 +136,15 @@ export const App: React.FC = () => {
     } catch (err) {
       console.error('Failed to load catalog', err);
     }
-  }, []);
+  }, [redirectToOIDC]);
 
   const fetchRequests = useCallback(async () => {
     try {
       const res = await fetch('/api/requests');
+      if (res.status === 401) {
+        redirectToOIDC();
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
@@ -148,11 +165,15 @@ export const App: React.FC = () => {
     } catch (err) {
       console.error('Failed to load requests', err);
     }
-  }, []);
+  }, [redirectToOIDC]);
 
   const fetchActivity = useCallback(async () => {
     try {
       const res = await fetch('/api/activity');
+      if (res.status === 401) {
+        redirectToOIDC();
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         if (data.transcodeJobs) setTranscodeJobs(data.transcodeJobs);
@@ -162,7 +183,7 @@ export const App: React.FC = () => {
     } catch (err) {
       console.error('Failed to load activity', err);
     }
-  }, [setTranscodeJobs, setDownloads]);
+  }, [setTranscodeJobs, setDownloads, redirectToOIDC]);
 
   const applySettingsResponse = useCallback((data: any) => {
     if (!data || typeof data !== 'object') return;
@@ -206,6 +227,10 @@ export const App: React.FC = () => {
   const fetchSettings = useCallback(async () => {
     try {
       const res = await fetch('/api/settings');
+      if (res.status === 401) {
+        redirectToOIDC();
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         applySettingsResponse(data);
@@ -213,7 +238,7 @@ export const App: React.FC = () => {
     } catch (err) {
       console.error('Failed to load settings', err);
     }
-  }, [applySettingsResponse]);
+  }, [applySettingsResponse, redirectToOIDC]);
 
   const handleSaveSettings = useCallback(async (payload: any) => {
     const res = await fetch('/api/settings', {
@@ -221,28 +246,39 @@ export const App: React.FC = () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+    if (res.status === 401) {
+      redirectToOIDC();
+      return;
+    }
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data?.error || 'Failed to save settings');
     }
     applySettingsResponse(data);
-  }, [applySettingsResponse]);
+  }, [applySettingsResponse, redirectToOIDC]);
 
   const handleSyncIndexers = useCallback(async () => {
     try {
-      await fetch('/api/settings/prowlarr/sync', { method: 'POST' });
+      const res = await fetch('/api/settings/prowlarr/sync', { method: 'POST' });
+      if (res.status === 401) {
+        redirectToOIDC();
+      }
     } catch (err) {
       console.error('Failed to sync indexers', err);
     }
-  }, []);
+  }, [redirectToOIDC]);
 
   useEffect(() => {
     fetchAuthUser();
+  }, [fetchAuthUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
     fetchCatalog();
     fetchRequests();
     fetchActivity();
     fetchSettings();
-  }, [fetchAuthUser, fetchCatalog, fetchRequests, fetchActivity, fetchSettings]);
+  }, [currentUser, fetchCatalog, fetchRequests, fetchActivity, fetchSettings]);
 
   // Vim navigation for catalog
   const { selectedIndex } = useKeyboardNav({

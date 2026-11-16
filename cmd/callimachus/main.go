@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path"
@@ -68,6 +69,7 @@ type Server struct {
 	baseOverrides config.Overrides
 	db            *database.DB
 	sessionMgr    *auth.SessionManager
+	fallbackAuth  *auth.FallbackAuthenticator
 	syncer        *indexers.Syncer
 	stagingMon    *downloaders.StagingMonitor
 	dispatcher    *notify.Dispatcher
@@ -228,6 +230,7 @@ func NewServer(cfg Config) (*Server, error) {
 		baseOverrides: baseOverrides,
 		db:            db,
 		sessionMgr:    sessionMgr,
+		fallbackAuth:  fallbackAuth,
 		syncer:        syncer,
 		stagingMon:    stagingMon,
 		dispatcher:    dispatcher,
@@ -249,8 +252,10 @@ func NewServer(cfg Config) (*Server, error) {
 	// SPA router handles all non-API paths
 	mux.HandleFunc("/", srv.handleSPA)
 
+	handler := auth.Authenticate(sessionMgr, db)(srv.withAuthGate(mux))
+
 	srv.httpServer = &http.Server{
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -360,6 +365,65 @@ func (s *Server) runProwlarrSync(ctx context.Context) {
 // HealthResponse represents the payload returned by health check endpoints.
 type HealthResponse struct {
 	Status string `json:"status"`
+}
+
+func (s *Server) withAuthGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cleanPath := path.Clean(r.URL.Path)
+		if cleanPath == "." {
+			cleanPath = "/"
+		}
+
+		// Always allow public health probes and OIDC initiation/callback endpoints
+		if cleanPath == "/healthz" ||
+			cleanPath == "/api/health" ||
+			cleanPath == "/api/auth/oidc/login" ||
+			cleanPath == "/api/auth/oidc/callback" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Allow fallback password login only when explicitly configured
+		if cleanPath == "/api/auth/login" && r.Method == http.MethodPost &&
+			s.fallbackAuth != nil && s.fallbackAuth.IsEnabled() {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Allow authenticated requests
+		if user, ok := auth.UserFromContext(r.Context()); ok && user != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Unauthenticated API requests must receive HTTP 401 Unauthorized JSON
+		if cleanPath == "/api" || strings.HasPrefix(cleanPath, "/api/") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+
+		// Unauthenticated frontend/SPA requests redirect directly to OIDC login
+		loginURL := "/api/auth/oidc/login"
+		reqURI := r.URL.RequestURI()
+		if cleanPath != "/" && auth.IsSafeRedirectTarget(reqURI) && !isStaticAssetPath(cleanPath) {
+			loginURL += "?redirect=" + url.QueryEscape(reqURI)
+		}
+		http.Redirect(w, r, loginURL, http.StatusFound)
+	})
+}
+
+func isStaticAssetPath(cleanPath string) bool {
+	if strings.HasPrefix(cleanPath, "/assets/") {
+		return true
+	}
+	switch strings.ToLower(path.Ext(cleanPath)) {
+	case ".js", ".css", ".svg", ".png", ".jpg", ".jpeg", ".webp", ".ico", ".woff", ".woff2", ".ttf", ".map", ".html", ".txt", ".json":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

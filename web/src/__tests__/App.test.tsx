@@ -190,4 +190,50 @@ describe('App Integration', () => {
     await user.click(gridBtn);
     expect(screen.getByTestId('book-card-book_1')).toBeInTheDocument();
   });
+
+  it('redirects to /api/auth/oidc/login on 401 without rendering local sign-in UI or fetching protected endpoints', async () => {
+    const assignMock = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, assign: assignMock },
+    });
+
+    try {
+      // @ts-ignore
+      global.fetch = vi.fn((url: string) => {
+        if (url.includes('/api/auth/me')) {
+          return Promise.resolve({
+            ok: false,
+            status: 401,
+            json: () => Promise.resolve({ error: 'unauthorized' }),
+          });
+        }
+        return Promise.resolve({
+          ok: false,
+          status: 401,
+          json: () => Promise.resolve({ error: 'unauthorized' }),
+        });
+      });
+
+      render(<App />);
+
+      expect(screen.queryByTestId('login-link')).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: /sign in/i })).not.toBeInTheDocument();
+
+      await waitFor(() => {
+        expect(assignMock).toHaveBeenCalledWith('/api/auth/oidc/login');
+      });
+
+      const calledUrls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c) => String(c[0])
+      );
+      expect(calledUrls).toEqual(['/api/auth/me']);
+    } finally {
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
+  });
 });
