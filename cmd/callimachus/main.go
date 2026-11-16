@@ -50,6 +50,16 @@ type Config struct {
 	StagingPollInterval time.Duration
 	Version             string
 	Commit              string
+
+	// OIDC & Auth Configuration
+	OIDCIssuerURL     string
+	OIDCClientID      string
+	OIDCClientSecret  string
+	OIDCRedirectURL   string
+	OIDCAdminGroups   []string
+	OIDCCuratorGroups []string
+	OIDCDefaultRole   string
+	FallbackPassword  string
 }
 
 // Server coordinates the database, background workers, and HTTP services.
@@ -127,9 +137,37 @@ func NewServer(cfg Config) (*Server, error) {
 
 	// 2. Auth & Session Management
 	sessionMgr := auth.NewSessionManager(24*time.Hour, auth.DefaultCookieConfig())
+
+	var oidcClient *auth.OIDCClient
+	if cfg.OIDCIssuerURL != "" && cfg.OIDCClientID != "" {
+		oc, err := auth.NewOIDCClient(auth.OIDCConfig{
+			Issuer:        cfg.OIDCIssuerURL,
+			ClientID:      cfg.OIDCClientID,
+			ClientSecret:  cfg.OIDCClientSecret,
+			RedirectURL:   cfg.OIDCRedirectURL,
+			AdminGroups:   cfg.OIDCAdminGroups,
+			CuratorGroups: cfg.OIDCCuratorGroups,
+			DefaultRole:   cfg.OIDCDefaultRole,
+		})
+		if err != nil {
+			log.Printf("[auth] warning: failed to initialize OIDC client: %v", err)
+		} else {
+			oidcClient = oc
+			log.Printf("[auth] OIDC client configured (issuer: %s, clientID: %s)", cfg.OIDCIssuerURL, cfg.OIDCClientID)
+		}
+	}
+
+	var fallbackAuth *auth.FallbackAuthenticator
+	if cfg.FallbackPassword != "" {
+		fallbackAuth = auth.NewFallbackAuthenticator(auth.FallbackConfig{AdminPassword: cfg.FallbackPassword}, db, sessionMgr)
+		log.Printf("[auth] single password fallback authentication enabled")
+	}
+
 	authHandler := auth.NewAuthHandler(auth.HandlerConfig{
 		SessionManager: sessionMgr,
 		DB:             db,
+		OIDCClient:     oidcClient,
+		FallbackAuth:   fallbackAuth,
 	})
 
 	// 3. User Book Requests Workflow
@@ -402,6 +440,14 @@ func run(ctx context.Context, args []string) error {
 	webDirFlag := fs.String("web-dir", "", "Path to custom web distribution directory (default: embedded web/dist)")
 	prowlarrURLFlag := fs.String("prowlarr-url", "", "Prowlarr base URL (default: $PROWLARR_URL)")
 	prowlarrKeyFlag := fs.String("prowlarr-key", "", "Prowlarr API key (default: $PROWLARR_API_KEY)")
+	oidcIssuerFlag := fs.String("oidc-issuer", "", "OIDC issuer URL (default: $OIDC_ISSUER_URL or $OIDC_ISSUER)")
+	oidcClientIDFlag := fs.String("oidc-client-id", "", "OIDC client ID (default: $OIDC_CLIENT_ID)")
+	oidcClientSecretFlag := fs.String("oidc-client-secret", "", "OIDC client secret (default: $OIDC_CLIENT_SECRET)")
+	oidcRedirectURLFlag := fs.String("oidc-redirect-url", "", "OIDC redirect URL (default: $OIDC_REDIRECT_URL)")
+	oidcAdminGroupsFlag := fs.String("oidc-admin-groups", "", "Comma-separated OIDC groups mapped to admin role (default: $OIDC_ADMIN_GROUPS)")
+	oidcCuratorGroupsFlag := fs.String("oidc-curator-groups", "", "Comma-separated OIDC groups mapped to curator role (default: $OIDC_CURATOR_GROUPS)")
+	oidcDefaultRoleFlag := fs.String("oidc-default-role", "", "Default role for new OIDC users (default: $OIDC_DEFAULT_ROLE)")
+	authPasswordFlag := fs.String("auth-password", "", "Single password fallback authentication (default: $AUTH_PASSWORD or $ADMIN_PASSWORD)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -436,17 +482,84 @@ func run(ctx context.Context, args []string) error {
 		prowlarrKey = os.Getenv("PROWLARR_API_KEY")
 	}
 
+	oidcIssuer := *oidcIssuerFlag
+	if oidcIssuer == "" {
+		oidcIssuer = os.Getenv("OIDC_ISSUER_URL")
+	}
+	if oidcIssuer == "" {
+		oidcIssuer = os.Getenv("OIDC_ISSUER")
+	}
+
+	oidcClientID := *oidcClientIDFlag
+	if oidcClientID == "" {
+		oidcClientID = os.Getenv("OIDC_CLIENT_ID")
+	}
+
+	oidcClientSecret := *oidcClientSecretFlag
+	if oidcClientSecret == "" {
+		oidcClientSecret = os.Getenv("OIDC_CLIENT_SECRET")
+	}
+
+	oidcRedirectURL := *oidcRedirectURLFlag
+	if oidcRedirectURL == "" {
+		oidcRedirectURL = os.Getenv("OIDC_REDIRECT_URL")
+	}
+
+	oidcAdminGroupsStr := *oidcAdminGroupsFlag
+	if oidcAdminGroupsStr == "" {
+		oidcAdminGroupsStr = os.Getenv("OIDC_ADMIN_GROUPS")
+	}
+
+	oidcCuratorGroupsStr := *oidcCuratorGroupsFlag
+	if oidcCuratorGroupsStr == "" {
+		oidcCuratorGroupsStr = os.Getenv("OIDC_CURATOR_GROUPS")
+	}
+
+	oidcDefaultRole := *oidcDefaultRoleFlag
+	if oidcDefaultRole == "" {
+		oidcDefaultRole = os.Getenv("OIDC_DEFAULT_ROLE")
+	}
+
+	authPassword := *authPasswordFlag
+	if authPassword == "" {
+		authPassword = os.Getenv("AUTH_PASSWORD")
+	}
+	if authPassword == "" {
+		authPassword = os.Getenv("ADMIN_PASSWORD")
+	}
+
+	splitComma := func(s string) []string {
+		if s == "" {
+			return nil
+		}
+		var parts []string
+		for _, p := range strings.Split(s, ",") {
+			if t := strings.TrimSpace(p); t != "" {
+				parts = append(parts, t)
+			}
+		}
+		return parts
+	}
+
 	cfg := Config{
-		ConfigDir:      configDir,
-		DBPath:         dbPath,
-		LibraryPath:    *libraryFlag,
-		Host:           *hostFlag,
-		Port:           *portFlag,
-		StaticDir:      *webDirFlag,
-		ProwlarrURL:    prowlarrURL,
-		ProwlarrAPIKey: prowlarrKey,
-		Version:        version,
-		Commit:         commit,
+		ConfigDir:           configDir,
+		DBPath:              dbPath,
+		LibraryPath:         *libraryFlag,
+		Host:                *hostFlag,
+		Port:                *portFlag,
+		StaticDir:           *webDirFlag,
+		ProwlarrURL:         prowlarrURL,
+		ProwlarrAPIKey:      prowlarrKey,
+		Version:             version,
+		Commit:              commit,
+		OIDCIssuerURL:       oidcIssuer,
+		OIDCClientID:        oidcClientID,
+		OIDCClientSecret:    oidcClientSecret,
+		OIDCRedirectURL:     oidcRedirectURL,
+		OIDCAdminGroups:     splitComma(oidcAdminGroupsStr),
+		OIDCCuratorGroups:   splitComma(oidcCuratorGroupsStr),
+		OIDCDefaultRole:     oidcDefaultRole,
+		FallbackPassword:    authPassword,
 	}
 
 	srv, err := NewServer(cfg)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -228,5 +229,90 @@ func TestRun_CommandExecutionAndCancel(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("run() timed out waiting for shutdown")
+	}
+}
+
+func TestServer_OIDCAndAuthWiring(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "auth_wiring_test.db")
+
+	mockOIDC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/openid-configuration" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer":                 "http://" + r.Host,
+				"authorization_endpoint": "http://" + r.Host + "/auth",
+				"token_endpoint":         "http://" + r.Host + "/token",
+				"jwks_uri":               "http://" + r.Host + "/jwks",
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockOIDC.Close()
+
+	cfg := Config{
+		ConfigDir:           tempDir,
+		DBPath:              dbPath,
+		LibraryPath:         tempDir,
+		Host:                "127.0.0.1",
+		Port:                0,
+		IndexerSyncInterval: 1 * time.Hour,
+		StagingPollInterval: 1 * time.Hour,
+		OIDCIssuerURL:       mockOIDC.URL,
+		OIDCClientID:        "callimachus-test-client",
+		OIDCClientSecret:    "secret123",
+		OIDCRedirectURL:     "http://127.0.0.1/api/auth/oidc/callback",
+		FallbackPassword:    "supersecretfallback",
+	}
+
+	srv, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := srv.Start(ctx); err != nil {
+		t.Fatalf("srv.Start failed: %v", err)
+	}
+	defer func() {
+		_ = srv.Shutdown(context.Background())
+	}()
+
+	baseURL := "http://" + srv.Addr()
+
+	// 1. Verify OIDC login initiates redirect to mock authorization endpoint
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	resp, err := client.Get(baseURL + "/api/auth/oidc/login")
+	if err != nil {
+		t.Fatalf("GET /api/auth/oidc/login failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected 302 Found from /api/auth/oidc/login, got %d", resp.StatusCode)
+	}
+	loc := resp.Header.Get("Location")
+	if !strings.HasPrefix(loc, mockOIDC.URL+"/auth") {
+		t.Errorf("expected redirect to mock OIDC auth endpoint, got: %s", loc)
+	}
+
+	// 2. Verify fallback password authentication
+	loginBody := strings.NewReader(`{"password":"supersecretfallback"}`)
+	loginResp, err := http.Post(baseURL+"/api/auth/login", "application/json", loginBody)
+	if err != nil {
+		t.Fatalf("POST /api/auth/login failed: %v", err)
+	}
+	defer loginResp.Body.Close()
+
+	if loginResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK from /api/auth/login, got %d", loginResp.StatusCode)
 	}
 }
