@@ -65,7 +65,7 @@ jobs:
         shell: bash
         run: |
           cd web
-          pnpm test --run
+          pnpm test
 
       - name: Build Web Production Assets
         shell: bash
