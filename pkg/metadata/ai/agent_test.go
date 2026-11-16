@@ -92,7 +92,7 @@ func TestDisambiguationAgent_OpenAISuccess(t *testing.T) {
 		Enabled:  true,
 		Provider: ai.ProviderOpenAI,
 		BaseURL:  "http://mock-ai.local",
-		APIKey:   "sk-mock-key-12345",
+		APIKey:   "mock-ai-key-12345",
 		Model:    "gpt-4o",
 		Timeout:  2 * time.Second,
 	}
@@ -200,7 +200,7 @@ func TestDisambiguationAgent_ErrorFallbacks(t *testing.T) {
 			Enabled:  true,
 			Provider: ai.ProviderOpenAI,
 			BaseURL:  "http://mock-ai.local",
-			APIKey:   "sk-mock-key",
+			APIKey:   "mock-ai-key",
 		}
 		agent := ai.NewDisambiguationAgent(cfg, transport.Client())
 
@@ -221,7 +221,7 @@ func TestDisambiguationAgent_ErrorFallbacks(t *testing.T) {
 			Enabled:  true,
 			Provider: ai.ProviderOpenAI,
 			BaseURL:  "http://mock-ai.local",
-			APIKey:   "sk-mock-key",
+			APIKey:   "mock-ai-key",
 		}
 		agent := ai.NewDisambiguationAgent(cfg, transport.Client())
 
@@ -243,7 +243,7 @@ func TestDisambiguationAgent_ErrorFallbacks(t *testing.T) {
 			Enabled:  true,
 			Provider: ai.ProviderOpenAI,
 			BaseURL:  "http://mock-ai.local",
-			APIKey:   "sk-mock-key",
+			APIKey:   "mock-ai-key",
 		}
 		agent := ai.NewDisambiguationAgent(cfg, transport.Client())
 
@@ -276,7 +276,7 @@ func TestDisambiguationAgent_ErrorFallbacks(t *testing.T) {
 			Enabled:  true,
 			Provider: ai.ProviderOpenAI,
 			BaseURL:  "http://mock-ai.local",
-			APIKey:   "sk-mock-key",
+			APIKey:   "mock-ai-key",
 		}
 		agent := ai.NewDisambiguationAgent(cfg, transport.Client())
 
@@ -308,7 +308,7 @@ func TestDisambiguationAgent_ErrorFallbacks(t *testing.T) {
 			Enabled:  true,
 			Provider: ai.ProviderOpenAI,
 			BaseURL:  "http://mock-ai.local",
-			APIKey:   "sk-mock-key",
+			APIKey:   "mock-ai-key",
 		}
 		agent := ai.NewDisambiguationAgent(cfg, transport.Client())
 
@@ -341,7 +341,7 @@ func TestDisambiguationAgent_ErrorFallbacks(t *testing.T) {
 			Enabled:       true,
 			Provider:      ai.ProviderOpenAI,
 			BaseURL:       "http://mock-ai.local",
-			APIKey:        "sk-mock-key",
+			APIKey:        "mock-ai-key",
 			MinConfidence: 0.70,
 		}
 		agent := ai.NewDisambiguationAgent(cfg, transport.Client())
@@ -360,7 +360,7 @@ func TestDisambiguationAgent_ErrorFallbacks(t *testing.T) {
 			Enabled:  true,
 			Provider: ai.ProviderOpenAI,
 			BaseURL:  "http://mock-ai.local",
-			APIKey:   "sk-mock-key",
+			APIKey:   "mock-ai-key",
 		}
 		agent := ai.NewDisambiguationAgent(cfg, nil)
 
@@ -378,7 +378,7 @@ func TestDisambiguationAgent_ErrorFallbacks(t *testing.T) {
 			Enabled:  true,
 			Provider: ai.ProviderOpenAI,
 			BaseURL:  "http://mock-ai.local",
-			APIKey:   "sk-mock-key",
+			APIKey:   "mock-ai-key",
 		}
 		agent := ai.NewDisambiguationAgent(cfg, nil)
 
@@ -419,7 +419,7 @@ func TestDisambiguationAgent_MarkdownFencedResponse(t *testing.T) {
 		Enabled:  true,
 		Provider: ai.ProviderOpenAI,
 		BaseURL:  "http://mock-ai.local",
-		APIKey:   "sk-mock-key",
+		APIKey:   "mock-ai-key",
 	}
 	agent := ai.NewDisambiguationAgent(cfg, transport.Client())
 

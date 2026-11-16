@@ -3,10 +3,11 @@ package transcoder
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestProber_RealFixtures(t *testing.T) {
+func TestProber_Fixtures(t *testing.T) {
 	// Locate repository testdata directory
 	mp3Path, err := filepath.Abs("../../testdata/audio/mock_mp3.mp3")
 	if err != nil {
@@ -17,7 +18,52 @@ func TestProber_RealFixtures(t *testing.T) {
 		t.Fatalf("resolve m4b path failed: %v", err)
 	}
 
-	prober := NewProber(NewRealRunner())
+	runner := NewMockRunner()
+	runner.RegisterHandler("ffprobe", func(ctx context.Context, opt RunOptions) error {
+		filePath := opt.Args[len(opt.Args)-1]
+		var jsonResp string
+		if strings.HasSuffix(filePath, "mock_mp3.mp3") {
+			jsonResp = `{
+				"streams": [{
+					"codec_name": "mp3",
+					"codec_type": "audio",
+					"sample_rate": "44100",
+					"channels": 1,
+					"bit_rate": "64000",
+					"duration": "1.000000"
+				}],
+				"format": {
+					"filename": "mock_mp3.mp3",
+					"format_name": "mp3",
+					"duration": "1.000000",
+					"bit_rate": "64000"
+				}
+			}`
+		} else if strings.HasSuffix(filePath, "mock_m4b.m4b") {
+			jsonResp = `{
+				"streams": [{
+					"codec_name": "aac",
+					"codec_type": "audio",
+					"sample_rate": "44100",
+					"channels": 1,
+					"bit_rate": "64000",
+					"duration": "1.000000"
+				}],
+				"format": {
+					"filename": "mock_m4b.m4b",
+					"format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+					"duration": "1.000000",
+					"bit_rate": "64000"
+				}
+			}`
+		}
+		if opt.Stdout != nil {
+			_, _ = opt.Stdout.Write([]byte(jsonResp))
+		}
+		return nil
+	})
+
+	prober := NewProber(runner)
 	ctx := context.Background()
 
 	// 1. Probe mock_mp3.mp3

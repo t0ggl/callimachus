@@ -33,7 +33,7 @@ func TestIntegration_ScorerAmbiguousBand(t *testing.T) {
 			Enabled:  true,
 			Provider: ai.ProviderOpenAI,
 			BaseURL:  "http://mock-ai.local",
-			APIKey:   "sk-mock-key",
+			APIKey:   "mock-ai-key",
 		}
 		agent := ai.NewDisambiguationAgent(cfg, transport.Client())
 
@@ -108,7 +108,7 @@ func TestIntegration_ScorerAmbiguousBand(t *testing.T) {
 			Enabled:  true,
 			Provider: ai.ProviderOpenAI,
 			BaseURL:  "http://mock-ai.local",
-			APIKey:   "sk-mock-key",
+			APIKey:   "mock-ai-key",
 		}
 		agent := ai.NewDisambiguationAgent(cfg, transport.Client())
 
@@ -146,7 +146,7 @@ func TestIntegration_ScorerAmbiguousBand(t *testing.T) {
 			Enabled:  true,
 			Provider: ai.ProviderOpenAI,
 			BaseURL:  "http://mock-ai.local",
-			APIKey:   "sk-mock-key",
+			APIKey:   "mock-ai-key",
 		}
 		agent := ai.NewDisambiguationAgent(cfg, transport.Client())
 

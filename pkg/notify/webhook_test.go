@@ -18,7 +18,7 @@ func TestGenericWebhook_JSONPayloadAndHMACSignature(t *testing.T) {
 	t.Parallel()
 
 	targetURL := "http://webhook.internal:9000/events"
-	secret := "super-secret-signing-key"
+	secret := "test-hmac-token"
 
 	mt := testutil.NewMockTransportForTest(t)
 	var capturedPayload []byte

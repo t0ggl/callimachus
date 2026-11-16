@@ -3,7 +3,7 @@
 # Stage 1: Build Web UI
 FROM --platform=$BUILDPLATFORM node:20-alpine AS web-builder
 WORKDIR /app/web
-COPY web/package*.json web/pnpm-lock.yaml* ./
+COPY web/package*.json web/pnpm-lock.yaml* web/pnpm-workspace.yaml* ./
 RUN if [ -f package.json ]; then \
       corepack enable && pnpm install --frozen-lockfile; \
     else \
@@ -13,7 +13,7 @@ COPY web/ ./
 RUN if [ -f package.json ]; then pnpm run build; fi
 
 # Stage 2: Build Go Server & Worker
-FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS go-builder
+FROM --platform=$BUILDPLATFORM golang:alpine AS go-builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG COMMIT_TAG
@@ -21,6 +21,7 @@ ARG BUILD_VERSION
 
 WORKDIR /app
 RUN apk add --no-cache git ca-certificates tzdata
+ENV GOTOOLCHAIN=auto
 
 COPY go.mod go.sum* ./
 RUN if [ -f go.mod ]; then go mod download; fi

@@ -149,7 +149,7 @@ func TestWorker_EndToEndWithMockRunner(t *testing.T) {
 	}
 }
 
-func TestWorker_EndToEndWithRealRunner(t *testing.T) {
+func TestWorker_EndToEndMultiStage(t *testing.T) {
 	q, _ := setupTestQueueDB(t)
 	ctx := context.Background()
 
@@ -185,10 +185,41 @@ func TestWorker_EndToEndWithRealRunner(t *testing.T) {
 		}
 	}
 
-	// Use RealRunner!
-	realRunner := NewRealRunner()
-	worker := NewWorker(q, realRunner, WorkerConfig{
-		WorkerID:      "test-real-worker-1",
+	// Use MockRunner
+	mockRunner := NewMockRunner()
+	mockRunner.RegisterHandler("ffprobe", func(ctx context.Context, opt RunOptions) error {
+		jsonResp := `{
+			"streams": [{
+				"codec_name": "mp3",
+				"codec_type": "audio",
+				"sample_rate": "44100",
+				"channels": 1,
+				"bit_rate": "64000",
+				"duration": "1.000000",
+				"tags": {"title": "Synthetic Chapter"}
+			}],
+			"format": {
+				"format_name": "mp3",
+				"duration": "1.000000",
+				"bit_rate": "64000"
+			}
+		}`
+		if opt.Stdout != nil {
+			_, _ = opt.Stdout.Write([]byte(jsonResp))
+		}
+		return nil
+	})
+	mockRunner.RegisterHandler("ffmpeg", func(ctx context.Context, opt RunOptions) error {
+		if opt.Stdout != nil {
+			progressLines := "out_time_ms=500\nprogress=continue\nout_time_ms=1000\nprogress=end\n"
+			_, _ = opt.Stdout.Write([]byte(progressLines))
+		}
+		outPath := opt.Args[len(opt.Args)-1]
+		return os.WriteFile(outPath, []byte("synthesized m4b container"), 0644)
+	})
+
+	worker := NewWorker(q, mockRunner, WorkerConfig{
+		WorkerID:      "test-mock-worker-2",
 		WorkDir:       filepath.Join(tempDir, "work"),
 		AudioCodec:    "aac",
 		Bitrate:       "64k",
@@ -202,7 +233,7 @@ func TestWorker_EndToEndWithRealRunner(t *testing.T) {
 
 	processed, err := worker.RunOnce(ctx)
 	if err != nil {
-		t.Fatalf("RunOnce with real ffmpeg failed: %v", err)
+		t.Fatalf("RunOnce with mock ffmpeg failed: %v", err)
 	}
 	if !processed {
 		t.Fatalf("expected job to be processed")
@@ -232,7 +263,7 @@ func TestWorker_EndToEndWithRealRunner(t *testing.T) {
 	}
 
 	// Verify the generated m4b exists and can be probed by ffprobe
-	prober := NewProber(realRunner)
+	prober := NewProber(mockRunner)
 	probeResult, err := prober.ProbeFile(ctx, targetPath)
 	if err != nil {
 		t.Fatalf("ProbeFile on generated .m4b failed: %v", err)

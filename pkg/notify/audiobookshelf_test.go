@@ -164,7 +164,7 @@ func TestAudiobookshelf_TriggerScanAndFlush(t *testing.T) {
 
 	notifier := notify.NewAudiobookshelfNotifier(notify.AudiobookshelfConfig{
 		BaseURL:          baseURL,
-		Token:            "Bearer already-prefixed-token",
+		Token:            "Bearer mock-abs-bearer",
 		LibraryID:        libraryID,
 		DebounceDuration: 5 * time.Second, // long debounce
 		HTTPClient:       mt.Client(),

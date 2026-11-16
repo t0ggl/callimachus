@@ -92,7 +92,7 @@ func TestOpenAIProvider_Success(t *testing.T) {
 	cfg := ai.Config{
 		Provider: ai.ProviderOpenAI,
 		BaseURL:  "http://mock-openai.local",
-		APIKey:   "sk-test-mock-key-12345",
+		APIKey:   "mock-test-key-12345",
 		Model:    "gpt-4o",
 		Timeout:  5 * time.Second,
 	}
@@ -105,7 +105,7 @@ func TestOpenAIProvider_Success(t *testing.T) {
 		t.Fatalf("unexpected error during OpenAI Complete: %v", err)
 	}
 
-	if interceptedAuth != "Bearer sk-test-mock-key-12345" {
+	if interceptedAuth != "Bearer mock-test-key-12345" {
 		t.Errorf("expected Bearer token in Authorization header, got %q", interceptedAuth)
 	}
 	if interceptedPath != "/v1/chat/completions" {
@@ -129,7 +129,7 @@ func TestOpenAIProvider_HTTPError(t *testing.T) {
 	cfg := ai.Config{
 		Provider: ai.ProviderOpenAI,
 		BaseURL:  "http://mock-openai.local/v1",
-		APIKey:   "sk-test-mock-key",
+		APIKey:   "mock-test-key",
 	}
 
 	provider := ai.NewOpenAIProvider(cfg, transport.Client())
