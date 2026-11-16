@@ -1,0 +1,17 @@
+{
+  "id": "msg_mock_anthropic_001",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-3-5-sonnet-20241022",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"matched_candidate_index\": 1,\n  \"confidence\": 0.92,\n  \"reasoning\": \"Cleaned release name matches candidate 1 Synthetic Anthology Book by Test Author.\",\n  \"is_anthology\": true,\n  \"cleaned_title\": \"Synthetic Anthology Book\",\n  \"cleaned_author\": \"Test Author\"\n}"
+    }
+  ],
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 130,
+    "output_tokens": 65
+  }
+}

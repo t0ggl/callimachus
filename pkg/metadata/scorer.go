@@ -9,6 +9,16 @@ import (
 // AutoMatchThreshold is the minimum confidence score required for automated metadata ingestion.
 const AutoMatchThreshold = 0.85
 
+// AmbiguousThresholdLow is the lower bound score where heuristic matching is uncertain.
+// Scores in [AmbiguousThresholdLow, AutoMatchThreshold) fall in the ambiguous band.
+const AmbiguousThresholdLow = 0.50
+
+// IsAmbiguous returns true if the score falls into the ambiguous band [0.50, 0.85)
+// where automated matching cannot be guaranteed without manual review or AI disambiguation.
+func IsAmbiguous(score float64) bool {
+	return score >= AmbiguousThresholdLow && score < AutoMatchThreshold
+}
+
 // normalizeString lowercases the input and retains only alphanumeric characters separated by single spaces.
 func normalizeString(s string) string {
 	var sb strings.Builder

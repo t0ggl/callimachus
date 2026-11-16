@@ -1,0 +1,21 @@
+{
+  "id": "chatcmpl-mock-openai-001",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "gpt-4o",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\n  \"matched_candidate_index\": 0,\n  \"confidence\": 0.95,\n  \"reasoning\": \"Exact title match with Synthetic Book Alpha and matching author Synthetic Author One.\",\n  \"is_anthology\": false,\n  \"cleaned_title\": \"Synthetic Book Alpha\",\n  \"cleaned_author\": \"Synthetic Author One\"\n}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 120,
+    "completion_tokens": 60,
+    "total_tokens": 180
+  }
+}

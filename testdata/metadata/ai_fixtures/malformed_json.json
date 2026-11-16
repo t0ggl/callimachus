@@ -1,0 +1,16 @@
+{
+  "id": "chatcmpl-mock-malformed-001",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "gpt-4o",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "This response contains corrupt JSON: {\"matched_candidate_index\": [broken, \"confidence\": }"
+      },
+      "finish_reason": "stop"
+    }
+  ]
+}
