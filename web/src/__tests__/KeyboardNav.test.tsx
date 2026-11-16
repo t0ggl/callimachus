@@ -81,7 +81,7 @@ describe('Vim Keyboard Navigation (useKeyboardNav)', () => {
   });
 
   it('does NOT hijack typing in an input element', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     render(<TestVimList itemsCount={5} />);
 
     const input = screen.getByTestId('search-input');

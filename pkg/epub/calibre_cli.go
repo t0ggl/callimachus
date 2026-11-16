@@ -13,7 +13,28 @@ import (
 var (
 	// ErrCalibreNotFound indicates that Calibre's ebook-meta executable was not found in PATH.
 	ErrCalibreNotFound = errors.New("calibre ebook-meta executable not found in PATH")
+
+	lookPath   = exec.LookPath
+	runCommand = func(name string, args ...string) ([]byte, error) {
+		return exec.Command(name, args...).CombinedOutput()
+	}
 )
+
+// SetMockCalibreRunner replaces the command runner and lookPath function for testing.
+func SetMockCalibreRunner(look func(file string) (string, error), run func(name string, args ...string) ([]byte, error)) func() {
+	origLook := lookPath
+	origRun := runCommand
+	if look != nil {
+		lookPath = look
+	}
+	if run != nil {
+		runCommand = run
+	}
+	return func() {
+		lookPath = origLook
+		runCommand = origRun
+	}
+}
 
 /*
 Architectural Directive & Engine Selection Evaluation:
@@ -44,7 +65,7 @@ type calibreEPUB struct {
 
 // OpenCalibre opens an EPUB file using the Calibre ebook-meta CLI tool.
 func OpenCalibre(path string) (EPUB, error) {
-	bin, err := exec.LookPath("ebook-meta")
+	bin, err := lookPath("ebook-meta")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCalibreNotFound, err)
 	}
@@ -62,8 +83,7 @@ func OpenCalibre(path string) (EPUB, error) {
 	_ = tmpOpf.Close()
 	defer os.Remove(tmpOpfPath)
 
-	cmd := exec.Command(bin, path, "--to-opf="+tmpOpfPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := runCommand(bin, path, "--to-opf="+tmpOpfPath); err != nil {
 		return nil, fmt.Errorf("ebook-meta --to-opf failed: %v, output: %s", err, string(out))
 	}
 
@@ -132,8 +152,7 @@ func (c *calibreEPUB) Save(targetPath string) error {
 		}
 	}
 
-	cmd := exec.Command(c.binPath, args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := runCommand(c.binPath, args...); err != nil {
 		return fmt.Errorf("ebook-meta failed to save metadata: %v, output: %s", err, string(out))
 	}
 
@@ -147,8 +166,7 @@ func (c *calibreEPUB) ExtractCover(targetImagePath string) error {
 		return fmt.Errorf("failed to create directory for cover: %w", err)
 	}
 
-	cmd := exec.Command(c.binPath, c.path, "--get-cover="+targetImagePath)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := runCommand(c.binPath, c.path, "--get-cover="+targetImagePath); err != nil {
 		return fmt.Errorf("%w: ebook-meta cover extraction failed: %v, output: %s", ErrNoCover, err, string(out))
 	}
 
@@ -165,8 +183,7 @@ func (c *calibreEPUB) WriteSidecar(targetOpfPath string) error {
 		return fmt.Errorf("failed to create directory for sidecar: %w", err)
 	}
 
-	cmd := exec.Command(c.binPath, c.path, "--to-opf="+targetOpfPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := runCommand(c.binPath, c.path, "--to-opf="+targetOpfPath); err != nil {
 		return fmt.Errorf("ebook-meta failed to generate sidecar: %v, output: %s", err, string(out))
 	}
 

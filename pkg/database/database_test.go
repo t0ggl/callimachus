@@ -4,11 +4,84 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 )
+
+var (
+	testTemplateOnce  sync.Once
+	testTemplateBytes []byte
+	testTemplateErr   error
+)
+
+func getTestTemplateBytes() ([]byte, error) {
+	testTemplateOnce.Do(func() {
+		tempDir, err := os.MkdirTemp("", "callimachus-db-test-template-*")
+		if err != nil {
+			testTemplateErr = err
+			return
+		}
+		defer os.RemoveAll(tempDir)
+
+		dbPath := filepath.Join(tempDir, "template.db")
+		db, err := Open(Config{
+			Path:         dbPath,
+			MaxOpenConns: 1,
+			MaxIdleConns: 1,
+		})
+		if err != nil {
+			testTemplateErr = err
+			return
+		}
+
+		ctx := context.Background()
+		if err := db.Migrate(ctx); err != nil {
+			_ = db.Close()
+			testTemplateErr = err
+			return
+		}
+
+		_, _ = db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE);")
+		_ = db.Close()
+
+		testTemplateBytes, testTemplateErr = os.ReadFile(dbPath)
+	})
+	return testTemplateBytes, testTemplateErr
+}
+
+func openMigratedTestDB(t *testing.T) (*DB, string) {
+	t.Helper()
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test_callimachus.db")
+
+	tpl, err := getTestTemplateBytes()
+	if err != nil {
+		t.Fatalf("prepare test template failed: %v", err)
+	}
+	if err := os.WriteFile(dbPath, tpl, 0644); err != nil {
+		t.Fatalf("write test db failed: %v", err)
+	}
+
+	cfg := Config{
+		Path:         dbPath,
+		MaxOpenConns: 20,
+		MaxIdleConns: 10,
+	}
+
+	db, err := Open(cfg)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	return db, dbPath
+}
 
 func openTestDB(t *testing.T) (*DB, string) {
 	t.Helper()
@@ -207,12 +280,8 @@ func TestMigrationIdempotency(t *testing.T) {
 
 func TestSeriesIndexFloat64Precision(t *testing.T) {
 	t.Parallel()
-	db, _ := openTestDB(t)
+	db, _ := openMigratedTestDB(t)
 	ctx := context.Background()
-
-	if err := db.Migrate(ctx); err != nil {
-		t.Fatalf("Migrate failed: %v", err)
-	}
 
 	// Insert author
 	_, err := db.ExecContext(ctx, `
@@ -307,12 +376,8 @@ func TestSeriesIndexFloat64Precision(t *testing.T) {
 
 func TestForeignKeyCascades(t *testing.T) {
 	t.Parallel()
-	db, _ := openTestDB(t)
+	db, _ := openMigratedTestDB(t)
 	ctx := context.Background()
-
-	if err := db.Migrate(ctx); err != nil {
-		t.Fatalf("Migrate failed: %v", err)
-	}
 
 	// 1. Insert Author -> Book -> BookEdition -> MediaAsset & TranscodeQueue & EditionNarrator
 	_, err := db.ExecContext(ctx, `
@@ -423,13 +488,9 @@ func TestForeignKeyCascades(t *testing.T) {
 
 func TestConcurrentReadsDuringActiveWriteTransaction(t *testing.T) {
 	t.Parallel()
-	db, _ := openTestDB(t)
+	db, _ := openMigratedTestDB(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	if err := db.Migrate(ctx); err != nil {
-		t.Fatalf("Migrate failed: %v", err)
-	}
 
 	// Seed some initial data
 	for i := 0; i < 20; i++ {

@@ -4,40 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/t0ggl/callimachus/pkg/database"
+	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
 func setupTestQueueDB(t *testing.T) (*Queue, *database.DB) {
 	t.Helper()
-	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "test_queue.db")
-
-	db, err := database.Open(database.Config{
-		Path:         dbPath,
-		MaxOpenConns: 20,
-		MaxIdleConns: 10,
-	})
-	if err != nil {
-		t.Fatalf("Open test DB failed: %v", err)
-	}
-
-	t.Cleanup(func() {
-		_ = db.Close()
-	})
+	db := testutil.NewTestDB(t)
 
 	ctx := context.Background()
-	if err := db.Migrate(ctx); err != nil {
-		t.Fatalf("Migrate failed: %v", err)
-	}
-
 	// Insert synthetic dummy author, book, book_edition for foreign keys
-	_, err = db.ExecContext(ctx, `
+	_, err := db.ExecContext(ctx, `
 		INSERT INTO authors (id, name, sort_name) VALUES ('synth-author-1', 'Synthetic Author One', 'Author One, Synthetic');
 		INSERT INTO books (id, author_id, title) VALUES ('synth-book-1', 'synth-author-1', 'Synthetic Book Alpha');
 		INSERT INTO book_editions (id, book_id, format) VALUES ('synth-ed-1', 'synth-book-1', 'm4b');

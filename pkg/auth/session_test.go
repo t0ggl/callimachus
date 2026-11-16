@@ -4,37 +4,17 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/t0ggl/callimachus/pkg/database"
+	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
 func setupTestDB(t *testing.T) *database.DB {
 	t.Helper()
-	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "auth_test.db")
-
-	db, err := database.Open(database.Config{
-		Path:         dbPath,
-		MaxOpenConns: 5,
-		MaxIdleConns: 5,
-	})
-	if err != nil {
-		t.Fatalf("Open test DB failed: %v", err)
-	}
-
-	t.Cleanup(func() {
-		_ = db.Close()
-	})
-
-	if err := db.Migrate(context.Background()); err != nil {
-		t.Fatalf("Migrate failed: %v", err)
-	}
-
-	return db
+	return testutil.NewTestDB(t)
 }
 
 func TestSessionManager_Lifecycle(t *testing.T) {

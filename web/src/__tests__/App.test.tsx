@@ -115,7 +115,7 @@ describe('App Integration', () => {
   });
 
   it('navigates between views when clicking sidebar navigation', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     render(<App />);
 
     // Navigate to Activity view
@@ -143,7 +143,7 @@ describe('App Integration', () => {
   });
 
   it('opens and closes BookDetailModal when selecting a book', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     render(<App />);
 
     await waitFor(() => {
@@ -171,7 +171,7 @@ describe('App Integration', () => {
   });
 
   it('switches between grid and list view in catalog', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     render(<App />);
 
     await waitFor(() => {

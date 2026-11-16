@@ -3,12 +3,12 @@ package requests
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/database"
+	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
 type mockSearchTrigger struct {
@@ -41,28 +41,7 @@ func (m *mockSearchTrigger) LastCall() *BookRequest {
 
 func setupTestDB(t *testing.T) *database.DB {
 	t.Helper()
-	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "test_requests.db")
-
-	db, err := database.Open(database.Config{
-		Path:         dbPath,
-		MaxOpenConns: 10,
-		MaxIdleConns: 5,
-	})
-	if err != nil {
-		t.Fatalf("Open test DB failed: %v", err)
-	}
-
-	t.Cleanup(func() {
-		_ = db.Close()
-	})
-
-	ctx := context.Background()
-	if err := db.Migrate(ctx); err != nil {
-		t.Fatalf("Migrate failed: %v", err)
-	}
-
-	return db
+	return testutil.NewTestDB(t)
 }
 
 func createTestUser(t *testing.T, db *database.DB, id, username, role string) {

@@ -42,7 +42,7 @@ describe('CommandPalette Component', () => {
   });
 
   it('filters books and authors accurately based on query', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     render(
       <CommandPalette
         isOpen={true}
@@ -66,7 +66,7 @@ describe('CommandPalette Component', () => {
   it('calls onSelectBook when a book is selected', async () => {
     const onSelectBookMock = vi.fn();
     const onCloseMock = vi.fn();
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
 
     render(
       <CommandPalette

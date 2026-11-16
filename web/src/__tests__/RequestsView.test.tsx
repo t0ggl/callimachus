@@ -6,7 +6,7 @@ import { testRequests } from './testFixtures';
 
 describe('RequestsView Component', () => {
   it('renders requests and allows filtering by status', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     render(
       <RequestsView
         requests={testRequests}
@@ -32,7 +32,7 @@ describe('RequestsView Component', () => {
 
   it('submits a new book request properly', async () => {
     const onSubmitRequestMock = vi.fn();
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
 
     render(
       <RequestsView
@@ -67,7 +67,7 @@ describe('RequestsView Component', () => {
 
   it('triggers onApproveRequest when curator clicks approve', async () => {
     const onApproveRequestMock = vi.fn();
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
 
     render(
       <RequestsView
@@ -89,7 +89,7 @@ describe('RequestsView Component', () => {
 
   it('handles rejection flow with rejection reason modal', async () => {
     const onRejectRequestMock = vi.fn();
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
 
     render(
       <RequestsView

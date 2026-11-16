@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/t0ggl/callimachus/pkg/epub"
@@ -393,11 +394,37 @@ func TestSidecarGeneration(t *testing.T) {
 }
 
 func TestCalibreEngine(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow Calibre CLI test in short mode")
-	}
-	if _, err := exec.LookPath("ebook-meta"); err != nil {
-		t.Skip("ebook-meta not installed, skipping Calibre CLI test")
+	if os.Getenv("CALLIMACHUS_REAL_CALIBRE") != "1" {
+		restore := epub.SetMockCalibreRunner(
+			func(file string) (string, error) { return "/mock/ebook-meta", nil },
+			func(name string, args ...string) ([]byte, error) {
+				for _, arg := range args {
+					if strings.HasPrefix(arg, "--to-opf=") {
+						opfPath := strings.TrimPrefix(arg, "--to-opf=")
+						syntheticOPF := `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Synthetic Test Book Alpha</dc:title>
+    <dc:creator>Synthetic Author One</dc:creator>
+  </metadata>
+</package>`
+						if err := os.WriteFile(opfPath, []byte(syntheticOPF), 0644); err != nil {
+							return nil, err
+						}
+						return []byte("Exported OPF"), nil
+					}
+				}
+				return []byte("OK"), nil
+			},
+		)
+		defer restore()
+	} else {
+		if testing.Short() {
+			t.Skip("skipping slow Calibre CLI test in short mode")
+		}
+		if _, err := exec.LookPath("ebook-meta"); err != nil {
+			t.Skip("ebook-meta not installed, skipping Calibre CLI test")
+		}
 	}
 
 	fixture := getFixturePath("epub2_valid.epub")

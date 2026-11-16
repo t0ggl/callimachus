@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/t0ggl/callimachus/pkg/database"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
@@ -154,18 +153,7 @@ func TestCatalog_ReconcileAndIdempotency(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	dbDir := t.TempDir()
-	dbPath := filepath.Join(dbDir, "catalog_test.db")
-
-	db, err := database.Open(database.Config{Path: dbPath})
-	if err != nil {
-		t.Fatalf("failed to open database: %v", err)
-	}
-	defer db.Close()
-
-	if err := db.Migrate(ctx); err != nil {
-		t.Fatalf("failed to migrate database: %v", err)
-	}
+	db := testutil.NewTestDB(t)
 
 	cat := New(db)
 	libraryRoot := testutil.TempLibrary(t)
@@ -245,18 +233,7 @@ func TestCatalog_IngestBook_EndToEnd(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	dbDir := t.TempDir()
-	dbPath := filepath.Join(dbDir, "catalog_ingest.db")
-
-	db, err := database.Open(database.Config{Path: dbPath})
-	if err != nil {
-		t.Fatalf("failed to open database: %v", err)
-	}
-	defer db.Close()
-
-	if err := db.Migrate(ctx); err != nil {
-		t.Fatalf("failed to migrate database: %v", err)
-	}
+	db := testutil.NewTestDB(t)
 
 	cat := New(db)
 	libraryRoot := t.TempDir()

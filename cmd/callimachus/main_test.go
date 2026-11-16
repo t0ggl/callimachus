@@ -12,11 +12,14 @@ import (
 	"testing"
 	"testing/fstest"
 	"time"
+
+	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
 func TestServer_StartupHealthAndShutdown(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "test_callimachus.db")
+	testutil.PrepareTestDBFile(t, dbPath)
 	libraryDir := filepath.Join(tempDir, "books")
 	if err := os.MkdirAll(libraryDir, 0755); err != nil {
 		t.Fatalf("mkdir libraryDir: %v", err)
@@ -153,6 +156,7 @@ func TestServer_StartupHealthAndShutdown(t *testing.T) {
 func TestServer_FallbackHTMLWhenDistEmpty(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "fallback_test.db")
+	testutil.PrepareTestDBFile(t, dbPath)
 
 	// Provide empty mock static FS
 	emptyFS := fstest.MapFS{}
@@ -207,6 +211,7 @@ func TestServer_FallbackHTMLWhenDistEmpty(t *testing.T) {
 func TestRun_CommandExecutionAndCancel(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "run_test.db")
+	testutil.PrepareTestDBFile(t, dbPath)
 	booksDir := filepath.Join(tempDir, "books")
 	_ = os.MkdirAll(booksDir, 0755)
 

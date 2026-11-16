@@ -10,6 +10,7 @@ import (
 	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/database"
 	"github.com/t0ggl/callimachus/pkg/downloaders"
+	"github.com/t0ggl/callimachus/pkg/testutil"
 	"github.com/t0ggl/callimachus/pkg/transcoder"
 )
 
@@ -44,29 +45,10 @@ func (m *mockDownloadClient) RemoveTask(ctx context.Context, taskID string, dele
 
 func setupTestDB(t *testing.T) *database.DB {
 	t.Helper()
-	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "test_staging.db")
-
-	db, err := database.Open(database.Config{
-		Path:         dbPath,
-		MaxOpenConns: 10,
-		MaxIdleConns: 5,
-	})
-	if err != nil {
-		t.Fatalf("Open test DB failed: %v", err)
-	}
-
-	t.Cleanup(func() {
-		_ = db.Close()
-	})
-
-	ctx := context.Background()
-	if err := db.Migrate(ctx); err != nil {
-		t.Fatalf("Migrate failed: %v", err)
-	}
+	db := testutil.NewTestDB(t)
 
 	// Insert dummy download_client
-	_, err = db.ExecContext(ctx, `
+	_, err := db.ExecContext(context.Background(), `
 		INSERT INTO download_clients (id, name, type, host, port, use_ssl, enabled)
 		VALUES ('mock-dc-1', 'Mock Client', 'qbittorrent', 'localhost', 8080, 0, 1);
 	`)

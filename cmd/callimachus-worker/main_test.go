@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
 func TestWorkerCLI_HelpFlag(t *testing.T) {
@@ -20,12 +22,13 @@ func TestWorkerCLI_HelpFlag(t *testing.T) {
 func TestWorkerCLI_RunAndGracefulShutdown(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "cli_test.db")
+	testutil.PrepareTestDBFile(t, dbPath)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Cancel context after 600 milliseconds to simulate SIGINT/SIGTERM
+	// Cancel context after 100 milliseconds to simulate SIGINT/SIGTERM
 	go func() {
-		time.Sleep(600 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 		cancel()
 	}()
 

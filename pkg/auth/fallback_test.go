@@ -8,13 +8,12 @@ import (
 )
 
 func TestFallbackAuthenticator_Disabled(t *testing.T) {
-	db := setupTestDB(t)
 	sm := NewSessionManager(1*time.Hour, DefaultCookieConfig())
 	defer sm.Close()
 
 	_ = os.Unsetenv("ADMIN_PASSWORD")
 
-	auth := NewFallbackAuthenticator(FallbackConfig{AdminPassword: ""}, db, sm)
+	auth := NewFallbackAuthenticator(FallbackConfig{AdminPassword: ""}, nil, sm)
 	if auth.IsEnabled() {
 		t.Fatal("Expected authenticator to be disabled")
 	}
@@ -73,11 +72,10 @@ func TestFallbackAuthenticator_SuccessAndProvisioning(t *testing.T) {
 }
 
 func TestFallbackAuthenticator_InvalidPassword(t *testing.T) {
-	db := setupTestDB(t)
 	sm := NewSessionManager(1*time.Hour, DefaultCookieConfig())
 	defer sm.Close()
 
-	auth := NewFallbackAuthenticator(FallbackConfig{AdminPassword: "secret-admin-pass"}, db, sm)
+	auth := NewFallbackAuthenticator(FallbackConfig{AdminPassword: "secret-admin-pass"}, nil, sm)
 
 	ctx := context.Background()
 	_, _, err := auth.Authenticate(ctx, "wrong-password")

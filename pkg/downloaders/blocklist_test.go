@@ -2,36 +2,16 @@ package downloaders
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/t0ggl/callimachus/pkg/database"
+	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
 func setupTestBlocklistDB(t *testing.T) (*BlocklistManager, *database.DB) {
 	t.Helper()
-	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "test_blocklist.db")
-
-	db, err := database.Open(database.Config{
-		Path:         dbPath,
-		MaxOpenConns: 5,
-		MaxIdleConns: 5,
-	})
-	if err != nil {
-		t.Fatalf("Open test DB failed: %v", err)
-	}
-
-	t.Cleanup(func() {
-		_ = db.Close()
-	})
-
-	ctx := context.Background()
-	if err := db.Migrate(ctx); err != nil {
-		t.Fatalf("Migrate failed: %v", err)
-	}
-
+	db := testutil.NewTestDB(t)
 	return NewBlocklistManager(db), db
 }
 

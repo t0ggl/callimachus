@@ -3,7 +3,6 @@ package indexers_test
 import (
 	"context"
 	"net/http"
-	"path/filepath"
 	"testing"
 
 	"github.com/t0ggl/callimachus/pkg/database"
@@ -13,31 +12,7 @@ import (
 
 func setupTestDB(t *testing.T) *database.DB {
 	t.Helper()
-	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "test_callimachus.db")
-
-	cfg := database.Config{
-		Path:         dbPath,
-		MaxOpenConns: 5,
-		MaxIdleConns: 5,
-	}
-
-	db, err := database.Open(cfg)
-	if err != nil {
-		t.Fatalf("setupTestDB: Open failed: %v", err)
-	}
-
-	ctx := context.Background()
-	if err := db.Migrate(ctx); err != nil {
-		db.Close()
-		t.Fatalf("setupTestDB: Migrate failed: %v", err)
-	}
-
-	t.Cleanup(func() {
-		_ = db.Close()
-	})
-
-	return db
+	return testutil.NewTestDB(t)
 }
 
 func TestProwlarrClient_GetSystemStatus(t *testing.T) {
