@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -150,26 +151,12 @@ type APIQualityProfileSettings struct {
 	MaxFileSizeMb          int      `json:"maxFileSizeMb"`
 }
 
-type APIAuthSettings struct {
-	OIDCEnabled                bool     `json:"oidcEnabled"`
-	OIDCIssuerURL              string   `json:"oidcIssuerUrl"`
-	OIDCClientID               string   `json:"oidcClientId"`
-	OIDCClientSecretConfigured bool     `json:"oidcClientSecretConfigured"`
-	OIDCRedirectURL            string   `json:"oidcRedirectUrl"`
-	OIDCAdminGroups            []string `json:"oidcAdminGroups"`
-	OIDCCuratorGroups          []string `json:"oidcCuratorGroups"`
-	OIDCDefaultRole            string   `json:"oidcDefaultRole"`
-	LocalAuthEnabled           bool     `json:"localAuthEnabled"`
-	SessionTimeoutHours        int      `json:"sessionTimeoutHours"`
-}
-
 type APISettingsResponse struct {
 	Indexers        []APIIndexerConfig           `json:"indexers"`
 	DownloadClients []APIDownloadClientConfig    `json:"downloadClients"`
 	Library         APILibrarySettings           `json:"library"`
 	Prowlarr        APIProwlarrSettings          `json:"prowlarr"`
 	QualityProfile  APIQualityProfileSettings    `json:"qualityProfile"`
-	AuthSettings    APIAuthSettings              `json:"authSettings"`
 	Overrides       map[string]config.OverrideInfo `json:"overrides"`
 }
 
@@ -193,18 +180,6 @@ type APISettingsUpdateRequest struct {
 		PreferSingleFileM4b    *bool     `json:"preferSingleFileM4b"`
 		MaxFileSizeMb          *int      `json:"maxFileSizeMb"`
 	} `json:"qualityProfile"`
-	AuthSettings *struct {
-		OIDCEnabled         *bool     `json:"oidcEnabled"`
-		OIDCIssuerURL       *string   `json:"oidcIssuerUrl"`
-		OIDCClientID        *string   `json:"oidcClientId"`
-		OIDCClientSecret    *string   `json:"oidcClientSecret"`
-		OIDCRedirectURL     *string   `json:"oidcRedirectUrl"`
-		OIDCAdminGroups     *[]string `json:"oidcAdminGroups"`
-		OIDCCuratorGroups   *[]string `json:"oidcCuratorGroups"`
-		OIDCDefaultRole     *string   `json:"oidcDefaultRole"`
-		AdminPassword       *string   `json:"adminPassword"`
-		SessionTimeoutHours *int      `json:"sessionTimeoutHours"`
-	} `json:"authSettings"`
 }
 
 func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
@@ -217,6 +192,7 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/activity", s.handleGetActivity)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
+	mux.HandleFunc("POST /api/settings", s.handleRejectSettingsPost)
 	mux.HandleFunc("POST /api/settings/prowlarr/sync", s.handleSyncProwlarr)
 	mux.HandleFunc("GET /api/events", s.handleEventsSSE)
 }
@@ -487,20 +463,6 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 		MaxFileSizeMb:          cfg.MaxFileSizeMB,
 	}
 
-	// Auth Settings (never expose raw secrets)
-	resp.AuthSettings = APIAuthSettings{
-		OIDCEnabled:                cfg.OIDCEnabled,
-		OIDCIssuerURL:              cfg.OIDCIssuerURL,
-		OIDCClientID:               cfg.OIDCClientID,
-		OIDCClientSecretConfigured: cfg.OIDCClientSecret != "",
-		OIDCRedirectURL:            cfg.OIDCRedirectURL,
-		OIDCAdminGroups:            cfg.OIDCAdminGroups,
-		OIDCCuratorGroups:          cfg.OIDCCuratorGroups,
-		OIDCDefaultRole:            cfg.OIDCDefaultRole,
-		LocalAuthEnabled:           cfg.AdminPassword != "",
-		SessionTimeoutHours:        cfg.SessionTimeoutHours,
-	}
-
 	if s.db != nil {
 		// Query indexers
 		if rows, err := s.db.QueryContext(ctx, `SELECT id, name, protocol, priority, enabled, COALESCE(last_sync_at, '') FROM indexers ORDER BY priority ASC`); err == nil {
@@ -542,16 +504,70 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+func hasForbiddenAuthSettingKeys(raw map[string]json.RawMessage) bool {
+	for k := range raw {
+		normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(strings.TrimSpace(k)))
+		switch normalized {
+		case "auth", "authsettings",
+			"oidc", "oidcenabled", "oidcissuerurl", "oidcclientid", "oidcclientsecret",
+			"oidcredirecturl", "oidcscopes", "oidcadmingroups", "oidccuratorgroups", "oidcdefaultrole",
+			"adminpassword", "localauthenabled", "sessiontimeouthours":
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) handleRejectSettingsPost(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	var raw map[string]json.RawMessage
+	if len(body) > 0 && json.Unmarshal(body, &raw) == nil && hasForbiddenAuthSettingKeys(raw) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "authentication and OIDC settings are configured exclusively via environment variables and cannot be modified via HTTP",
+		})
+		return
+	}
+	w.WriteHeader(http.StatusMethodNotAllowed)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error": "POST /api/settings is not supported; use PUT /api/settings for non-authentication settings",
+	})
+}
+
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if s.db == nil {
-		http.Error(w, `{"error":"database unavailable"}`, http.StatusServiceUnavailable)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "database unavailable"})
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to read request body"})
+		return
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON request body"})
+		return
+	}
+	if hasForbiddenAuthSettingKeys(raw) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "authentication and OIDC settings are configured exclusively via environment variables and cannot be modified via HTTP",
+		})
 		return
 	}
 
 	var req APISettingsUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid JSON request body"}`, http.StatusBadRequest)
+	if err := json.Unmarshal(body, &req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON request body"})
 		return
 	}
 
@@ -602,39 +618,6 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.QualityProfile.MaxFileSizeMb != nil {
 			updates[config.KeyMaxFileSizeMB] = strconv.Itoa(*req.QualityProfile.MaxFileSizeMb)
-		}
-	}
-
-	if req.AuthSettings != nil {
-		if req.AuthSettings.OIDCEnabled != nil {
-			updates[config.KeyOIDCEnabled] = strconv.FormatBool(*req.AuthSettings.OIDCEnabled)
-		}
-		if req.AuthSettings.OIDCIssuerURL != nil {
-			updates[config.KeyOIDCIssuerURL] = *req.AuthSettings.OIDCIssuerURL
-		}
-		if req.AuthSettings.OIDCClientID != nil {
-			updates[config.KeyOIDCClientID] = *req.AuthSettings.OIDCClientID
-		}
-		if req.AuthSettings.OIDCClientSecret != nil && strings.TrimSpace(*req.AuthSettings.OIDCClientSecret) != "" {
-			updates[config.KeyOIDCClientSecret] = *req.AuthSettings.OIDCClientSecret
-		}
-		if req.AuthSettings.OIDCRedirectURL != nil {
-			updates[config.KeyOIDCRedirectURL] = *req.AuthSettings.OIDCRedirectURL
-		}
-		if req.AuthSettings.OIDCAdminGroups != nil {
-			updates[config.KeyOIDCAdminGroups] = strings.Join(*req.AuthSettings.OIDCAdminGroups, ",")
-		}
-		if req.AuthSettings.OIDCCuratorGroups != nil {
-			updates[config.KeyOIDCCuratorGroups] = strings.Join(*req.AuthSettings.OIDCCuratorGroups, ",")
-		}
-		if req.AuthSettings.OIDCDefaultRole != nil {
-			updates[config.KeyOIDCDefaultRole] = *req.AuthSettings.OIDCDefaultRole
-		}
-		if req.AuthSettings.AdminPassword != nil && strings.TrimSpace(*req.AuthSettings.AdminPassword) != "" {
-			updates[config.KeyAdminPassword] = *req.AuthSettings.AdminPassword
-		}
-		if req.AuthSettings.SessionTimeoutHours != nil {
-			updates[config.KeySessionTimeoutHours] = strconv.Itoa(*req.AuthSettings.SessionTimeoutHours)
 		}
 	}
 

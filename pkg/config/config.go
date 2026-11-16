@@ -32,16 +32,6 @@ const (
 	KeyAudioTargetBitrateKbps = "audio_target_bitrate_kbps"
 	KeyPreferSingleFileM4B    = "prefer_single_file_m4b"
 	KeyMaxFileSizeMB          = "max_file_size_mb"
-	KeyOIDCEnabled            = "oidc_enabled"
-	KeyOIDCIssuerURL          = "oidc_issuer_url"
-	KeyOIDCClientID           = "oidc_client_id"
-	KeyOIDCClientSecret       = "oidc_client_secret"
-	KeyOIDCRedirectURL        = "oidc_redirect_url"
-	KeyOIDCAdminGroups        = "oidc_admin_groups"
-	KeyOIDCCuratorGroups      = "oidc_curator_groups"
-	KeyOIDCDefaultRole        = "oidc_default_role"
-	KeyAdminPassword          = "admin_password"
-	KeySessionTimeoutHours    = "session_timeout_hours"
 )
 
 // Bootstrap setting keys (resolved before opening SQLite).
@@ -92,16 +82,6 @@ var registry = []SettingSpec{
 	{Key: KeyAudioTargetBitrateKbps, Kind: KindInt, Default: "64"},
 	{Key: KeyPreferSingleFileM4B, Kind: KindBool, Default: "true"},
 	{Key: KeyMaxFileSizeMB, Kind: KindInt, Default: "2048"},
-	{Key: KeyOIDCEnabled, Kind: KindBool},
-	{Key: KeyOIDCIssuerURL, Kind: KindString},
-	{Key: KeyOIDCClientID, Kind: KindString},
-	{Key: KeyOIDCClientSecret, Kind: KindString, Secret: true},
-	{Key: KeyOIDCRedirectURL, Kind: KindString},
-	{Key: KeyOIDCAdminGroups, Kind: KindStringList},
-	{Key: KeyOIDCCuratorGroups, Kind: KindStringList},
-	{Key: KeyOIDCDefaultRole, Kind: KindString, Default: "user"},
-	{Key: KeyAdminPassword, Kind: KindString, Secret: true},
-	{Key: KeySessionTimeoutHours, Kind: KindInt, Default: "720"},
 }
 
 var specByKey = func() map[string]SettingSpec {
@@ -147,16 +127,6 @@ type Settings struct {
 	AudioTargetBitrateKbps int           `json:"audioTargetBitrateKbps"`
 	PreferSingleFileM4B    bool          `json:"preferSingleFileM4b"`
 	MaxFileSizeMB          int           `json:"maxFileSizeMb"`
-	OIDCEnabled            bool          `json:"oidcEnabled"`
-	OIDCIssuerURL          string        `json:"oidcIssuerUrl"`
-	OIDCClientID           string        `json:"oidcClientId"`
-	OIDCClientSecret       string        `json:"-"`
-	OIDCRedirectURL        string        `json:"oidcRedirectUrl"`
-	OIDCAdminGroups        []string      `json:"oidcAdminGroups"`
-	OIDCCuratorGroups      []string      `json:"oidcCuratorGroups"`
-	OIDCDefaultRole        string        `json:"oidcDefaultRole"`
-	AdminPassword          string        `json:"-"`
-	SessionTimeoutHours    int           `json:"sessionTimeoutHours"`
 }
 
 // ToQualityProfile builds a downloaders.QualityProfile from the resolved settings.
@@ -188,16 +158,6 @@ type Overrides struct {
 	ProwlarrSyncInterval time.Duration
 	IndexerSyncInterval  time.Duration
 	StagingPollInterval  time.Duration
-	OIDCEnabled          *bool
-	OIDCIssuerURL        string
-	OIDCClientID         string
-	OIDCClientSecret     string
-	OIDCRedirectURL      string
-	OIDCAdminGroups      []string
-	OIDCCuratorGroups    []string
-	OIDCDefaultRole      string
-	AdminPassword        string
-	SessionTimeoutHours  int
 }
 
 // ResolvedSettings pairs effective Settings with per-key override metadata.
@@ -302,7 +262,6 @@ func Load(ctx context.Context, db *database.DB, caller Overrides) (*ResolvedSett
 	callerValues := callerOverridesMap(caller)
 	resolvedValues := make(map[string]string, len(registry))
 	overrideMap := make(map[string]OverrideInfo, len(registry))
-	explicitOIDCEnabled := false
 
 	for _, spec := range registry {
 		canonicalEnv := EnvVarName(spec.Key)
@@ -321,17 +280,11 @@ func Load(ctx context.Context, db *database.DB, caller Overrides) (*ResolvedSett
 		// 2. Database-stored value
 		if dbVal, ok := dbValues[spec.Key]; ok && strings.TrimSpace(dbVal) != "" {
 			val = strings.TrimSpace(dbVal)
-			if spec.Key == KeyOIDCEnabled {
-				explicitOIDCEnabled = true
-			}
 		}
 
 		// 3. Programmatic / CLI override (when not overridden by env)
 		if callerVal, ok := callerValues[spec.Key]; ok && strings.TrimSpace(callerVal) != "" {
 			val = strings.TrimSpace(callerVal)
-			if spec.Key == KeyOIDCEnabled {
-				explicitOIDCEnabled = true
-			}
 		}
 
 		// 4. Environment variable ALWAYS takes absolute precedence over DB, caller, and defaults
@@ -339,16 +292,13 @@ func Load(ctx context.Context, db *database.DB, caller Overrides) (*ResolvedSett
 			val = envVal
 			info.IsOverridden = true
 			info.OverriddenBy = envName
-			if spec.Key == KeyOIDCEnabled {
-				explicitOIDCEnabled = true
-			}
 		}
 
 		resolvedValues[spec.Key] = val
 		overrideMap[spec.Key] = info
 	}
 
-	settings := materializeSettings(resolvedValues, explicitOIDCEnabled)
+	settings := materializeSettings(resolvedValues)
 	return &ResolvedSettings{
 		Settings:  settings,
 		Overrides: overrideMap,
@@ -483,41 +433,11 @@ func callerOverridesMap(c Overrides) map[string]string {
 	if c.StagingPollInterval > 0 {
 		m[KeyStagingPollInterval] = c.StagingPollInterval.String()
 	}
-	if c.OIDCEnabled != nil {
-		m[KeyOIDCEnabled] = strconv.FormatBool(*c.OIDCEnabled)
-	}
-	if strings.TrimSpace(c.OIDCIssuerURL) != "" {
-		m[KeyOIDCIssuerURL] = c.OIDCIssuerURL
-	}
-	if strings.TrimSpace(c.OIDCClientID) != "" {
-		m[KeyOIDCClientID] = c.OIDCClientID
-	}
-	if strings.TrimSpace(c.OIDCClientSecret) != "" {
-		m[KeyOIDCClientSecret] = c.OIDCClientSecret
-	}
-	if strings.TrimSpace(c.OIDCRedirectURL) != "" {
-		m[KeyOIDCRedirectURL] = c.OIDCRedirectURL
-	}
-	if len(c.OIDCAdminGroups) > 0 {
-		m[KeyOIDCAdminGroups] = strings.Join(c.OIDCAdminGroups, ",")
-	}
-	if len(c.OIDCCuratorGroups) > 0 {
-		m[KeyOIDCCuratorGroups] = strings.Join(c.OIDCCuratorGroups, ",")
-	}
-	if strings.TrimSpace(c.OIDCDefaultRole) != "" {
-		m[KeyOIDCDefaultRole] = c.OIDCDefaultRole
-	}
-	if strings.TrimSpace(c.AdminPassword) != "" {
-		m[KeyAdminPassword] = c.AdminPassword
-	}
-	if c.SessionTimeoutHours > 0 {
-		m[KeySessionTimeoutHours] = strconv.Itoa(c.SessionTimeoutHours)
-	}
 	return m
 }
 
-func materializeSettings(vals map[string]string, explicitOIDCEnabled bool) Settings {
-	s := Settings{
+func materializeSettings(vals map[string]string) Settings {
+	return Settings{
 		LibraryRoot:            vals[KeyLibraryRoot],
 		ProwlarrURL:            strings.TrimRight(vals[KeyProwlarrURL], "/"),
 		ProwlarrAPIKey:         vals[KeyProwlarrAPIKey],
@@ -531,23 +451,7 @@ func materializeSettings(vals map[string]string, explicitOIDCEnabled bool) Setti
 		AudioTargetBitrateKbps: parseIntOr(vals[KeyAudioTargetBitrateKbps], 64),
 		PreferSingleFileM4B:    parseBoolOr(vals[KeyPreferSingleFileM4B], true),
 		MaxFileSizeMB:          parseNonNegIntOr(vals[KeyMaxFileSizeMB], 2048),
-		OIDCIssuerURL:          vals[KeyOIDCIssuerURL],
-		OIDCClientID:           vals[KeyOIDCClientID],
-		OIDCClientSecret:       vals[KeyOIDCClientSecret],
-		OIDCRedirectURL:        vals[KeyOIDCRedirectURL],
-		OIDCAdminGroups:        parseList(vals[KeyOIDCAdminGroups]),
-		OIDCCuratorGroups:      parseList(vals[KeyOIDCCuratorGroups]),
-		OIDCDefaultRole:        orDefault(vals[KeyOIDCDefaultRole], "user"),
-		AdminPassword:          vals[KeyAdminPassword],
-		SessionTimeoutHours:    parseIntOr(vals[KeySessionTimeoutHours], 720),
 	}
-
-	if explicitOIDCEnabled {
-		s.OIDCEnabled = parseBoolOr(vals[KeyOIDCEnabled], false)
-	} else {
-		s.OIDCEnabled = s.OIDCIssuerURL != "" && s.OIDCClientID != ""
-	}
-	return s
 }
 
 func defaultLibraryPath() string {

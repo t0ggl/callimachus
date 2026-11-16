@@ -3,7 +3,6 @@ import {
   Globe,
   Download,
   Sliders,
-  Shield,
   HardDrive,
   RefreshCw,
   CheckCircle2,
@@ -17,7 +16,6 @@ import {
   LibrarySettings,
   ProwlarrSettings,
   QualityProfile,
-  AuthSettings,
   SettingsOverridesMap,
   FormatType,
 } from '../types';
@@ -42,18 +40,6 @@ export interface SettingsUpdatePayload {
     preferSingleFileM4b?: boolean;
     maxFileSizeMb?: number;
   };
-  authSettings?: {
-    oidcEnabled?: boolean;
-    oidcIssuerUrl?: string;
-    oidcClientId?: string;
-    oidcClientSecret?: string;
-    oidcRedirectUrl?: string;
-    oidcAdminGroups?: string[];
-    oidcCuratorGroups?: string[];
-    oidcDefaultRole?: string;
-    adminPassword?: string;
-    sessionTimeoutHours?: number;
-  };
 }
 
 interface SettingsViewProps {
@@ -62,7 +48,6 @@ interface SettingsViewProps {
   librarySettings?: LibrarySettings;
   prowlarrSettings?: ProwlarrSettings;
   qualityProfile: QualityProfile;
-  authSettings: AuthSettings;
   overrides?: SettingsOverridesMap;
   onSyncIndexers?: () => void;
   onSaveSettings?: (payload: SettingsUpdatePayload) => Promise<void>;
@@ -86,12 +71,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   librarySettings: initialLibrary = DEFAULT_LIBRARY,
   prowlarrSettings: initialProwlarr = DEFAULT_PROWLARR,
   qualityProfile: initialQuality,
-  authSettings: initialAuth,
   overrides = {},
   onSyncIndexers,
   onSaveSettings,
 }) => {
-  const [activeTab, setActiveTab] = useState<'indexers' | 'downloaders' | 'library' | 'quality' | 'auth'>('indexers');
+  const [activeTab, setActiveTab] = useState<'indexers' | 'downloaders' | 'library' | 'quality'>('indexers');
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncSuccess, setSyncSuccess] = useState(false);
 
@@ -113,22 +97,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   });
   const [languagesInput, setLanguagesInput] = useState(
     (initialQuality.allowedLanguages ?? ['en']).join(', ')
-  );
-
-  const [authSettings, setAuthSettings] = useState<AuthSettings>({
-    ...initialAuth,
-    oidcRedirectUrl: initialAuth.oidcRedirectUrl ?? '',
-    oidcAdminGroups: initialAuth.oidcAdminGroups ?? [],
-    oidcCuratorGroups: initialAuth.oidcCuratorGroups ?? [],
-    oidcDefaultRole: initialAuth.oidcDefaultRole ?? 'requester',
-  });
-  const [oidcSecretDraft, setOidcSecretDraft] = useState('');
-  const [adminPasswordDraft, setAdminPasswordDraft] = useState('');
-  const [adminGroupsInput, setAdminGroupsInput] = useState(
-    (initialAuth.oidcAdminGroups ?? []).join(', ')
-  );
-  const [curatorGroupsInput, setCuratorGroupsInput] = useState(
-    (initialAuth.oidcCuratorGroups ?? []).join(', ')
   );
 
   const [testResult, setTestResult] = useState<{ id: string; success: boolean } | null>(null);
@@ -159,20 +127,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     });
     setLanguagesInput(langs.join(', '));
   }, [initialQuality]);
-
-  useEffect(() => {
-    const adminGroups = initialAuth.oidcAdminGroups ?? [];
-    const curatorGroups = initialAuth.oidcCuratorGroups ?? [];
-    setAuthSettings({
-      ...initialAuth,
-      oidcRedirectUrl: initialAuth.oidcRedirectUrl ?? '',
-      oidcAdminGroups: adminGroups,
-      oidcCuratorGroups: curatorGroups,
-      oidcDefaultRole: initialAuth.oidcDefaultRole ?? 'requester',
-    });
-    setAdminGroupsInput(adminGroups.join(', '));
-    setCuratorGroupsInput(curatorGroups.join(', '));
-  }, [initialAuth]);
 
   const isOverridden = (key: string): boolean => Boolean(overrides[key]?.isOverridden);
 
@@ -261,32 +215,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           ? { maxFileSizeMb: qualityProfile.maxFileSizeMb }
           : {}),
       },
-      authSettings: {
-        ...(!isOverridden('oidc_enabled') ? { oidcEnabled: authSettings.oidcEnabled } : {}),
-        ...(!isOverridden('oidc_issuer_url') ? { oidcIssuerUrl: authSettings.oidcIssuerUrl } : {}),
-        ...(!isOverridden('oidc_client_id') ? { oidcClientId: authSettings.oidcClientId } : {}),
-        ...(!isOverridden('oidc_client_secret') && oidcSecretDraft.trim() !== ''
-          ? { oidcClientSecret: oidcSecretDraft.trim() }
-          : {}),
-        ...(!isOverridden('oidc_redirect_url')
-          ? { oidcRedirectUrl: authSettings.oidcRedirectUrl ?? '' }
-          : {}),
-        ...(!isOverridden('oidc_admin_groups')
-          ? { oidcAdminGroups: splitList(adminGroupsInput) }
-          : {}),
-        ...(!isOverridden('oidc_curator_groups')
-          ? { oidcCuratorGroups: splitList(curatorGroupsInput) }
-          : {}),
-        ...(!isOverridden('oidc_default_role')
-          ? { oidcDefaultRole: authSettings.oidcDefaultRole ?? 'requester' }
-          : {}),
-        ...(!isOverridden('admin_password') && adminPasswordDraft.trim() !== ''
-          ? { adminPassword: adminPasswordDraft.trim() }
-          : {}),
-        ...(!isOverridden('session_timeout_hours')
-          ? { sessionTimeoutHours: authSettings.sessionTimeoutHours }
-          : {}),
-      },
     };
 
     try {
@@ -304,8 +232,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         }
       }
       setProwlarrApiKeyDraft('');
-      setOidcSecretDraft('');
-      setAdminPasswordDraft('');
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err: any) {
@@ -345,7 +271,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div>
           <h1 className="text-xl font-bold tracking-tight text-white">System Settings</h1>
           <p className="text-xs text-zinc-400 mt-0.5">
-            Configure external metadata indexers, library storage, transcode quality profiles, and security
+            Configure external metadata indexers, library storage, and transcode quality profiles
           </p>
         </div>
 
@@ -437,17 +363,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         >
           <Sliders className="w-3.5 h-3.5 text-purple-400" />
           Quality & Profiles
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab('auth')}
-          data-testid="tab-settings-auth"
-          className={`px-3 py-1.5 rounded-md flex items-center gap-2 whitespace-nowrap transition-colors ${
-            activeTab === 'auth' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200'
-          }`}
-        >
-          <Shield className="w-3.5 h-3.5 text-emerald-400" />
-          Authentication & OIDC
         </button>
       </div>
 
@@ -951,250 +866,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <OverrideBadge settingKey="prefer_single_file_m4b" />
               </div>
               <OverrideNote settingKey="prefer_single_file_m4b" />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* TAB 5: AUTH & OIDC */}
-      {activeTab === 'auth' && (
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 space-y-6 max-w-2xl">
-          <div>
-            <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-              <Shield className="w-4 h-4 text-emerald-400" />
-              OpenID Connect (OIDC) & Local Authentication
-            </h3>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              Secure single sign-on via Authentik, Keycloak, or Authelia
-            </p>
-          </div>
-
-          <div className="space-y-4 text-xs">
-            <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-lg">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-semibold text-zinc-200 flex items-center gap-2">
-                    <label htmlFor="oidc-enabled">Enable OIDC Authentication</label>
-                    <OverrideBadge settingKey="oidc_enabled" />
-                  </div>
-                  <div className="text-zinc-500 text-[11px]">
-                    Redirects unauthenticated users to the identity provider
-                  </div>
-                </div>
-                <input
-                  id="oidc-enabled"
-                  type="checkbox"
-                  checked={authSettings.oidcEnabled}
-                  disabled={isOverridden('oidc_enabled')}
-                  onChange={(e) =>
-                    setAuthSettings((prev) => ({ ...prev, oidcEnabled: e.target.checked }))
-                  }
-                  className="rounded bg-zinc-900 border-zinc-700 text-blue-500 focus:ring-0 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
-                />
-              </div>
-              <OverrideNote settingKey="oidc_enabled" />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label htmlFor="oidc-issuer-url" className="block text-zinc-400 font-medium">
-                    OIDC Issuer URL
-                  </label>
-                  <OverrideBadge settingKey="oidc_issuer_url" />
-                </div>
-                <input
-                  id="oidc-issuer-url"
-                  type="url"
-                  value={authSettings.oidcIssuerUrl}
-                  disabled={isOverridden('oidc_issuer_url')}
-                  onChange={(e) =>
-                    setAuthSettings((prev) => ({ ...prev, oidcIssuerUrl: e.target.value }))
-                  }
-                  className={inputClass(isOverridden('oidc_issuer_url'))}
-                />
-                <OverrideNote settingKey="oidc_issuer_url" />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label htmlFor="oidc-client-id" className="block text-zinc-400 font-medium">
-                    OIDC Client ID
-                  </label>
-                  <OverrideBadge settingKey="oidc_client_id" />
-                </div>
-                <input
-                  id="oidc-client-id"
-                  type="text"
-                  value={authSettings.oidcClientId}
-                  disabled={isOverridden('oidc_client_id')}
-                  onChange={(e) =>
-                    setAuthSettings((prev) => ({ ...prev, oidcClientId: e.target.value }))
-                  }
-                  className={inputClass(isOverridden('oidc_client_id'))}
-                />
-                <OverrideNote settingKey="oidc_client_id" />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label htmlFor="oidc-client-secret" className="block text-zinc-400 font-medium">
-                    OIDC Client Secret
-                  </label>
-                  <OverrideBadge settingKey="oidc_client_secret" />
-                </div>
-                <input
-                  id="oidc-client-secret"
-                  type="password"
-                  placeholder={authSettings.oidcClientSecretConfigured ? '•••••••• (configured)' : 'Enter client secret'}
-                  value={oidcSecretDraft}
-                  disabled={isOverridden('oidc_client_secret')}
-                  onChange={(e) => setOidcSecretDraft(e.target.value)}
-                  className={inputClass(isOverridden('oidc_client_secret'))}
-                />
-                <OverrideNote settingKey="oidc_client_secret" />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label htmlFor="oidc-redirect-url" className="block text-zinc-400 font-medium">
-                    OIDC Redirect URL
-                  </label>
-                  <OverrideBadge settingKey="oidc_redirect_url" />
-                </div>
-                <input
-                  id="oidc-redirect-url"
-                  type="url"
-                  value={authSettings.oidcRedirectUrl ?? ''}
-                  disabled={isOverridden('oidc_redirect_url')}
-                  onChange={(e) =>
-                    setAuthSettings((prev) => ({ ...prev, oidcRedirectUrl: e.target.value }))
-                  }
-                  className={inputClass(isOverridden('oidc_redirect_url'))}
-                />
-                <OverrideNote settingKey="oidc_redirect_url" />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label htmlFor="oidc-admin-groups" className="block text-zinc-400 font-medium">
-                    OIDC Admin Groups
-                  </label>
-                  <OverrideBadge settingKey="oidc_admin_groups" />
-                </div>
-                <input
-                  id="oidc-admin-groups"
-                  type="text"
-                  placeholder="callimachus-admins"
-                  value={adminGroupsInput}
-                  disabled={isOverridden('oidc_admin_groups')}
-                  onChange={(e) => setAdminGroupsInput(e.target.value)}
-                  className={inputClass(isOverridden('oidc_admin_groups'))}
-                />
-                <OverrideNote settingKey="oidc_admin_groups" />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label htmlFor="oidc-curator-groups" className="block text-zinc-400 font-medium">
-                    OIDC Curator Groups
-                  </label>
-                  <OverrideBadge settingKey="oidc_curator_groups" />
-                </div>
-                <input
-                  id="oidc-curator-groups"
-                  type="text"
-                  placeholder="callimachus-curators"
-                  value={curatorGroupsInput}
-                  disabled={isOverridden('oidc_curator_groups')}
-                  onChange={(e) => setCuratorGroupsInput(e.target.value)}
-                  className={inputClass(isOverridden('oidc_curator_groups'))}
-                />
-                <OverrideNote settingKey="oidc_curator_groups" />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label htmlFor="oidc-default-role" className="block text-zinc-400 font-medium">
-                    OIDC Default Role
-                  </label>
-                  <OverrideBadge settingKey="oidc_default_role" />
-                </div>
-                <select
-                  id="oidc-default-role"
-                  value={authSettings.oidcDefaultRole ?? 'requester'}
-                  disabled={isOverridden('oidc_default_role')}
-                  onChange={(e) =>
-                    setAuthSettings((prev) => ({ ...prev, oidcDefaultRole: e.target.value }))
-                  }
-                  className={inputClass(isOverridden('oidc_default_role'))}
-                >
-                  <option value="guest">guest</option>
-                  <option value="requester">requester</option>
-                  <option value="curator">curator</option>
-                  <option value="admin">admin</option>
-                </select>
-                <OverrideNote settingKey="oidc_default_role" />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label htmlFor="session-timeout-hours" className="block text-zinc-400 font-medium">
-                    Session Timeout (hours)
-                  </label>
-                  <OverrideBadge settingKey="session_timeout_hours" />
-                </div>
-                <input
-                  id="session-timeout-hours"
-                  type="number"
-                  min={1}
-                  value={authSettings.sessionTimeoutHours}
-                  disabled={isOverridden('session_timeout_hours')}
-                  onChange={(e) =>
-                    setAuthSettings((prev) => ({
-                      ...prev,
-                      sessionTimeoutHours: Number(e.target.value),
-                    }))
-                  }
-                  className={inputClass(isOverridden('session_timeout_hours'))}
-                />
-                <OverrideNote settingKey="session_timeout_hours" />
-              </div>
-            </div>
-
-            <div className="pt-3 border-t border-zinc-800 space-y-2">
-              <div className="flex items-center justify-between">
-                <label htmlFor="admin-password" className="text-zinc-400 font-medium">
-                  Local Admin Fallback Password
-                </label>
-                <div className="flex items-center gap-2">
-                  <OverrideBadge settingKey="admin_password" />
-                  <span
-                    className={`font-mono text-[11px] flex items-center gap-1 ${
-                      authSettings.localAuthEnabled ? 'text-emerald-400' : 'text-zinc-500'
-                    }`}
-                  >
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    {authSettings.localAuthEnabled ? 'Configured' : 'Not configured'}
-                  </span>
-                </div>
-              </div>
-              <input
-                id="admin-password"
-                type="password"
-                placeholder={authSettings.localAuthEnabled ? '•••••••• (set new password to update)' : 'Set local admin password'}
-                value={adminPasswordDraft}
-                disabled={isOverridden('admin_password')}
-                onChange={(e) => setAdminPasswordDraft(e.target.value)}
-                className={inputClass(isOverridden('admin_password'))}
-              />
-              <OverrideNote settingKey="admin_password" />
             </div>
           </div>
         </div>

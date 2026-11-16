@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"github.com/t0ggl/callimachus/pkg/auth"
+	"github.com/t0ggl/callimachus/pkg/database"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
@@ -362,6 +366,7 @@ func TestRun_CommandExecutionAndCancel(t *testing.T) {
 func TestServer_OIDCAndAuthWiring(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "auth_wiring_test.db")
+	testutil.PrepareTestDBFile(t, dbPath)
 
 	mockOIDC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/openid-configuration" {
@@ -378,6 +383,13 @@ func TestServer_OIDCAndAuthWiring(t *testing.T) {
 	}))
 	defer mockOIDC.Close()
 
+	t.Setenv("CALLIMACHUS_OIDC_ISSUER_URL", mockOIDC.URL)
+	t.Setenv("CALLIMACHUS_OIDC_CLIENT_ID", "callimachus-test-client")
+	t.Setenv("CALLIMACHUS_OIDC_CLIENT_SECRET", "secret123")
+	t.Setenv("CALLIMACHUS_OIDC_REDIRECT_URL", "http://127.0.0.1/api/auth/oidc/callback")
+	t.Setenv("CALLIMACHUS_OIDC_SCOPES", "openid profile email offline_access")
+	t.Setenv("CALLIMACHUS_ADMIN_PASSWORD", "supersecretfallback")
+
 	cfg := Config{
 		ConfigDir:           tempDir,
 		DBPath:              dbPath,
@@ -386,11 +398,6 @@ func TestServer_OIDCAndAuthWiring(t *testing.T) {
 		Port:                0,
 		IndexerSyncInterval: 1 * time.Hour,
 		StagingPollInterval: 1 * time.Hour,
-		OIDCIssuerURL:       mockOIDC.URL,
-		OIDCClientID:        "callimachus-test-client",
-		OIDCClientSecret:    "secret123",
-		OIDCRedirectURL:     "http://127.0.0.1/api/auth/oidc/callback",
-		FallbackPassword:    "supersecretfallback",
 	}
 
 	srv, err := NewServer(cfg)
@@ -439,6 +446,13 @@ func TestServer_OIDCAndAuthWiring(t *testing.T) {
 	loc := resp.Header.Get("Location")
 	if !strings.HasPrefix(loc, mockOIDC.URL+"/auth") {
 		t.Errorf("expected redirect to mock OIDC auth endpoint, got: %s", loc)
+	}
+	parsedLoc, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("parse redirect location %q: %v", loc, err)
+	}
+	if gotScope := parsedLoc.Query().Get("scope"); gotScope != "openid profile email offline_access" {
+		t.Errorf("expected CALLIMACHUS_OIDC_SCOPES in redirect URL scope=%q, got %q", "openid profile email offline_access", gotScope)
 	}
 
 	// 2. Verify /api/events rejects unauthenticated and invalid cookies with 401 JSON
@@ -629,4 +643,219 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 		t.Errorf("expected overridden prowlarr_url not persisted to DB, got %d rows", prowlarrCount)
 	}
 }
+
+func TestServer_EnvOnlyAuth_IgnoresDatabaseAndFailsSafely(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "env_only_auth.db")
+	testutil.PrepareTestDBFile(t, dbPath)
+
+	// Seed legacy auth/OIDC rows directly in SQLite settings table.
+	// Server startup must ignore them and rely strictly on env vars.
+	db, err := database.Open(database.Config{Path: dbPath})
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	seedRows := map[string]string{
+		"oidc_enabled":          "true",
+		"oidc_issuer_url":       "https://legacy-db-issuer.example.com",
+		"oidc_client_id":        "legacy-db-client",
+		"oidc_client_secret":    "legacy-db-secret",
+		"oidc_redirect_url":     "https://legacy-db-redirect.example.com/callback",
+		"admin_password":        "legacy-db-password",
+		"session_timeout_hours": "1",
+	}
+	for k, v := range seedRows {
+		if _, err := db.ExecContext(context.Background(), `INSERT INTO settings (key, value) VALUES (?, ?)`, k, v); err != nil {
+			_ = db.Close()
+			t.Fatalf("seed setting %s: %v", k, err)
+		}
+	}
+	_ = db.Close()
+
+	// Ensure all auth/OIDC env vars are cleared except a partial CALLIMACHUS_OIDC_ISSUER_URL
+	// so we also verify incomplete OIDC env fails safely with an informative warning.
+	for _, k := range []string{
+		"CALLIMACHUS_OIDC_ENABLED", "OIDC_ENABLED",
+		"CALLIMACHUS_OIDC_ISSUER_URL", "OIDC_ISSUER_URL",
+		"CALLIMACHUS_OIDC_CLIENT_ID", "OIDC_CLIENT_ID",
+		"CALLIMACHUS_OIDC_CLIENT_SECRET", "OIDC_CLIENT_SECRET",
+		"CALLIMACHUS_OIDC_REDIRECT_URL", "OIDC_REDIRECT_URL",
+		"CALLIMACHUS_OIDC_SCOPES", "OIDC_SCOPES",
+		"CALLIMACHUS_ADMIN_PASSWORD",
+		"CALLIMACHUS_SESSION_TIMEOUT_HOURS",
+	} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("CALLIMACHUS_OIDC_ISSUER_URL", "https://incomplete-env-issuer.example.com")
+
+	var logBuf bytes.Buffer
+	origWriter := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(origWriter) })
+
+	srv, err := NewServer(Config{
+		ConfigDir:           tempDir,
+		DBPath:              dbPath,
+		LibraryPath:         tempDir,
+		Host:                "127.0.0.1",
+		Port:                0,
+		IndexerSyncInterval: 1 * time.Hour,
+		StagingPollInterval: 1 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewServer should fail safely when OIDC env is incomplete, got error: %v", err)
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "CALLIMACHUS_OIDC_CLIENT_ID") {
+		t.Errorf("expected informative startup warning naming missing CALLIMACHUS_OIDC_CLIENT_ID, got logs:\n%s", logs)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := srv.Start(ctx); err != nil {
+		t.Fatalf("srv.Start failed: %v", err)
+	}
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	baseURL := "http://" + srv.Addr()
+
+	// OIDC login must report not configured (400) rather than using DB rows
+	oidcResp, err := http.Get(baseURL + "/api/auth/oidc/login")
+	if err != nil {
+		t.Fatalf("GET /api/auth/oidc/login failed: %v", err)
+	}
+	oidcResp.Body.Close()
+	if oidcResp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 when OIDC is incomplete/unconfigured, got %d", oidcResp.StatusCode)
+	}
+
+	// Fallback login with DB-seeded admin_password must be rejected (401 unauthorized because fallbackAuth is disabled)
+	loginResp, err := http.Post(baseURL+"/api/auth/login", "application/json", strings.NewReader(`{"password":"legacy-db-password"}`))
+	if err != nil {
+		t.Fatalf("POST /api/auth/login failed: %v", err)
+	}
+	loginResp.Body.Close()
+	if loginResp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 unauthorized when DB has admin_password but env does not, got %d", loginResp.StatusCode)
+	}
+}
+
+func TestServer_SettingsAPI_RejectsAuthSettingsAndDoesNotExposeAuth(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "settings_lockdown.db")
+	testutil.PrepareTestDBFile(t, dbPath)
+
+	srv, err := NewServer(Config{
+		ConfigDir:           tempDir,
+		DBPath:              dbPath,
+		LibraryPath:         tempDir,
+		Host:                "127.0.0.1",
+		Port:                0,
+		IndexerSyncInterval: 1 * time.Hour,
+		StagingPollInterval: 1 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := srv.Start(ctx); err != nil {
+		t.Fatalf("srv.Start failed: %v", err)
+	}
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	baseURL := "http://" + srv.Addr()
+	cookie := createTestSessionCookie(t, srv, "admin-lockdown", "adminlock", auth.RoleAdmin)
+
+	// 1. GET /api/settings must not expose authSettings or OIDC keys
+	getReq, _ := http.NewRequest(http.MethodGet, baseURL+"/api/settings", nil)
+	getReq.AddCookie(cookie)
+	getResp, err := http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("GET /api/settings failed: %v", err)
+	}
+	rawBody, _ := io.ReadAll(getResp.Body)
+	getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/settings status = %d, want 200", getResp.StatusCode)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(rawBody, &decoded); err != nil {
+		t.Fatalf("decode GET /api/settings JSON: %v", err)
+	}
+	if _, exists := decoded["authSettings"]; exists {
+		t.Errorf("GET /api/settings must not expose authSettings, got: %s", string(rawBody))
+	}
+	if strings.Contains(string(rawBody), "oidcIssuerUrl") {
+		t.Errorf("GET /api/settings must not expose oidcIssuerUrl, got: %s", string(rawBody))
+	}
+
+	// 2. PUT /api/settings with authSettings or top-level OIDC keys must return 400 and write nothing to DB
+	authPayloads := []string{
+		`{"authSettings":{"oidcIssuerUrl":"https://evil.example.com","oidcClientId":"evil"}}`,
+		`{"oidc_issuer_url":"https://evil.example.com"}`,
+		`{"library":{"rootPath":"/books"},"authSettings":{"adminPassword":"hacked"}}`,
+	}
+	for _, payload := range authPayloads {
+		req, _ := http.NewRequest(http.MethodPut, baseURL+"/api/settings", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("PUT /api/settings failed: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("PUT /api/settings with %s: status = %d, want 400 Bad Request", payload, resp.StatusCode)
+		}
+	}
+
+	// 3. POST /api/settings must reject auth payloads (400) and disallow POST mutations (405)
+	postAuthReq, _ := http.NewRequest(http.MethodPost, baseURL+"/api/settings", strings.NewReader(`{"authSettings":{"oidcEnabled":true}}`))
+	postAuthReq.Header.Set("Content-Type", "application/json")
+	postAuthReq.AddCookie(cookie)
+	postAuthResp, err := http.DefaultClient.Do(postAuthReq)
+	if err != nil {
+		t.Fatalf("POST /api/settings (auth) failed: %v", err)
+	}
+	postAuthResp.Body.Close()
+	if postAuthResp.StatusCode != http.StatusBadRequest {
+		t.Errorf("POST /api/settings with authSettings: status = %d, want 400 Bad Request", postAuthResp.StatusCode)
+	}
+
+	postReq, _ := http.NewRequest(http.MethodPost, baseURL+"/api/settings", strings.NewReader(`{"library":{"rootPath":"/books"}}`))
+	postReq.Header.Set("Content-Type", "application/json")
+	postReq.AddCookie(cookie)
+	postResp, err := http.DefaultClient.Do(postReq)
+	if err != nil {
+		t.Fatalf("POST /api/settings failed: %v", err)
+	}
+	postResp.Body.Close()
+	if postResp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("POST /api/settings status = %d, want 405 Method Not Allowed", postResp.StatusCode)
+	}
+
+	// Ensure no auth/oidc rows or partial library rows were persisted from rejected requests
+	var rowCount int
+	if err := srv.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM settings`).Scan(&rowCount); err != nil {
+		t.Fatalf("count settings rows: %v", err)
+	}
+	if rowCount != 0 {
+		t.Errorf("expected 0 settings rows after rejected requests, got %d", rowCount)
+	}
+}
+
+func TestRun_RejectsRemovedAuthCLIFlags(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	for _, flagArg := range []string{"-oidc-issuer=https://example.com", "-auth-password=secret"} {
+		if err := run(ctx, []string{flagArg}); err == nil {
+			t.Errorf("expected run(%q) to fail since auth CLI flags were removed", flagArg)
+		}
+	}
+}
+
 

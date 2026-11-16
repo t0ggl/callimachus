@@ -6,7 +6,6 @@ import type {
   LibrarySettings,
   ProwlarrSettings,
   QualityProfile,
-  AuthSettings,
   SettingsOverridesMap,
 } from '../types';
 
@@ -33,19 +32,6 @@ const baseQuality: QualityProfile = {
   maxFileSizeMb: 4096,
 };
 
-const baseAuth: AuthSettings = {
-  oidcEnabled: true,
-  oidcIssuerUrl: 'https://auth.example.com',
-  oidcClientId: 'callimachus',
-  oidcClientSecretConfigured: true,
-  oidcRedirectUrl: 'https://books.example.com/api/auth/oidc/callback',
-  oidcAdminGroups: ['admins'],
-  oidcCuratorGroups: ['curators'],
-  oidcDefaultRole: 'requester',
-  localAuthEnabled: true,
-  sessionTimeoutHours: 24,
-};
-
 const baseOverrides: SettingsOverridesMap = {
   prowlarr_url: {
     isOverridden: true,
@@ -67,15 +53,10 @@ const baseOverrides: SettingsOverridesMap = {
     overriddenBy: 'CALLIMACHUS_ALLOWED_FORMATS',
     envVar: 'CALLIMACHUS_ALLOWED_FORMATS',
   },
-  oidc_issuer_url: {
-    isOverridden: true,
-    overriddenBy: 'CALLIMACHUS_OIDC_ISSUER_URL',
-    envVar: 'CALLIMACHUS_OIDC_ISSUER_URL',
-  },
 };
 
 describe('SettingsView Environment Overrides', () => {
-  it('disables overridden controls and displays environment variable lock notes across tabs', async () => {
+  it('disables overridden controls and displays environment variable lock notes across tabs without auth UI', async () => {
     const user = userEvent.setup({ delay: null });
 
     render(
@@ -85,13 +66,16 @@ describe('SettingsView Environment Overrides', () => {
         librarySettings={baseLibrary}
         prowlarrSettings={baseProwlarr}
         qualityProfile={baseQuality}
-        authSettings={baseAuth}
         overrides={baseOverrides}
       />
     );
 
+    // Authentication & OIDC tab and inputs must not be rendered (auth is env-only)
+    expect(screen.queryByTestId('tab-settings-auth')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Authentication & OIDC/i)).not.toBeInTheDocument();
+
     // Summary badge reflects active overrides
-    expect(screen.getByTestId('env-override-summary')).toHaveTextContent('5 env overrides active');
+    expect(screen.getByTestId('env-override-summary')).toHaveTextContent('4 env overrides active');
 
     // Tab 1: Prowlarr URL is disabled with exact note, Prowlarr Sync Interval remains editable
     const prowlarrUrlInput = screen.getByLabelText('Prowlarr URL') as HTMLInputElement;
@@ -120,17 +104,9 @@ describe('SettingsView Environment Overrides', () => {
     );
     expect(screen.getByRole('button', { name: 'EPUB' })).toBeDisabled();
     expect(screen.getByLabelText('Audio Min Bitrate (kbps)')).toBeEnabled();
-
-    // Tab 5: Authentication & OIDC
-    await user.click(screen.getByTestId('tab-settings-auth'));
-    expect(screen.getByLabelText('OIDC Issuer URL')).toBeDisabled();
-    expect(screen.getByTestId('override-note-oidc_issuer_url')).toHaveTextContent(
-      'Managed via environment variable CALLIMACHUS_OIDC_ISSUER_URL and cannot be modified here.'
-    );
-    expect(screen.getByLabelText('OIDC Client ID')).toBeEnabled();
   });
 
-  it('saves only non-overridden settings and omits overridden keys from payload', async () => {
+  it('saves only non-overridden settings and omits authSettings from payload', async () => {
     const user = userEvent.setup({ delay: null });
     const onSaveSettings = vi.fn().mockResolvedValue(undefined);
 
@@ -141,7 +117,6 @@ describe('SettingsView Environment Overrides', () => {
         librarySettings={baseLibrary}
         prowlarrSettings={baseProwlarr}
         qualityProfile={baseQuality}
-        authSettings={baseAuth}
         overrides={baseOverrides}
         onSaveSettings={onSaveSettings}
       />
@@ -178,7 +153,7 @@ describe('SettingsView Environment Overrides', () => {
     expect(payload.qualityProfile.maxFileSizeMb).toBeUndefined();
     expect(payload.qualityProfile.allowedFormats).toBeUndefined();
 
-    expect(payload.authSettings.oidcIssuerUrl).toBeUndefined();
+    expect('authSettings' in payload).toBe(false);
     expect(await screen.findByTestId('settings-save-success')).toHaveTextContent(
       'Settings saved successfully.'
     );

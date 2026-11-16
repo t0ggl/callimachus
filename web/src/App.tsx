@@ -19,7 +19,6 @@ import {
   LibrarySettings,
   ProwlarrSettings,
   QualityProfile,
-  AuthSettings,
   SettingsOverridesMap,
   UserProfile,
   RequestType,
@@ -59,18 +58,6 @@ export const App: React.FC = () => {
     audioTargetBitrateKbps: 64,
     preferSingleFileM4b: true,
     maxFileSizeMb: 2048,
-  });
-  const [authSettings, setAuthSettings] = useState<AuthSettings>({
-    oidcEnabled: false,
-    oidcIssuerUrl: '',
-    oidcClientId: '',
-    oidcClientSecretConfigured: false,
-    oidcRedirectUrl: '',
-    oidcAdminGroups: [],
-    oidcCuratorGroups: [],
-    oidcDefaultRole: 'requester',
-    localAuthEnabled: false,
-    sessionTimeoutHours: 720,
   });
   const [settingsOverrides, setSettingsOverrides] = useState<SettingsOverridesMap>({});
 
@@ -205,18 +192,6 @@ export const App: React.FC = () => {
         allowedFormats: Array.isArray(data.qualityProfile.allowedFormats)
           ? data.qualityProfile.allowedFormats
           : prev.allowedFormats,
-      }));
-    }
-    if (data.authSettings) {
-      setAuthSettings((prev) => ({
-        ...prev,
-        ...data.authSettings,
-        oidcAdminGroups: Array.isArray(data.authSettings.oidcAdminGroups)
-          ? data.authSettings.oidcAdminGroups
-          : prev.oidcAdminGroups,
-        oidcCuratorGroups: Array.isArray(data.authSettings.oidcCuratorGroups)
-          ? data.authSettings.oidcCuratorGroups
-          : prev.oidcCuratorGroups,
       }));
     }
     if (data.overrides && typeof data.overrides === 'object') {
@@ -454,7 +429,6 @@ export const App: React.FC = () => {
             librarySettings={librarySettings}
             prowlarrSettings={prowlarrSettings}
             qualityProfile={qualityProfile}
-            authSettings={authSettings}
             overrides={settingsOverrides}
             onSyncIndexers={handleSyncIndexers}
             onSaveSettings={handleSaveSettings}

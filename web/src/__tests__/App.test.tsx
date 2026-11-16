@@ -82,13 +82,6 @@ describe('App Integration', () => {
                 sampleRateHz: 44100,
                 channels: 1,
               },
-              authSettings: {
-                oidcEnabled: false,
-                issuerUrl: '',
-                clientId: '',
-                defaultRole: 'curator',
-                fallbackAuthEnabled: false,
-              },
             }),
         });
       }

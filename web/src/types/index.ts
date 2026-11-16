@@ -185,16 +185,3 @@ export interface QualityProfile {
   maxFileSizeMb: number;
 }
 
-export interface AuthSettings {
-  oidcEnabled: boolean;
-  oidcIssuerUrl: string;
-  oidcClientId: string;
-  oidcClientSecretConfigured?: boolean;
-  oidcRedirectUrl?: string;
-  oidcAdminGroups?: string[];
-  oidcCuratorGroups?: string[];
-  oidcDefaultRole?: string;
-  localAuthEnabled: boolean;
-  sessionTimeoutHours: number;
-}
-

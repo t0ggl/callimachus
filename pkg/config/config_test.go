@@ -112,12 +112,12 @@ func TestAllRegisteredSettings_AutoEnvOverridePrecedence(t *testing.T) {
 	if !reflect.DeepEqual(s.AllowedLanguages, []string{"env1", "env2"}) {
 		t.Errorf("AllowedLanguages = %v, want [env1 env2]", s.AllowedLanguages)
 	}
-	if s.AudioMinBitrateKbps != 777 || s.AudioTargetBitrateKbps != 777 || s.MaxFileSizeMB != 777 || s.SessionTimeoutHours != 777 {
-		t.Errorf("unexpected int values: min=%d target=%d maxSize=%d session=%d",
-			s.AudioMinBitrateKbps, s.AudioTargetBitrateKbps, s.MaxFileSizeMB, s.SessionTimeoutHours)
+	if s.AudioMinBitrateKbps != 777 || s.AudioTargetBitrateKbps != 777 || s.MaxFileSizeMB != 777 {
+		t.Errorf("unexpected int values: min=%d target=%d maxSize=%d",
+			s.AudioMinBitrateKbps, s.AudioTargetBitrateKbps, s.MaxFileSizeMB)
 	}
-	if !s.PreferSingleFileM4B || !s.OIDCEnabled {
-		t.Errorf("expected boolean env overrides true, got preferM4B=%v oidcEnabled=%v", s.PreferSingleFileM4B, s.OIDCEnabled)
+	if !s.PreferSingleFileM4B {
+		t.Errorf("expected boolean env override true, got preferM4B=%v", s.PreferSingleFileM4B)
 	}
 }
 

@@ -51,16 +51,6 @@ type Config struct {
 	StagingPollInterval time.Duration
 	Version             string
 	Commit              string
-
-	// OIDC & Auth Configuration
-	OIDCIssuerURL     string
-	OIDCClientID      string
-	OIDCClientSecret  string
-	OIDCRedirectURL   string
-	OIDCAdminGroups   []string
-	OIDCCuratorGroups []string
-	OIDCDefaultRole   string
-	FallbackPassword  string
 }
 
 // Server coordinates the database, background workers, and HTTP services.
@@ -106,7 +96,7 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("database migration: %w", err)
 	}
 
-	// Resolve effective configuration (Env > Caller Overrides > SQLite settings > Defaults)
+	// Resolve effective non-auth configuration (Env > Caller Overrides > SQLite settings > Defaults)
 	baseOverrides := config.Overrides{
 		LibraryRoot:          cfg.LibraryPath,
 		ProwlarrURL:          cfg.ProwlarrURL,
@@ -114,14 +104,6 @@ func NewServer(cfg Config) (*Server, error) {
 		ProwlarrSyncInterval: cfg.ProwlarrInterval,
 		IndexerSyncInterval:  cfg.IndexerSyncInterval,
 		StagingPollInterval:  cfg.StagingPollInterval,
-		OIDCIssuerURL:        cfg.OIDCIssuerURL,
-		OIDCClientID:         cfg.OIDCClientID,
-		OIDCClientSecret:     cfg.OIDCClientSecret,
-		OIDCRedirectURL:      cfg.OIDCRedirectURL,
-		OIDCAdminGroups:      cfg.OIDCAdminGroups,
-		OIDCCuratorGroups:    cfg.OIDCCuratorGroups,
-		OIDCDefaultRole:      cfg.OIDCDefaultRole,
-		AdminPassword:        cfg.FallbackPassword,
 	}
 
 	resolved, err := config.Load(migrateCtx, db, baseOverrides)
@@ -137,44 +119,42 @@ func NewServer(cfg Config) (*Server, error) {
 	cfg.ProwlarrInterval = sCfg.ProwlarrSyncInterval
 	cfg.IndexerSyncInterval = sCfg.IndexerSyncInterval
 	cfg.StagingPollInterval = sCfg.StagingPollInterval
-	cfg.OIDCIssuerURL = sCfg.OIDCIssuerURL
-	cfg.OIDCClientID = sCfg.OIDCClientID
-	cfg.OIDCClientSecret = sCfg.OIDCClientSecret
-	cfg.OIDCRedirectURL = sCfg.OIDCRedirectURL
-	cfg.OIDCAdminGroups = sCfg.OIDCAdminGroups
-	cfg.OIDCCuratorGroups = sCfg.OIDCCuratorGroups
-	cfg.OIDCDefaultRole = sCfg.OIDCDefaultRole
-	cfg.FallbackPassword = sCfg.AdminPassword
 
-	// 2. Auth & Session Management
-	sessionTTL := time.Duration(sCfg.SessionTimeoutHours) * time.Hour
+	// 2. Auth & Session Management (exclusively from environment variables)
+	authCfg := config.LoadAuthFromEnv()
+	sessionTTL := time.Duration(authCfg.SessionTimeoutHours) * time.Hour
 	if sessionTTL <= 0 {
 		sessionTTL = 24 * time.Hour
 	}
 	sessionMgr := auth.NewSessionManager(sessionTTL, auth.DefaultCookieConfig())
 
 	var oidcClient *auth.OIDCClient
-	if sCfg.OIDCEnabled && sCfg.OIDCIssuerURL != "" && sCfg.OIDCClientID != "" {
+	oidcReady, oidcWarnings := authCfg.ValidateOIDC()
+	for _, w := range oidcWarnings {
+		log.Printf("[auth] warning: %s", w)
+	}
+	if oidcReady {
 		oc, err := auth.NewOIDCClient(auth.OIDCConfig{
-			Issuer:        sCfg.OIDCIssuerURL,
-			ClientID:      sCfg.OIDCClientID,
-			ClientSecret:  sCfg.OIDCClientSecret,
-			RedirectURL:   sCfg.OIDCRedirectURL,
-			AdminGroups:   sCfg.OIDCAdminGroups,
-			CuratorGroups: sCfg.OIDCCuratorGroups,
-			DefaultRole:   sCfg.OIDCDefaultRole,
+			Issuer:        authCfg.OIDCIssuerURL,
+			ClientID:      authCfg.OIDCClientID,
+			ClientSecret:  authCfg.OIDCClientSecret,
+			RedirectURL:   authCfg.OIDCRedirectURL,
+			Scopes:        authCfg.OIDCScopes,
+			AdminGroups:   authCfg.OIDCAdminGroups,
+			CuratorGroups: authCfg.OIDCCuratorGroups,
+			DefaultRole:   authCfg.OIDCDefaultRole,
 		})
 		if err != nil {
 			log.Printf("[auth] warning: failed to initialize OIDC client: %v", err)
 		} else {
 			oidcClient = oc
-			log.Printf("[auth] OIDC client configured (issuer: %s, clientID: %s)", sCfg.OIDCIssuerURL, sCfg.OIDCClientID)
+			log.Printf("[auth] OIDC client configured (issuer: %s, clientID: %s)", authCfg.OIDCIssuerURL, authCfg.OIDCClientID)
 		}
 	}
 
 	var fallbackAuth *auth.FallbackAuthenticator
-	if sCfg.AdminPassword != "" {
-		fallbackAuth = auth.NewFallbackAuthenticator(auth.FallbackConfig{AdminPassword: sCfg.AdminPassword}, db, sessionMgr)
+	if authCfg.AdminPassword != "" {
+		fallbackAuth = auth.NewFallbackAuthenticator(auth.FallbackConfig{AdminPassword: authCfg.AdminPassword}, db, sessionMgr)
 		log.Printf("[auth] single password fallback authentication enabled")
 	}
 
@@ -498,14 +478,6 @@ func run(ctx context.Context, args []string) error {
 	webDirFlag := fs.String("web-dir", "", "Path to custom web distribution directory (default: embedded web/dist)")
 	prowlarrURLFlag := fs.String("prowlarr-url", "", "Prowlarr base URL (default: $CALLIMACHUS_PROWLARR_URL)")
 	prowlarrKeyFlag := fs.String("prowlarr-key", "", "Prowlarr API key (default: $CALLIMACHUS_PROWLARR_API_KEY)")
-	oidcIssuerFlag := fs.String("oidc-issuer", "", "OIDC issuer URL (default: $CALLIMACHUS_OIDC_ISSUER_URL)")
-	oidcClientIDFlag := fs.String("oidc-client-id", "", "OIDC client ID (default: $CALLIMACHUS_OIDC_CLIENT_ID)")
-	oidcClientSecretFlag := fs.String("oidc-client-secret", "", "OIDC client secret (default: $CALLIMACHUS_OIDC_CLIENT_SECRET)")
-	oidcRedirectURLFlag := fs.String("oidc-redirect-url", "", "OIDC redirect URL (default: $CALLIMACHUS_OIDC_REDIRECT_URL)")
-	oidcAdminGroupsFlag := fs.String("oidc-admin-groups", "", "Comma-separated OIDC groups mapped to admin role (default: $CALLIMACHUS_OIDC_ADMIN_GROUPS)")
-	oidcCuratorGroupsFlag := fs.String("oidc-curator-groups", "", "Comma-separated OIDC groups mapped to curator role (default: $CALLIMACHUS_OIDC_CURATOR_GROUPS)")
-	oidcDefaultRoleFlag := fs.String("oidc-default-role", "", "Default role for new OIDC users (default: $CALLIMACHUS_OIDC_DEFAULT_ROLE)")
-	authPasswordFlag := fs.String("auth-password", "", "Single password fallback authentication (default: $CALLIMACHUS_ADMIN_PASSWORD)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -520,38 +492,17 @@ func run(ctx context.Context, args []string) error {
 
 	boot := config.ResolveBootstrap(*configFlag, *dbFlag, *hostFlag, *portFlag, portSet)
 
-	splitComma := func(s string) []string {
-		if s == "" {
-			return nil
-		}
-		var parts []string
-		for _, p := range strings.Split(s, ",") {
-			if t := strings.TrimSpace(p); t != "" {
-				parts = append(parts, t)
-			}
-		}
-		return parts
-	}
-
 	cfg := Config{
-		ConfigDir:         boot.ConfigDir,
-		DBPath:            boot.DBPath,
-		LibraryPath:       *libraryFlag,
-		Host:              boot.Host,
-		Port:              boot.Port,
-		StaticDir:         *webDirFlag,
-		ProwlarrURL:       *prowlarrURLFlag,
-		ProwlarrAPIKey:    *prowlarrKeyFlag,
-		Version:           version,
-		Commit:            commit,
-		OIDCIssuerURL:     *oidcIssuerFlag,
-		OIDCClientID:      *oidcClientIDFlag,
-		OIDCClientSecret:  *oidcClientSecretFlag,
-		OIDCRedirectURL:   *oidcRedirectURLFlag,
-		OIDCAdminGroups:   splitComma(*oidcAdminGroupsFlag),
-		OIDCCuratorGroups: splitComma(*oidcCuratorGroupsFlag),
-		OIDCDefaultRole:   *oidcDefaultRoleFlag,
-		FallbackPassword:  *authPasswordFlag,
+		ConfigDir:      boot.ConfigDir,
+		DBPath:         boot.DBPath,
+		LibraryPath:    *libraryFlag,
+		Host:           boot.Host,
+		Port:           boot.Port,
+		StaticDir:      *webDirFlag,
+		ProwlarrURL:    *prowlarrURLFlag,
+		ProwlarrAPIKey: *prowlarrKeyFlag,
+		Version:        version,
+		Commit:         commit,
 	}
 
 	srv, err := NewServer(cfg)

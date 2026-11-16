@@ -48,8 +48,9 @@ Welcome to the **Callimachus** project codebase. These guidelines govern all sub
      - Ensure the entire repository test suite executes in under 5 seconds.
 
 6. **Authentication & Multi-User:**
-   - Primary: OIDC (Authentik, Authelia, Keycloak) with role mapping (Admin, Curator, User/Requester, Guest).
-   - Fallback: `CALLIMACHUS_ADMIN_PASSWORD` env var. Login page displays a single password field logging directly in as Admin.
+   - Primary: OIDC (Authentik, Authelia, Keycloak) with role mapping (Admin, Curator, User/Requester, Guest), configured **exclusively** via `CALLIMACHUS_OIDC_*` environment variables (`CALLIMACHUS_OIDC_ISSUER_URL`, `CALLIMACHUS_OIDC_CLIENT_ID`, `CALLIMACHUS_OIDC_CLIENT_SECRET`, `CALLIMACHUS_OIDC_REDIRECT_URL`, `CALLIMACHUS_OIDC_SCOPES`, `CALLIMACHUS_OIDC_ADMIN_GROUPS`, `CALLIMACHUS_OIDC_CURATOR_GROUPS`, `CALLIMACHUS_OIDC_DEFAULT_ROLE`, `CALLIMACHUS_OIDC_ENABLED`).
+   - Fallback & Sessions: `CALLIMACHUS_ADMIN_PASSWORD` and `CALLIMACHUS_SESSION_TIMEOUT_HOURS` env vars. Login page displays a single password field logging directly in as Admin.
+   - Auth/OIDC configuration is never persisted in SQLite, exposed on `/api/settings`, editable in the Settings UI, or accepted via CLI flags.
 
 7. **Domain Rules:**
    - Narrators are first-class entities for audiobooks.
@@ -57,10 +58,10 @@ Welcome to the **Callimachus** project codebase. These guidelines govern all sub
    - Quality profiles enforce strict language filtering (default English) and format cutoffs.
 
 8. **Configuration & Environment Variable Overrides:**
-   - **Standardized Naming & Automatic Env Var Derivation:** All configuration settings must be registered in `pkg/config` using a canonical `lowercase_snake_case` key (e.g., `library_root`, `prowlarr_url`, `max_file_size_mb`). The corresponding environment variable `CALLIMACHUS_{SETTING_NAME}` (uppercased `snake_case`, e.g., `CALLIMACHUS_LIBRARY_ROOT`, `CALLIMACHUS_PROWLARR_URL`) is derived automatically by `pkg/config` for every registered setting so no setting can be missed or diverge.
+   - **Mandatory `CALLIMACHUS_` Prefix (No Exceptions):** Every settings/configuration environment variable in Callimachus MUST be prefixed with `CALLIMACHUS_` (e.g., `CALLIMACHUS_LIBRARY_ROOT`, `CALLIMACHUS_OIDC_ISSUER_URL`, `CALLIMACHUS_ADMIN_PASSWORD`). Never introduce or support unprefixed aliases (such as bare `OIDC_ISSUER_URL` or `OIDC_CLIENT_ID`).
+   - **Standardized Naming & Automatic Env Var Derivation:** All DB-configurable settings must be registered in `pkg/config` using a canonical `lowercase_snake_case` key (e.g., `library_root`, `prowlarr_url`, `max_file_size_mb`). The corresponding environment variable `CALLIMACHUS_{SETTING_NAME}` (uppercased `snake_case`, e.g., `CALLIMACHUS_LIBRARY_ROOT`, `CALLIMACHUS_PROWLARR_URL`) is derived automatically via `pkg/config.EnvVarName` / `pkg/config.LookupEnvForSetting` so no setting can be missed or diverge.
    - **Absolute Precedence:** Whenever a configuration environment variable is set (non-empty), it takes absolute precedence over values stored in the SQLite `settings` table and built-in defaults across all server and worker workflows.
    - **No Ad-Hoc Env Lookups:** Runtime configuration must be resolved through `pkg/config` rather than scattered `os.Getenv` calls (excluding explicit test opt-in gates like `CALLIMACHUS_REAL_CALIBRE`).
-   - **API Metadata:** `GET /api/settings` must expose override metadata (`isOverridden: boolean`, `overriddenBy: string`) for every configurable setting.
+   - **API Metadata:** `GET /api/settings` must expose override metadata (`isOverridden: boolean`, `overriddenBy: string`) for every configurable setting (excluding env-only auth/OIDC settings, which are never exposed or mutable over HTTP).
    - **UI Enforcement:** In `SettingsView.tsx`, any setting with `isOverridden: true` must disable/grey out the corresponding input, toggle, or selector and display an explanatory lock badge or note (e.g., *"Managed via environment variable {overriddenBy} and cannot be modified here."*).
-   - **Write Protection:** `PUT /api/settings` must ignore/refuse database mutations for any setting currently overridden by an environment variable.
-
+   - **Write Protection:** `PUT /api/settings` must ignore/refuse database mutations for any setting currently overridden by an environment variable, and `PUT`/`POST /api/settings` must reject any auth/OIDC payload.
