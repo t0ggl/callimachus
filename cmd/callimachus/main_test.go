@@ -66,12 +66,6 @@ func TestServer_StartupHealthAndShutdown(t *testing.T) {
 	if health.Status != "ok" {
 		t.Errorf("expected health status 'ok', got %q", health.Status)
 	}
-	if health.Database != "ok" {
-		t.Errorf("expected health database 'ok', got %q", health.Database)
-	}
-	if health.Version != "test-1.0.0" {
-		t.Errorf("expected health version 'test-1.0.0', got %q", health.Version)
-	}
 
 	// 2. Verify /api/health endpoint
 	apiHealthResp, err := http.Get(baseURL + "/api/health")

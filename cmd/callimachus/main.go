@@ -344,46 +344,25 @@ func (s *Server) runProwlarrSync(ctx context.Context) {
 
 // HealthResponse represents the payload returned by health check endpoints.
 type HealthResponse struct {
-	Status   string            `json:"status"`
-	Time     time.Time         `json:"time"`
-	Database string            `json:"database"`
-	Version  string            `json:"version,omitempty"`
-	Commit   string            `json:"commit,omitempty"`
-	Services map[string]string `json:"services,omitempty"`
+	Status string `json:"status"`
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	dbStatus := "ok"
+	status := "ok"
+	httpStatus := http.StatusOK
+
 	if s.db != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		if err := s.db.PingContext(ctx); err != nil {
-			dbStatus = fmt.Sprintf("error: %v", err)
+			status = "not ok"
+			httpStatus = http.StatusServiceUnavailable
 		}
 	}
 
-	resp := HealthResponse{
-		Status:   "ok",
-		Time:     time.Now().UTC(),
-		Database: dbStatus,
-		Version:  s.cfg.Version,
-		Commit:   s.cfg.Commit,
-		Services: map[string]string{
-			"indexers":   "active",
-			"staging":    "active",
-			"requests":   "active",
-			"dispatcher": "active",
-		},
-	}
-
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if dbStatus != "ok" {
-		resp.Status = "degraded"
-		w.WriteHeader(http.StatusServiceUnavailable)
-	} else {
-		w.WriteHeader(http.StatusOK)
-	}
-	_ = json.NewEncoder(w).Encode(resp)
+	w.WriteHeader(httpStatus)
+	_ = json.NewEncoder(w).Encode(HealthResponse{Status: status})
 }
 
 func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
