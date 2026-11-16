@@ -15,7 +15,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 concurrency:
@@ -77,3 +77,18 @@ jobs:
             COMMIT_TAG=${{ github.sha }}
             BUILD_VERSION=${{ github.ref_name }}
             SOURCE_DATE_EPOCH=${{ steps.meta-info.outputs.TIMESTAMP }}
+
+      - name: Prune untagged container images
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          delete-untagged: true
+          older-than: 1 hour
+
+      - name: Prune old releases
+        uses: dev-drprasad/delete-older-releases@v0.3.4
+        with:
+          keep_latest: 20
+          delete_tags: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

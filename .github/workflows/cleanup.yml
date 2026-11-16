@@ -1,0 +1,61 @@
+name: Cleanup Old Images and Releases
+
+on:
+  schedule:
+    # Run weekly on Sunday at midnight UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      keep_releases:
+        description: 'Number of latest releases to keep'
+        required: false
+        default: 20
+        type: number
+      dry_run:
+        description: 'Simulate cleanup without deleting'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cleanup:
+    name: Cleanup GHCR Images & Releases
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prune untagged container images
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          delete-untagged: true
+          older-than: 1 hour
+          dry-run: ${{ inputs.dry_run || false }}
+
+      - name: Dry-run prune old releases
+        if: ${{ inputs.dry_run }}
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP_RELEASES: ${{ inputs.keep_releases || 20 }}
+        run: |
+          echo "Simulating release pruning (keeping latest $KEEP_RELEASES releases)..."
+          gh release list --limit 100 --json tagName,createdAt | jq -r --argjson keep "$KEEP_RELEASES" '.[$keep:] | .[] | "Would delete release: \(.tagName) (created at \(.createdAt))"'
+
+      - name: Prune old releases
+        if: ${{ !inputs.dry_run }}
+        uses: dev-drprasad/delete-older-releases@v0.3.4
+        with:
+          keep_latest: ${{ inputs.keep_releases || 20 }}
+          delete_tags: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
