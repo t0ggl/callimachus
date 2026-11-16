@@ -44,23 +44,6 @@ export const RequestsView: React.FC<RequestsViewProps> = ({
   const [rejectingRequestId, setRejectingRequestId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
 
-  // Autocomplete mock suggestions
-  const suggestions = [
-    { title: 'The Chronos Paradigm', author: 'Alden Thorne' },
-    { title: 'Citadel of Ashes', author: 'Sarah Vance' },
-    { title: 'Orbit of the Leviathan', author: 'Elena Rostova' },
-    { title: 'Hyperion Vector', author: 'Marcus Sterling' },
-  ];
-
-  const filteredSuggestions = useMemo(() => {
-    if (!newTitle.trim() || newTitle.length < 2) return [];
-    return suggestions.filter(
-      (s) =>
-        s.title.toLowerCase().includes(newTitle.toLowerCase()) ||
-        s.author.toLowerCase().includes(newTitle.toLowerCase())
-    );
-  }, [newTitle]);
-
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim() || !newAuthor.trim()) return;
@@ -154,31 +137,12 @@ export const RequestsView: React.FC<RequestsViewProps> = ({
               <input
                 type="text"
                 data-testid="request-title-input"
-                placeholder="e.g. The Chronos Paradigm"
+                placeholder="e.g. Dune"
                 value={newTitle}
                 onChange={(e) => setNewTitle(e.target.value)}
                 required
                 className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-md text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-blue-500"
               />
-
-              {/* Autocomplete dropdown */}
-              {filteredSuggestions.length > 0 && (
-                <div className="absolute left-0 right-0 top-full mt-1 bg-zinc-900 border border-zinc-800 rounded-md shadow-xl z-20 overflow-hidden divide-y divide-zinc-800">
-                  {filteredSuggestions.map((item, idx) => (
-                    <div
-                      key={idx}
-                      onClick={() => {
-                        setNewTitle(item.title);
-                        setNewAuthor(item.author);
-                      }}
-                      className="px-3 py-2 text-xs hover:bg-zinc-800 cursor-pointer flex justify-between items-center"
-                    >
-                      <span className="font-medium text-zinc-200">{item.title}</span>
-                      <span className="text-zinc-500">{item.author}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
 
             {/* Author */}

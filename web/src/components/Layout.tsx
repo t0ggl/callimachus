@@ -18,7 +18,7 @@ interface LayoutProps {
   currentView: NavView;
   onNavigate: (view: NavView) => void;
   onOpenPalette: () => void;
-  user: UserProfile;
+  user: UserProfile | null;
   activeDownloadsCount: number;
   transcodingJobsCount: number;
   onLogout: () => void;
@@ -143,27 +143,40 @@ export const Layout: React.FC<LayoutProps> = ({
 
           {/* User info & Logout */}
           <div className="pt-2 border-t border-zinc-800 flex items-center justify-between">
-            <div className="flex items-center gap-2 min-w-0">
-              <div className="w-6 h-6 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-[11px] font-semibold text-zinc-300 uppercase">
-                {user.username.charAt(0)}
-              </div>
-              <div className="truncate">
-                <div className="text-xs font-medium text-zinc-200 truncate">{user.username}</div>
-                <div className="text-[10px] text-zinc-400 capitalize flex items-center gap-1">
-                  <ShieldCheck className="w-3 h-3 text-emerald-400" />
-                  {user.role}
+            {user ? (
+              <>
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="w-6 h-6 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-[11px] font-semibold text-zinc-300 uppercase">
+                    {(user.username || 'U').charAt(0)}
+                  </div>
+                  <div className="truncate">
+                    <div className="text-xs font-medium text-zinc-200 truncate">{user.username}</div>
+                    <div className="text-[10px] text-zinc-400 capitalize flex items-center gap-1">
+                      <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                      {user.role}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
 
-            <button
-              onClick={onLogout}
-              data-testid="logout-button"
-              className="p-1.5 text-zinc-400 hover:text-red-400 hover:bg-zinc-800/80 rounded transition-colors"
-              title="Sign Out"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
+                <button
+                  onClick={onLogout}
+                  data-testid="logout-button"
+                  className="p-1.5 text-zinc-400 hover:text-red-400 hover:bg-zinc-800/80 rounded transition-colors"
+                  title="Sign Out"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </>
+            ) : (
+              <a
+                href="/api/auth/oidc/login"
+                data-testid="login-link"
+                className="w-full py-1.5 px-3 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-300 rounded text-xs font-medium flex items-center justify-center gap-2 transition-colors"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                Sign In
+              </a>
+            )}
           </div>
         </div>
       </aside>

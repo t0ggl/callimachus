@@ -1,7 +1,7 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useSSE } from '../hooks/useSSE';
-import { mockTranscodeJobs, mockDownloads } from '../data/mockData';
+import { testTranscodeJobs, testDownloads } from './testFixtures';
 
 // Mock EventSource
 class MockEventSource {
@@ -66,9 +66,8 @@ describe('useSSE Hook', () => {
     const { result } = renderHook(() =>
       useSSE({
         url: '/api/events',
-        initialTranscodeJobs: mockTranscodeJobs,
-        initialDownloads: mockDownloads,
-        enableMockFallback: false,
+        initialTranscodeJobs: testTranscodeJobs,
+        initialDownloads: testDownloads,
       })
     );
 
@@ -90,9 +89,8 @@ describe('useSSE Hook', () => {
     const { result } = renderHook(() =>
       useSSE({
         url: '/api/events',
-        initialTranscodeJobs: mockTranscodeJobs,
-        initialDownloads: mockDownloads,
-        enableMockFallback: false,
+        initialTranscodeJobs: testTranscodeJobs,
+        initialDownloads: testDownloads,
       })
     );
 
@@ -120,9 +118,8 @@ describe('useSSE Hook', () => {
     const { result } = renderHook(() =>
       useSSE({
         url: '/api/events',
-        initialTranscodeJobs: mockTranscodeJobs,
-        initialDownloads: mockDownloads,
-        enableMockFallback: false,
+        initialTranscodeJobs: testTranscodeJobs,
+        initialDownloads: testDownloads,
       })
     );
 
@@ -150,22 +147,21 @@ describe('useSSE Hook', () => {
     const { result } = renderHook(() =>
       useSSE({
         url: '/api/events',
-        initialTranscodeJobs: mockTranscodeJobs,
-        initialDownloads: mockDownloads,
-        enableMockFallback: false,
+        initialTranscodeJobs: testTranscodeJobs,
+        initialDownloads: testDownloads,
       })
     );
 
     act(() => {
       result.current.handleTranscodeUpdate({
-        id: 'tc_102',
-        stage: 'encoding',
-        progressPercent: 50.0,
+        id: 'tc_101',
+        status: 'completed',
+        progressPercent: 100,
       });
     });
 
-    const updatedJob = result.current.transcodeJobs.find((j) => j.id === 'tc_102');
-    expect(updatedJob?.stage).toBe('encoding');
-    expect(updatedJob?.progressPercent).toBe(50.0);
+    const job = result.current.transcodeJobs.find((j) => j.id === 'tc_101');
+    expect(job?.status).toBe('completed');
+    expect(job?.progressPercent).toBe(100);
   });
 });

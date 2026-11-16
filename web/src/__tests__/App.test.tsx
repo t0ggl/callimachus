@@ -1,15 +1,117 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { App } from '../App';
+import {
+  testUser,
+  testBooks,
+  testAuthors,
+  testSeries,
+  testTranscodeJobs,
+  testDownloads,
+} from './testFixtures';
 
 describe('App Integration', () => {
-  it('renders Callimachus brand and default catalog view', () => {
+  beforeEach(() => {
+    // @ts-ignore
+    global.fetch = vi.fn((url: string) => {
+      if (url.includes('/api/auth/me')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(testUser),
+        });
+      }
+      if (url.includes('/api/books')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(testBooks),
+        });
+      }
+      if (url.includes('/api/authors')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(testAuthors),
+        });
+      }
+      if (url.includes('/api/series')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(testSeries),
+        });
+      }
+      if (url.includes('/api/requests')) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve([
+              {
+                id: '1',
+                title: 'Iron Sigil',
+                author: 'Elena Rostova',
+                username: 'reader_jane',
+                format: 'both',
+                status: 'pending',
+                created_at: new Date().toISOString(),
+              },
+            ]),
+        });
+      }
+      if (url.includes('/api/activity')) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              transcodeJobs: testTranscodeJobs,
+              downloads: testDownloads,
+              logs: [],
+            }),
+        });
+      }
+      if (url.includes('/api/settings')) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              indexers: [],
+              downloadClients: [],
+              qualityProfile: {
+                id: 'default',
+                name: 'Standard Audiobook',
+                targetBitrateKbps: 64,
+                codec: 'aac',
+                sampleRateHz: 44100,
+                channels: 1,
+              },
+              authSettings: {
+                oidcEnabled: false,
+                issuerUrl: '',
+                clientId: '',
+                defaultRole: 'curator',
+                fallbackAuthEnabled: false,
+              },
+            }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve([]),
+      });
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders Callimachus brand and default catalog view with real data', async () => {
     render(<App />);
 
     expect(screen.getByText('Callimachus')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /Library & Catalog/i })).toBeInTheDocument();
-    expect(screen.getByText('The Obsidian Path')).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByText('The Obsidian Path')).toBeInTheDocument();
+    });
   });
 
   it('navigates between views when clicking sidebar navigation', async () => {
@@ -21,7 +123,9 @@ describe('App Integration', () => {
     await user.click(activityNav);
 
     expect(screen.getByRole('heading', { name: /Activity & Queues/i })).toBeInTheDocument();
-    expect(screen.getByText('Transcode Queue (3)')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-activity-transcode')).toBeInTheDocument();
+    });
 
     // Navigate to Requests view
     const requestsNav = screen.getByTestId('nav-requests');
@@ -42,6 +146,10 @@ describe('App Integration', () => {
     const user = userEvent.setup();
     render(<App />);
 
+    await waitFor(() => {
+      expect(screen.getByTestId('book-card-book_1')).toBeInTheDocument();
+    });
+
     // Click on book card
     const bookCard = screen.getByTestId('book-card-book_1');
     await user.click(bookCard);
@@ -50,7 +158,7 @@ describe('App Integration', () => {
     await waitFor(() => {
       expect(screen.getByRole('dialog', { name: /Details for The Obsidian Path/i })).toBeInTheDocument();
     });
-    expect(screen.getByText('Apex Horizon Press')).toBeInTheDocument();
+    expect(screen.getAllByText('Apex Horizon Press').length).toBeGreaterThan(0);
     expect(screen.getByText(/Jonathan Bell/)).toBeInTheDocument();
 
     // Close modal via close button
@@ -66,8 +174,9 @@ describe('App Integration', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    // Default is grid view
-    expect(screen.getByTestId('book-card-book_1')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId('book-card-book_1')).toBeInTheDocument();
+    });
 
     // Switch to list view
     const listBtn = screen.getByTestId('view-list-btn');

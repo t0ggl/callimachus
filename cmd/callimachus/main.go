@@ -227,9 +227,10 @@ func NewServer(cfg Config) (*Server, error) {
 	mux.HandleFunc("/healthz", srv.handleHealth)
 	mux.HandleFunc("/api/health", srv.handleHealth)
 
-	// Auth and Requests APIs
+	// Auth, Requests, and Catalog APIs
 	authHandler.RegisterRoutes(mux)
 	reqHandler.RegisterRoutes(mux)
+	srv.registerAPIRoutes(mux)
 
 	// SPA router handles all non-API paths
 	mux.HandleFunc("/", srv.handleSPA)

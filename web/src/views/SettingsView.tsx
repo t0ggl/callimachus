@@ -150,6 +150,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           )}
 
           {/* Indexers Table */}
+          {indexers.length === 0 ? (
+            <div className="py-16 text-center border border-dashed border-zinc-800 rounded-xl">
+              <Globe className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
+              <div className="text-sm font-medium text-zinc-400">No indexers configured</div>
+              <div className="text-xs text-zinc-500 mt-1">
+                Synchronize with Prowlarr to automatically populate Torznab and Newznab indexers.
+              </div>
+            </div>
+          ) : (
           <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
             <table className="w-full text-left text-xs border-collapse">
               <thead>
@@ -194,12 +203,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </tbody>
             </table>
           </div>
+          )}
         </div>
       )}
 
       {/* TAB 2: DOWNLOAD CLIENTS */}
       {activeTab === 'downloaders' && (
         <div className="space-y-4">
+          {downloadClients.length === 0 ? (
+            <div className="py-16 text-center border border-dashed border-zinc-800 rounded-xl">
+              <Download className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
+              <div className="text-sm font-medium text-zinc-400">No download clients configured</div>
+              <div className="text-xs text-zinc-500 mt-1">
+                Configure qBittorrent, Transmission, or SABnzbd clients in your cluster configuration.
+              </div>
+            </div>
+          ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {downloadClients.map((client) => (
               <div
@@ -259,6 +278,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
             ))}
           </div>
+          )}
         </div>
       )}
 

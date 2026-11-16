@@ -129,7 +129,19 @@ func TestServer_StartupHealthAndShutdown(t *testing.T) {
 		t.Errorf("expected 401 Unauthorized for unauthenticated /api/auth/me, got %d", authMeResp.StatusCode)
 	}
 
-	// 7. Verify Graceful Server Shutdown
+	// 7. Verify real catalog, activity, and settings APIs return JSON
+	for _, ep := range []string{"/api/books", "/api/authors", "/api/series", "/api/activity", "/api/settings"} {
+		res, err := http.Get(baseURL + ep)
+		if err != nil {
+			t.Fatalf("GET %s failed: %v", ep, err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 OK for %s, got %d", ep, res.StatusCode)
+		}
+	}
+
+	// 8. Verify Graceful Server Shutdown
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 

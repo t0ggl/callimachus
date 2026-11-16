@@ -10,14 +10,12 @@ interface UseSSEOptions {
   url?: string;
   initialTranscodeJobs?: TranscodeJob[];
   initialDownloads?: DownloadItem[];
-  enableMockFallback?: boolean;
 }
 
 export function useSSE({
   url = '/api/events',
   initialTranscodeJobs = [],
   initialDownloads = [],
-  enableMockFallback = true,
 }: UseSSEOptions = {}) {
   const [transcodeJobs, setTranscodeJobs] = useState<TranscodeJob[]>(initialTranscodeJobs);
   const [downloads, setDownloads] = useState<DownloadItem[]>(initialDownloads);
@@ -37,10 +35,16 @@ export function useSSE({
   }, []);
 
   useEffect(() => {
-    let mockInterval: any = null;
+    if (typeof EventSource === 'undefined') {
+      setConnectionStatus('disconnected');
+      return;
+    }
 
-    if (typeof EventSource !== 'undefined') {
+    let retryTimeout: any = null;
+
+    function connect() {
       try {
+        setConnectionStatus('connecting');
         const es = new EventSource(url);
         eventSourceRef.current = es;
 
@@ -69,72 +73,25 @@ export function useSSE({
         es.onerror = () => {
           setConnectionStatus('disconnected');
           es.close();
-
-          // Fallback simulation in dev / offline demo mode if enabled
-          if (enableMockFallback && !mockInterval) {
-            startMockFallback();
-          }
+          retryTimeout = setTimeout(connect, 5000);
         };
-      } catch (err) {
+      } catch {
         setConnectionStatus('disconnected');
-        if (enableMockFallback) {
-          startMockFallback();
-        }
+        retryTimeout = setTimeout(connect, 5000);
       }
-    } else if (enableMockFallback) {
-      startMockFallback();
     }
 
-    function startMockFallback() {
-      // Simulate live transcode progress tick
-      mockInterval = setInterval(() => {
-        setTranscodeJobs((prevJobs) =>
-          prevJobs.map((job) => {
-            if (job.status !== 'processing') return job;
-            const nextProgress = Math.min(100, +(job.progressPercent + 0.8).toFixed(1));
-            const nextEta = Math.max(0, job.etaSeconds - 1);
-            let nextStage = job.stage;
-            if (nextProgress > 95) nextStage = 'moving';
-            else if (nextProgress > 85) nextStage = 'muxing';
-            else if (nextProgress > 20) nextStage = 'encoding';
-
-            return {
-              ...job,
-              progressPercent: nextProgress,
-              etaSeconds: nextEta,
-              stage: nextStage,
-              elapsedSeconds: job.elapsedSeconds + 1,
-            };
-          })
-        );
-
-        setDownloads((prevDls) =>
-          prevDls.map((dl) => {
-            if (dl.status !== 'downloading') return dl;
-            const nextProgress = Math.min(100, +(dl.progressPercent + 0.5).toFixed(1));
-            const nextDownloaded = Math.min(dl.totalSizeBytes, dl.downloadedSizeBytes + dl.downloadSpeedBps);
-            const nextEta = Math.max(0, dl.etaSeconds - 1);
-            return {
-              ...dl,
-              progressPercent: nextProgress,
-              downloadedSizeBytes: nextDownloaded,
-              etaSeconds: nextEta,
-              status: nextProgress >= 100 ? 'completed' : 'downloading',
-            };
-          })
-        );
-      }, 1000);
-    }
+    connect();
 
     return () => {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
       }
-      if (mockInterval) {
-        clearInterval(mockInterval);
+      if (retryTimeout) {
+        clearTimeout(retryTimeout);
       }
     };
-  }, [url, enableMockFallback, handleTranscodeUpdate, handleDownloadUpdate]);
+  }, [url, handleTranscodeUpdate, handleDownloadUpdate]);
 
   return {
     transcodeJobs,

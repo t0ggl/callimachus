@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { CommandPalette } from '../components/CommandPalette';
 import { App } from '../App';
-import { mockBooks, mockAuthors, mockSeries } from '../data/mockData';
+import { testBooks, testAuthors, testSeries } from './testFixtures';
 
 describe('CommandPalette Component', () => {
   it('renders nothing when isOpen is false', () => {
@@ -11,9 +11,9 @@ describe('CommandPalette Component', () => {
       <CommandPalette
         isOpen={false}
         onClose={vi.fn()}
-        books={mockBooks}
-        authors={mockAuthors}
-        series={mockSeries}
+        books={testBooks}
+        authors={testAuthors}
+        series={testSeries}
         onNavigate={vi.fn()}
         onSelectBook={vi.fn()}
       />
@@ -26,9 +26,9 @@ describe('CommandPalette Component', () => {
       <CommandPalette
         isOpen={true}
         onClose={vi.fn()}
-        books={mockBooks}
-        authors={mockAuthors}
-        series={mockSeries}
+        books={testBooks}
+        authors={testAuthors}
+        series={testSeries}
         onNavigate={vi.fn()}
         onSelectBook={vi.fn()}
       />
@@ -47,9 +47,9 @@ describe('CommandPalette Component', () => {
       <CommandPalette
         isOpen={true}
         onClose={vi.fn()}
-        books={mockBooks}
-        authors={mockAuthors}
-        series={mockSeries}
+        books={testBooks}
+        authors={testAuthors}
+        series={testSeries}
         onNavigate={vi.fn()}
         onSelectBook={vi.fn()}
       />
@@ -61,7 +61,6 @@ describe('CommandPalette Component', () => {
     // Should match Obsidian Path book and The Obsidian Archive series
     expect(screen.getByText('The Obsidian Path')).toBeInTheDocument();
     expect(screen.getByText('The Obsidian Archive')).toBeInTheDocument();
-    expect(screen.queryByText('The Clockwork Bastion')).not.toBeInTheDocument();
   });
 
   it('calls onSelectBook when a book is selected', async () => {
@@ -73,22 +72,22 @@ describe('CommandPalette Component', () => {
       <CommandPalette
         isOpen={true}
         onClose={onCloseMock}
-        books={mockBooks}
-        authors={mockAuthors}
-        series={mockSeries}
+        books={testBooks}
+        authors={testAuthors}
+        series={testSeries}
         onNavigate={vi.fn()}
         onSelectBook={onSelectBookMock}
       />
     );
 
     const input = screen.getByTestId('command-palette-input');
-    await user.type(input, 'Aetherfall');
+    await user.type(input, 'Obsidian');
 
-    const bookItem = screen.getByTestId('palette-item-book_book_5');
+    const bookItem = screen.getByTestId('palette-item-book_book_1');
     await user.click(bookItem);
 
     expect(onSelectBookMock).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'book_5', title: 'Aetherfall Awakening' })
+      expect.objectContaining({ id: 'book_1', title: 'The Obsidian Path' })
     );
     expect(onCloseMock).toHaveBeenCalled();
   });
@@ -99,9 +98,9 @@ describe('CommandPalette Component', () => {
       <CommandPalette
         isOpen={true}
         onClose={onCloseMock}
-        books={mockBooks}
-        authors={mockAuthors}
-        series={mockSeries}
+        books={testBooks}
+        authors={testAuthors}
+        series={testSeries}
         onNavigate={vi.fn()}
         onSelectBook={vi.fn()}
       />

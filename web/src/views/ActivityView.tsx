@@ -324,6 +324,15 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
 
       {/* SECTION 3: IMPORT HISTORY LOG */}
       {activeSection === 'history' && (
+        logs.length === 0 ? (
+          <div className="py-20 text-center border border-dashed border-zinc-800 rounded-xl">
+            <FileCheck2 className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
+            <div className="text-sm font-medium text-zinc-400">No import history yet</div>
+            <div className="text-xs text-zinc-500 mt-1">
+              Completed library imports and organizer actions will be logged here.
+            </div>
+          </div>
+        ) : (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
           <div className="px-4 py-3 border-b border-zinc-800 bg-zinc-950/50 flex items-center justify-between">
             <h3 className="text-xs font-bold text-zinc-200 uppercase tracking-wider">
@@ -373,6 +382,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
             </tbody>
           </table>
         </div>
+        )
       )}
     </div>
   );

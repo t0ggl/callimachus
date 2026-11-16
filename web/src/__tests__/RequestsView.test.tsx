@@ -2,14 +2,14 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { RequestsView } from '../views/RequestsView';
-import { mockRequests } from '../data/mockData';
+import { testRequests } from './testFixtures';
 
 describe('RequestsView Component', () => {
   it('renders requests and allows filtering by status', async () => {
     const user = userEvent.setup();
     render(
       <RequestsView
-        requests={mockRequests}
+        requests={testRequests}
         onApproveRequest={vi.fn()}
         onRejectRequest={vi.fn()}
         onSubmitRequest={vi.fn()}
@@ -36,7 +36,7 @@ describe('RequestsView Component', () => {
 
     render(
       <RequestsView
-        requests={mockRequests}
+        requests={testRequests}
         onApproveRequest={vi.fn()}
         onRejectRequest={vi.fn()}
         onSubmitRequest={onSubmitRequestMock}
@@ -71,7 +71,7 @@ describe('RequestsView Component', () => {
 
     render(
       <RequestsView
-        requests={mockRequests}
+        requests={testRequests}
         onApproveRequest={onApproveRequestMock}
         onRejectRequest={vi.fn()}
         onSubmitRequest={vi.fn()}
@@ -93,7 +93,7 @@ describe('RequestsView Component', () => {
 
     render(
       <RequestsView
-        requests={mockRequests}
+        requests={testRequests}
         onApproveRequest={vi.fn()}
         onRejectRequest={onRejectRequestMock}
         onSubmitRequest={vi.fn()}

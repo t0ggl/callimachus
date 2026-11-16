@@ -1,0 +1,484 @@
+package main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+)
+
+type APIMediaAsset struct {
+	ID            string `json:"id"`
+	EditionID     string `json:"editionId"`
+	FilePath      string `json:"filePath"`
+	FileSizeBytes int64  `json:"fileSizeBytes"`
+	Format        string `json:"format"`
+}
+
+type APIBookEdition struct {
+	ID        string          `json:"id"`
+	BookID    string          `json:"bookId"`
+	Format    string          `json:"format"`
+	ISBN13    string          `json:"isbn13,omitempty"`
+	ASIN      string          `json:"asin,omitempty"`
+	Publisher string          `json:"publisher,omitempty"`
+	Language  string          `json:"language"`
+	Assets    []APIMediaAsset `json:"assets"`
+}
+
+type APIBook struct {
+	ID                 string           `json:"id"`
+	Title              string           `json:"title"`
+	Subtitle           string           `json:"subtitle,omitempty"`
+	AuthorID           string           `json:"authorId"`
+	AuthorName         string           `json:"authorName"`
+	SeriesID           string           `json:"seriesId,omitempty"`
+	SeriesTitle        string           `json:"seriesTitle,omitempty"`
+	SeriesIndex        *float64         `json:"seriesIndex,omitempty"`
+	SeriesIndexDisplay string           `json:"seriesIndexDisplay,omitempty"`
+	ReleaseDate        string           `json:"releaseDate,omitempty"`
+	Synopsis           string           `json:"synopsis,omitempty"`
+	Formats            []string         `json:"formats"`
+	Editions           []APIBookEdition `json:"editions"`
+}
+
+type APIAuthor struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	SortName  string `json:"sortName"`
+	PhotoURL  string `json:"photoUrl,omitempty"`
+	Biography string `json:"biography,omitempty"`
+	BookCount int    `json:"bookCount"`
+}
+
+type APISeries struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	TotalBooks  int    `json:"totalBooks,omitempty"`
+	Status      string `json:"status"`
+}
+
+type APITranscodeJob struct {
+	ID               string  `json:"id"`
+	BookID           string  `json:"bookId"`
+	BookTitle        string  `json:"bookTitle"`
+	AuthorName       string  `json:"authorName"`
+	SourceFilesCount int     `json:"sourceFilesCount"`
+	TargetFormat     string  `json:"targetFormat"`
+	Stage            string  `json:"stage"`
+	Status           string  `json:"status"`
+	ProgressPercent  float64 `json:"progressPercent"`
+	BitrateKbps      int     `json:"bitrateKbps"`
+	ElapsedSeconds   int     `json:"elapsedSeconds"`
+	EtaSeconds       int     `json:"etaSeconds"`
+	ErrorMessage     string  `json:"errorMessage,omitempty"`
+}
+
+type APIDownloadItem struct {
+	ID                  string  `json:"id"`
+	Title               string  `json:"title"`
+	Category            string  `json:"category"`
+	ClientType          string  `json:"clientType"`
+	Status              string  `json:"status"`
+	ProgressPercent     float64 `json:"progressPercent"`
+	DownloadSpeedBps    int64   `json:"downloadSpeedBps"`
+	TotalSizeBytes      int64   `json:"totalSizeBytes"`
+	DownloadedSizeBytes int64   `json:"downloadedSizeBytes"`
+	EtaSeconds          int     `json:"etaSeconds"`
+}
+
+type APIActivityResponse struct {
+	TranscodeJobs []APITranscodeJob `json:"transcodeJobs"`
+	Downloads     []APIDownloadItem `json:"downloads"`
+	Logs          []any             `json:"logs"`
+}
+
+type APIIndexerConfig struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Type           string `json:"type"`
+	Priority       int    `json:"priority"`
+	Enabled        bool   `json:"enabled"`
+	LastSync       string `json:"lastSync"`
+	ResponseTimeMs int    `json:"responseTimeMs"`
+	Status         string `json:"status"`
+}
+
+type APIDownloadClientConfig struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	Enabled    bool   `json:"enabled"`
+	Status     string `json:"status"`
+	Categories struct {
+		Ebooks     string `json:"ebooks"`
+		Audiobooks string `json:"audiobooks"`
+	} `json:"categories"`
+}
+
+type APISettingsResponse struct {
+	Indexers        []APIIndexerConfig        `json:"indexers"`
+	DownloadClients []APIDownloadClientConfig `json:"downloadClients"`
+	QualityProfile  struct {
+		ID                     string   `json:"id"`
+		Name                   string   `json:"name"`
+		AllowedLanguages       []string `json:"allowedLanguages"`
+		AllowedFormats         []string `json:"allowedFormats"`
+		AudioMinBitrateKbps    int      `json:"audioMinBitrateKbps"`
+		AudioTargetBitrateKbps int      `json:"audioTargetBitrateKbps"`
+		PreferSingleFileM4b    bool     `json:"preferSingleFileM4b"`
+	} `json:"qualityProfile"`
+	AuthSettings struct {
+		OIDCEnabled         bool   `json:"oidcEnabled"`
+		OIDCIssuerURL       string `json:"oidcIssuerUrl"`
+		OIDCClientID        string `json:"oidcClientId"`
+		LocalAuthEnabled    bool   `json:"localAuthEnabled"`
+		SessionTimeoutHours int    `json:"sessionTimeoutHours"`
+	} `json:"authSettings"`
+}
+
+func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/books", s.handleGetBooks)
+	mux.HandleFunc("GET /api/books/", s.handleGetBooks)
+	mux.HandleFunc("GET /api/authors", s.handleGetAuthors)
+	mux.HandleFunc("GET /api/authors/", s.handleGetAuthors)
+	mux.HandleFunc("GET /api/series", s.handleGetSeries)
+	mux.HandleFunc("GET /api/series/", s.handleGetSeries)
+	mux.HandleFunc("GET /api/activity", s.handleGetActivity)
+	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("POST /api/settings/prowlarr/sync", s.handleSyncProwlarr)
+	mux.HandleFunc("GET /api/events", s.handleEventsSSE)
+}
+
+func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if s.db == nil {
+		_ = json.NewEncoder(w).Encode([]APIBook{})
+		return
+	}
+
+	query := `
+		SELECT b.id, b.title, COALESCE(b.subtitle, ''), b.author_id, COALESCE(a.name, ''),
+		       COALESCE(b.series_id, ''), COALESCE(s.title, ''), b.series_index,
+		       COALESCE(b.series_index_display, ''), COALESCE(b.release_date, ''),
+		       COALESCE(b.synopsis, '')
+		FROM books b
+		LEFT JOIN authors a ON b.author_id = a.id
+		LEFT JOIN series s ON b.series_id = s.id
+		ORDER BY b.title ASC
+	`
+	rows, err := s.db.QueryContext(r.Context(), query)
+	if err != nil {
+		log.Printf("[api] get books query error: %v", err)
+		_ = json.NewEncoder(w).Encode([]APIBook{})
+		return
+	}
+	defer rows.Close()
+
+	books := make([]APIBook, 0)
+	bookIDs := make([]string, 0)
+	bookMap := make(map[string]*APIBook)
+
+	for rows.Next() {
+		var b APIBook
+		var seriesIdx sql.NullFloat64
+		if err := rows.Scan(
+			&b.ID, &b.Title, &b.Subtitle, &b.AuthorID, &b.AuthorName,
+			&b.SeriesID, &b.SeriesTitle, &seriesIdx,
+			&b.SeriesIndexDisplay, &b.ReleaseDate, &b.Synopsis,
+		); err != nil {
+			log.Printf("[api] scan book error: %v", err)
+			continue
+		}
+		if seriesIdx.Valid {
+			val := seriesIdx.Float64
+			b.SeriesIndex = &val
+		}
+		b.Formats = make([]string, 0)
+		b.Editions = make([]APIBookEdition, 0)
+		books = append(books, b)
+		bookIDs = append(bookIDs, b.ID)
+	}
+
+	for i := range books {
+		bookMap[books[i].ID] = &books[i]
+	}
+
+	// Query editions if books exist
+	if len(bookIDs) > 0 {
+		edQuery := `
+			SELECT id, book_id, format, COALESCE(isbn13, ''), COALESCE(asin, ''),
+			       COALESCE(publisher, ''), language
+			FROM book_editions
+			ORDER BY format ASC
+		`
+		edRows, err := s.db.QueryContext(r.Context(), edQuery)
+		if err == nil {
+			defer edRows.Close()
+			for edRows.Next() {
+				var ed APIBookEdition
+				if err := edRows.Scan(
+					&ed.ID, &ed.BookID, &ed.Format, &ed.ISBN13, &ed.ASIN,
+					&ed.Publisher, &ed.Language,
+				); err == nil {
+					ed.Assets = make([]APIMediaAsset, 0)
+					if parent, ok := bookMap[ed.BookID]; ok {
+						parent.Editions = append(parent.Editions, ed)
+						fmtUpper := strings.ToUpper(ed.Format)
+						found := false
+						for _, f := range parent.Formats {
+							if f == fmtUpper {
+								found = true
+								break
+							}
+						}
+						if !found {
+							parent.Formats = append(parent.Formats, fmtUpper)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	_ = json.NewEncoder(w).Encode(books)
+}
+
+func (s *Server) handleGetAuthors(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if s.db == nil {
+		_ = json.NewEncoder(w).Encode([]APIAuthor{})
+		return
+	}
+
+	query := `
+		SELECT a.id, a.name, a.sort_name, COALESCE(a.photo_url, ''),
+		       COALESCE(a.biography, ''), COUNT(b.id)
+		FROM authors a
+		LEFT JOIN books b ON a.id = b.author_id
+		GROUP BY a.id, a.name, a.sort_name, a.photo_url, a.biography
+		ORDER BY a.sort_name ASC
+	`
+	rows, err := s.db.QueryContext(r.Context(), query)
+	if err != nil {
+		log.Printf("[api] get authors query error: %v", err)
+		_ = json.NewEncoder(w).Encode([]APIAuthor{})
+		return
+	}
+	defer rows.Close()
+
+	authors := make([]APIAuthor, 0)
+	for rows.Next() {
+		var a APIAuthor
+		if err := rows.Scan(&a.ID, &a.Name, &a.SortName, &a.PhotoURL, &a.Biography, &a.BookCount); err != nil {
+			continue
+		}
+		authors = append(authors, a)
+	}
+
+	_ = json.NewEncoder(w).Encode(authors)
+}
+
+func (s *Server) handleGetSeries(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if s.db == nil {
+		_ = json.NewEncoder(w).Encode([]APISeries{})
+		return
+	}
+
+	query := `
+		SELECT s.id, s.title, COALESCE(s.description, ''), COALESCE(s.total_books, 0), s.status
+		FROM series s
+		ORDER BY s.title ASC
+	`
+	rows, err := s.db.QueryContext(r.Context(), query)
+	if err != nil {
+		log.Printf("[api] get series query error: %v", err)
+		_ = json.NewEncoder(w).Encode([]APISeries{})
+		return
+	}
+	defer rows.Close()
+
+	seriesList := make([]APISeries, 0)
+	for rows.Next() {
+		var s APISeries
+		if err := rows.Scan(&s.ID, &s.Title, &s.Description, &s.TotalBooks, &s.Status); err != nil {
+			continue
+		}
+		seriesList = append(seriesList, s)
+	}
+
+	_ = json.NewEncoder(w).Encode(seriesList)
+}
+
+func (s *Server) handleGetActivity(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	resp := APIActivityResponse{
+		TranscodeJobs: make([]APITranscodeJob, 0),
+		Downloads:     make([]APIDownloadItem, 0),
+		Logs:          make([]any, 0),
+	}
+
+	if s.db == nil {
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	// Query transcode queue
+	tqQuery := `
+		SELECT t.id, t.edition_id, COALESCE(b.title, ''), COALESCE(a.name, ''),
+		       t.status, t.progress_percent, t.current_stage, COALESCE(t.error_message, '')
+		FROM transcode_queue t
+		LEFT JOIN book_editions be ON t.edition_id = be.id
+		LEFT JOIN books b ON be.book_id = b.id
+		LEFT JOIN authors a ON b.author_id = a.id
+		WHERE t.status IN ('pending', 'processing')
+		ORDER BY t.created_at ASC
+	`
+	if rows, err := s.db.QueryContext(r.Context(), tqQuery); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var job APITranscodeJob
+			job.TargetFormat = "M4B"
+			if err := rows.Scan(
+				&job.ID, &job.BookID, &job.BookTitle, &job.AuthorName,
+				&job.Status, &job.ProgressPercent, &job.Stage, &job.ErrorMessage,
+			); err == nil {
+				resp.TranscodeJobs = append(resp.TranscodeJobs, job)
+			}
+		}
+	}
+
+	// Query download queue
+	dqQuery := `
+		SELECT id, title, status, progress_percent, size_bytes
+		FROM download_queue
+		WHERE status IN ('queued', 'downloading')
+		ORDER BY created_at ASC
+	`
+	if rows, err := s.db.QueryContext(r.Context(), dqQuery); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var item APIDownloadItem
+			item.Category = "callimachus-audiobooks"
+			item.ClientType = "qBittorrent"
+			if err := rows.Scan(
+				&item.ID, &item.Title, &item.Status, &item.ProgressPercent, &item.TotalSizeBytes,
+			); err == nil {
+				resp.Downloads = append(resp.Downloads, item)
+			}
+		}
+	}
+
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	var resp APISettingsResponse
+	resp.Indexers = make([]APIIndexerConfig, 0)
+	resp.DownloadClients = make([]APIDownloadClientConfig, 0)
+
+	// Default Quality Profile
+	resp.QualityProfile.ID = "default"
+	resp.QualityProfile.Name = "Standard Audiobook"
+	resp.QualityProfile.AllowedLanguages = []string{"en"}
+	resp.QualityProfile.AllowedFormats = []string{"EPUB", "M4B"}
+	resp.QualityProfile.AudioMinBitrateKbps = 32
+	resp.QualityProfile.AudioTargetBitrateKbps = 64
+	resp.QualityProfile.PreferSingleFileM4b = true
+
+	// Auth settings
+	resp.AuthSettings.OIDCEnabled = s.cfg.OIDCIssuerURL != "" && s.cfg.OIDCClientID != ""
+	resp.AuthSettings.OIDCIssuerURL = s.cfg.OIDCIssuerURL
+	resp.AuthSettings.OIDCClientID = s.cfg.OIDCClientID
+	resp.AuthSettings.LocalAuthEnabled = s.cfg.FallbackPassword != ""
+	resp.AuthSettings.SessionTimeoutHours = 720
+
+	if s.db != nil {
+		// Query indexers
+		if rows, err := s.db.QueryContext(r.Context(), `SELECT id, name, protocol, priority, enabled, COALESCE(last_sync_at, '') FROM indexers ORDER BY priority ASC`); err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var idx APIIndexerConfig
+				var en int
+				var lastSync string
+				if err := rows.Scan(&idx.ID, &idx.Name, &idx.Type, &idx.Priority, &en, &lastSync); err == nil {
+					idx.Enabled = en == 1
+					idx.LastSync = lastSync
+					idx.Status = "online"
+					resp.Indexers = append(resp.Indexers, idx)
+				}
+			}
+		}
+
+		// Query download clients
+		if rows, err := s.db.QueryContext(r.Context(), `SELECT id, name, type, host, port, enabled, category_ebook, category_audiobook FROM download_clients`); err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var dc APIDownloadClientConfig
+				var en int
+				if err := rows.Scan(&dc.ID, &dc.Name, &dc.Type, &dc.Host, &dc.Port, &en, &dc.Categories.Ebooks, &dc.Categories.Audiobooks); err == nil {
+					dc.Enabled = en == 1
+					dc.Status = "connected"
+					resp.DownloadClients = append(resp.DownloadClients, dc)
+				}
+			}
+		}
+	}
+
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleSyncProwlarr(w http.ResponseWriter, r *http.Request) {
+	if s.syncer != nil {
+		go func() {
+			if _, err := s.syncer.SyncOnce(r.Context()); err != nil {
+				log.Printf("[prowlarr] sync error: %v", err)
+			}
+		}()
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	// Send initial connect frame
+	_, _ = fmt.Fprintf(w, ": connected\n\n")
+	flusher.Flush()
+
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			_, err := fmt.Fprintf(w, ": ping\n\n")
+			if err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
