@@ -1,0 +1,236 @@
+import React, { useEffect } from 'react';
+import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers } from 'lucide-react';
+import { Book } from '../types';
+
+interface BookDetailModalProps {
+  book: Book | null;
+  onClose: () => void;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+}
+
+function formatDuration(seconds?: number): string {
+  if (!seconds) return 'Unknown';
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  if (hrs > 0) {
+    return `${hrs}h ${mins}m`;
+  }
+  return `${mins}m`;
+}
+
+export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose }) => {
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  if (!book) return null;
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Details for ${book.title}`}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-150"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-3xl max-h-[90vh] bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-950/40">
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-semibold text-zinc-100">{book.title}</h2>
+            <div className="flex gap-1.5">
+              {book.formats.map((fmt) => (
+                <span
+                  key={fmt}
+                  className={`text-[11px] font-mono px-2 py-0.5 rounded font-medium ${
+                    fmt === 'M4B'
+                      ? 'bg-purple-950/80 text-purple-300 border border-purple-800/60'
+                      : 'bg-blue-950/80 text-blue-300 border border-blue-800/60'
+                  }`}
+                >
+                  {fmt}
+                </span>
+              ))}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            data-testid="close-book-detail"
+            className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-lg transition-colors"
+            title="Close modal (Esc)"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Content body */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          <div className="flex flex-col sm:flex-row gap-6">
+            {/* Cover art */}
+            <div className="w-40 sm:w-48 shrink-0">
+              <div className="aspect-[2/3] rounded-lg overflow-hidden bg-zinc-800 border border-zinc-700/60 shadow-md">
+                {book.coverUrl ? (
+                  <img
+                    src={book.coverUrl}
+                    alt={book.title}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600">
+                    <BookOpen className="w-12 h-12 mb-2 stroke-1" />
+                    <span className="text-xs">No Cover Art</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Metadata overview */}
+            <div className="flex-1 space-y-4">
+              <div>
+                <h3 className="text-xl font-bold text-zinc-100">{book.title}</h3>
+                {book.subtitle && (
+                  <p className="text-sm text-zinc-400 mt-0.5">{book.subtitle}</p>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div className="flex items-center gap-2 text-zinc-300">
+                  <User className="w-4 h-4 text-zinc-500 shrink-0" />
+                  <span className="text-zinc-500">Author:</span>
+                  <span className="font-medium text-zinc-200">{book.authorName}</span>
+                </div>
+
+                {book.seriesTitle && (
+                  <div className="flex items-center gap-2 text-zinc-300">
+                    <Layers className="w-4 h-4 text-purple-400 shrink-0" />
+                    <span className="text-zinc-500">Series:</span>
+                    <span className="font-medium text-zinc-200">
+                      {book.seriesTitle} ({book.seriesIndexDisplay || `#${book.seriesIndex}`})
+                    </span>
+                  </div>
+                )}
+
+                {book.releaseDate && (
+                  <div className="flex items-center gap-2 text-zinc-300">
+                    <Calendar className="w-4 h-4 text-zinc-500 shrink-0" />
+                    <span className="text-zinc-500">Released:</span>
+                    <span className="font-medium text-zinc-200">{book.releaseDate}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Synopsis */}
+              {book.synopsis && (
+                <div className="bg-zinc-950/50 p-3.5 rounded-lg border border-zinc-800/80 text-xs text-zinc-300 leading-relaxed">
+                  <div className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-1">
+                    Synopsis
+                  </div>
+                  {book.synopsis}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Editions & File Assets */}
+          <div className="space-y-4 border-t border-zinc-800 pt-5">
+            <h4 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
+              <HardDrive className="w-4 h-4 text-zinc-400" />
+              Editions & Media Assets
+            </h4>
+
+            <div className="space-y-3">
+              {book.editions.map((edition) => (
+                <div
+                  key={edition.id}
+                  className="bg-zinc-950/60 border border-zinc-800 rounded-lg p-4 space-y-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      {edition.format === 'M4B' ? (
+                        <Headphones className="w-4 h-4 text-purple-400" />
+                      ) : (
+                        <FileText className="w-4 h-4 text-blue-400" />
+                      )}
+                      <span className="text-xs font-semibold text-zinc-200">
+                        {edition.format} Edition
+                      </span>
+                      {edition.language && (
+                        <span className="text-[10px] bg-zinc-800 px-1.5 py-0.5 rounded text-zinc-400">
+                          {edition.language}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-3 text-xs text-zinc-400 font-mono">
+                      {edition.publisher && <span className="font-sans text-zinc-300">{edition.publisher}</span>}
+                      {edition.isbn13 && <span>ISBN: {edition.isbn13}</span>}
+                      {edition.asin && <span>ASIN: {edition.asin}</span>}
+                    </div>
+                  </div>
+
+                  {edition.narrators && edition.narrators.length > 0 && (
+                    <div className="flex items-center gap-2 text-xs text-purple-300">
+                      <Mic className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                      <span className="text-zinc-500">Narrator:</span>
+                      <span>{edition.narrators.map((n) => n.name).join(', ')}</span>
+                    </div>
+                  )}
+
+                  {/* Asset files */}
+                  <div className="space-y-1.5 pt-1">
+                    {edition.assets.map((asset) => (
+                      <div
+                        key={asset.id}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between p-2 rounded bg-zinc-900/80 border border-zinc-800/60 text-xs gap-2"
+                      >
+                        <div className="font-mono text-[11px] text-zinc-300 break-all">
+                          {asset.filePath}
+                        </div>
+                        <div className="flex items-center gap-3 text-zinc-400 shrink-0 text-[11px]">
+                          {asset.durationSeconds && (
+                            <span>{formatDuration(asset.durationSeconds)}</span>
+                          )}
+                          {asset.codec && <span>{asset.codec}</span>}
+                          {asset.bitrateKbps && <span>{asset.bitrateKbps} kbps</span>}
+                          <span className="font-semibold text-zinc-200">
+                            {formatBytes(asset.fileSizeBytes)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-3 border-t border-zinc-800 bg-zinc-950/60 flex justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-1.5 text-xs font-medium text-zinc-300 hover:text-white bg-zinc-800 hover:bg-zinc-700 rounded-md transition-colors"
+          >
+            Close (Esc)
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
