@@ -1,6 +1,8 @@
 # Binaries and build artifacts
 bin/
 dist/
+!web/dist/
+web/dist/assets/
 *.exe
 *.test
 

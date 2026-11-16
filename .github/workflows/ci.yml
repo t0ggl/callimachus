@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  backend:
+  test-backend:
     name: Backend Tests & Lint
     runs-on: ubuntu-latest
     steps:
@@ -33,37 +33,42 @@ jobs:
       - name: Verify Go Modules & Tests
         shell: bash
         run: |
-          if [ -f go.mod ]; then
-            go vet ./...
-            go test -v -race -timeout 3m ./...
-          else
-            echo "go.mod not yet initialized; skipping Go tests."
-          fi
+          go vet ./...
+          go test -v -race -timeout 5m ./...
 
-  frontend:
-    name: Frontend Lint & Build
+  test-frontend:
+    name: Frontend Tests & Build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: 'web/pnpm-lock.yaml'
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 9
-
-      - name: Build Web UI
+      - name: Install Dependencies
         shell: bash
         run: |
-          if [ -d web ] && [ -f web/package.json ]; then
-            cd web
-            pnpm install --frozen-lockfile
-            pnpm run build
-          else
-            echo "web/package.json not yet initialized; skipping frontend build."
-          fi
+          cd web
+          pnpm install --frozen-lockfile
+
+      - name: Run Vitest Component Tests
+        shell: bash
+        run: |
+          cd web
+          pnpm test --run
+
+      - name: Build Web Production Assets
+        shell: bash
+        run: |
+          cd web
+          pnpm run build
