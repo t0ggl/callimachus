@@ -9,7 +9,6 @@ import {
   Zap,
   DownloadCloud,
   ShieldCheck,
-  BookOpen,
 } from 'lucide-react';
 import { UserProfile } from '../types';
 
@@ -72,7 +71,13 @@ export const Layout: React.FC<LayoutProps> = ({
           {/* Logo & Brand Header */}
           <div className="h-14 flex items-center px-4 border-b border-zinc-800 gap-3">
             <div className="w-8 h-8 rounded-lg bg-blue-600/20 border border-blue-500/40 flex items-center justify-center text-blue-400">
-              <BookOpen className="w-4 h-4" />
+              <svg className="w-5 h-5" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                <rect x="5" y="13" width="5.5" height="14" rx="1.5" fill="#3B82F6" fillOpacity="0.25" stroke="#60A5FA" strokeWidth="2.2" />
+                <rect x="12.5" y="10" width="5.5" height="17" rx="1.5" fill="#3B82F6" fillOpacity="0.4" stroke="#60A5FA" strokeWidth="2.2" />
+                <rect x="20.5" y="14.5" width="5.5" height="12.5" rx="1.5" transform="rotate(-10 20.5 14.5)" fill="#38BDF8" fillOpacity="0.25" stroke="#38BDF8" strokeWidth="2.2" />
+                <path d="M19 6.5C21.8 6.5 24.2 8.2 25.2 10.7" stroke="#93C5FD" strokeWidth="2.2" strokeLinecap="round" />
+                <path d="M20.5 3.5C24.5 3.8 27.8 6.6 28.8 10.5" stroke="#38BDF8" strokeWidth="2.2" strokeLinecap="round" />
+              </svg>
             </div>
             <div>
               <div className="text-sm font-bold tracking-tight text-white flex items-center gap-1.5">
