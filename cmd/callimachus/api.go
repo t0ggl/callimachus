@@ -141,12 +141,13 @@ type APIProwlarrSettings struct {
 }
 
 type APIQualityProfileSettings struct {
-	ID                  string   `json:"id"`
-	Name                string   `json:"name"`
-	AllowedLanguages    []string `json:"allowedLanguages"`
-	AllowedFormats      []string `json:"allowedFormats"`
-	PreferSingleFileM4b bool     `json:"preferSingleFileM4b"`
-	MaxFileSizeMb       int      `json:"maxFileSizeMb"`
+	ID                     string   `json:"id"`
+	Name                   string   `json:"name"`
+	AllowedLanguages       []string `json:"allowedLanguages"`
+	AllowedFormats         []string `json:"allowedFormats"`
+	EbookFormatPreferences []string `json:"ebookFormatPreferences"`
+	PreferSingleFileM4b    bool     `json:"preferSingleFileM4b"`
+	MaxFileSizeMb          int      `json:"maxFileSizeMb"`
 }
 
 type APISettingsResponse struct {
@@ -170,11 +171,12 @@ type APISettingsUpdateRequest struct {
 		SyncInterval *string `json:"syncInterval"`
 	} `json:"prowlarr"`
 	QualityProfile *struct {
-		Name                *string   `json:"name"`
-		AllowedLanguages    *[]string `json:"allowedLanguages"`
-		AllowedFormats      *[]string `json:"allowedFormats"`
-		PreferSingleFileM4b *bool     `json:"preferSingleFileM4b"`
-		MaxFileSizeMb       *int      `json:"maxFileSizeMb"`
+		Name                   *string   `json:"name"`
+		AllowedLanguages       *[]string `json:"allowedLanguages"`
+		AllowedFormats         *[]string `json:"allowedFormats"`
+		EbookFormatPreferences *[]string `json:"ebookFormatPreferences"`
+		PreferSingleFileM4b    *bool     `json:"preferSingleFileM4b"`
+		MaxFileSizeMb          *int      `json:"maxFileSizeMb"`
 	} `json:"qualityProfile"`
 }
 
@@ -449,12 +451,13 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 
 	// Quality Profile
 	resp.QualityProfile = APIQualityProfileSettings{
-		ID:                  "default",
-		Name:                cfg.QualityProfileName,
-		AllowedLanguages:    cfg.AllowedLanguages,
-		AllowedFormats:      cfg.AllowedFormats,
-		PreferSingleFileM4b: cfg.PreferSingleFileM4B,
-		MaxFileSizeMb:       cfg.MaxFileSizeMB,
+		ID:                     "default",
+		Name:                   cfg.QualityProfileName,
+		AllowedLanguages:       cfg.AllowedLanguages,
+		AllowedFormats:         cfg.AllowedFormats,
+		EbookFormatPreferences: cfg.EbookFormatPreferences,
+		PreferSingleFileM4b:    cfg.PreferSingleFileM4B,
+		MaxFileSizeMb:          cfg.MaxFileSizeMB,
 	}
 
 	if s.db != nil {
@@ -600,6 +603,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.QualityProfile.AllowedFormats != nil {
 			updates[config.KeyAllowedFormats] = strings.Join(*req.QualityProfile.AllowedFormats, ",")
+		}
+		if req.QualityProfile.EbookFormatPreferences != nil {
+			encoded, _ := json.Marshal(*req.QualityProfile.EbookFormatPreferences)
+			updates[config.KeyEbookFormatPreferences] = string(encoded)
 		}
 		if req.QualityProfile.PreferSingleFileM4b != nil {
 			updates[config.KeyPreferSingleFileM4B] = strconv.FormatBool(*req.QualityProfile.PreferSingleFileM4b)

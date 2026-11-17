@@ -435,6 +435,19 @@ CREATE TABLE settings (
 
 ---
 
+Quality-profile format priority is stored in the existing `settings` table under
+`ebook_format_preferences` as an ordered JSON array, for example
+`["EPUB","AZW3","MOBI","PDF","CBR","CBZ"]`. This extends the logical settings
+schema without DDL changes or rewriting existing allowed-format filters.
+`qualityProfile.ebookFormatPreferences` is returned and updated through
+`/api/settings`; identifiers are normalized to uppercase, and duplicates, audio
+formats, and unsupported formats are rejected. An empty array disables format
+bonuses. `CALLIMACHUS_EBOOK_FORMAT_PREFERENCES` overrides it (comma-separated or
+JSON array) and locks the UI. `QualityProfile.ScoreRelease` and `RankReleases`
+apply the preference after quality filtering, with stable ordering for ties.
+Request-triggered search remains the existing no-op hook; these methods provide
+the ranking boundary for acquisition callers.
+
 ## 4. EPUB Engine Strategy & Definitive Selection
 
 The EPUB engine in `pkg/epub` inspects, extracts, validates, modifies, and serializes EPUB book metadata. 

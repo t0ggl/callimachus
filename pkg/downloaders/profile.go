@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/t0ggl/callimachus/pkg/metadata"
@@ -26,11 +27,12 @@ var DefaultAllowedFormats = []string{"epub", "azw3", "pdf", "m4b", "mp3"}
 
 // QualityProfile defines rules for filtering discovered media releases.
 type QualityProfile struct {
-	AllowedLanguages []string
-	AllowedFormats   []string
-	PreferSingleM4B  bool
-	MaxFileSizeMB    int
-	RejectPatterns   []*regexp.Regexp
+	AllowedLanguages       []string
+	AllowedFormats         []string
+	EbookFormatPreferences []string
+	PreferSingleM4B        bool
+	MaxFileSizeMB          int
+	RejectPatterns         []*regexp.Regexp
 }
 
 // ReleaseCandidate represents a candidate release evaluated for acquisition.
@@ -48,9 +50,10 @@ type ReleaseCandidate struct {
 // DefaultQualityProfile returns a QualityProfile initialized with standard defaults.
 func DefaultQualityProfile() QualityProfile {
 	return QualityProfile{
-		AllowedLanguages: DefaultAllowedLanguages,
-		AllowedFormats:   DefaultAllowedFormats,
-		PreferSingleM4B:  true,
+		AllowedLanguages:       DefaultAllowedLanguages,
+		AllowedFormats:         DefaultAllowedFormats,
+		EbookFormatPreferences: []string{"epub", "azw3", "mobi", "pdf", "cbr", "cbz"},
+		PreferSingleM4B:        true,
 	}
 }
 
@@ -229,6 +232,54 @@ func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string)
 	}
 
 	return true, ""
+}
+
+// ScoreRelease assigns a higher score to a more preferred ebook format.
+// Rejected releases score -1; audio and unranked formats score zero.
+func (p QualityProfile) ScoreRelease(release ReleaseCandidate) int {
+	if accepted, _ := p.EvaluateRelease(release); !accepted {
+		return -1
+	}
+	if release.IsAudio {
+		return 0
+	}
+	format := NormalizeFormat(release.Format)
+	if format == "" {
+		format = NormalizeFormat(metadata.ParseRelease(release.Title).Format)
+		if format == "" {
+			format = SanitizeExt(release.Title)
+		}
+	}
+	if format == "m4b" || format == "mp3" {
+		return 0
+	}
+	for i, preferred := range p.EbookFormatPreferences {
+		if format == NormalizeFormat(preferred) {
+			return len(p.EbookFormatPreferences) - i
+		}
+	}
+	return 0
+}
+
+// RankReleases filters unacceptable releases and stably orders acquisition
+// candidates by format preference, preserving discovery order for equal scores.
+func (p QualityProfile) RankReleases(releases []ReleaseCandidate) []ReleaseCandidate {
+	type scored struct {
+		release ReleaseCandidate
+		score   int
+	}
+	candidates := make([]scored, 0, len(releases))
+	for _, release := range releases {
+		if score := p.ScoreRelease(release); score >= 0 {
+			candidates = append(candidates, scored{release, score})
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
+	ranked := make([]ReleaseCandidate, len(candidates))
+	for i, candidate := range candidates {
+		ranked[i] = candidate.release
+	}
+	return ranked
 }
 
 // EvaluateRelease package-level wrapper for profile.EvaluateRelease.

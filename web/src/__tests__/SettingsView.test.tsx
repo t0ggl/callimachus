@@ -197,3 +197,49 @@ it('offers common ebook formats and saves selections with the exact audiobook co
     }),
   }));
 });
+
+it('reorders ebook priorities in both directions and saves the sequence independently of allowed formats', async () => {
+  const user = userEvent.setup({ delay: null });
+  const onSaveSettings = vi.fn().mockResolvedValue(undefined);
+  render(<SettingsView indexers={[]} downloadClients={[]} librarySettings={baseLibrary}
+    prowlarrSettings={baseProwlarr} qualityProfile={baseQuality} onSaveSettings={onSaveSettings} />);
+  await user.click(screen.getByTestId('tab-settings-quality'));
+  expect(screen.getByRole('button', { name: 'Move EPUB up' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Move CBZ down' })).toBeDisabled();
+  await user.click(screen.getByRole('button', { name: 'Move PDF up' }));
+  await user.click(screen.getByRole('button', { name: 'Move EPUB down' }));
+  expect(screen.getByRole('list', { name: 'eBook format priority' }).textContent).toMatch(/AZW3.*EPUB.*PDF.*MOBI.*CBR.*CBZ/);
+  await user.click(screen.getByTestId('save-settings-btn'));
+  expect(onSaveSettings).toHaveBeenCalledWith(expect.objectContaining({ qualityProfile: expect.objectContaining({
+    ebookFormatPreferences: ['AZW3', 'EPUB', 'PDF', 'MOBI', 'CBR', 'CBZ'],
+    allowedFormats: ['EPUB', 'M4B'],
+  }) }));
+});
+
+it('locks priority arrows and omits preferences from saves when managed by the environment', async () => {
+  const user = userEvent.setup({ delay: null });
+  const onSaveSettings = vi.fn().mockResolvedValue(undefined);
+  render(<SettingsView indexers={[]} downloadClients={[]} librarySettings={baseLibrary}
+    prowlarrSettings={baseProwlarr} qualityProfile={{...baseQuality, ebookFormatPreferences: ['PDF', 'EPUB']}}
+    overrides={{ebook_format_preferences: {isOverridden: true, overriddenBy: 'CALLIMACHUS_EBOOK_FORMAT_PREFERENCES', envVar: 'CALLIMACHUS_EBOOK_FORMAT_PREFERENCES'}}}
+    onSaveSettings={onSaveSettings} />);
+  await user.click(screen.getByTestId('tab-settings-quality'));
+  expect(screen.getByRole('button', { name: 'Move EPUB up' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Move PDF down' })).toBeDisabled();
+  expect(screen.getByTestId('override-note-ebook_format_preferences')).toHaveTextContent('CALLIMACHUS_EBOOK_FORMAT_PREFERENCES');
+  await user.click(screen.getByTestId('save-settings-btn'));
+  expect(onSaveSettings.mock.calls[0][0].qualityProfile).not.toHaveProperty('ebookFormatPreferences');
+});
+
+it('can add an unranked ebook format to a saved partial preference list', async () => {
+  const user = userEvent.setup({ delay: null });
+  const onSaveSettings = vi.fn().mockResolvedValue(undefined);
+  render(<SettingsView indexers={[]} downloadClients={[]} librarySettings={baseLibrary}
+    prowlarrSettings={baseProwlarr} qualityProfile={{...baseQuality, ebookFormatPreferences: ['PDF']}}
+    onSaveSettings={onSaveSettings} />);
+  await user.click(screen.getByTestId('tab-settings-quality'));
+  await user.click(screen.getByRole('button', {name: 'Add EPUB to priorities'}));
+  await user.click(screen.getByRole('button', {name: 'Move EPUB up'}));
+  await user.click(screen.getByTestId('save-settings-btn'));
+  expect(onSaveSettings.mock.calls[0][0].qualityProfile.ebookFormatPreferences).toEqual(['EPUB', 'PDF']);
+});

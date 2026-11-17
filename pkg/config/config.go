@@ -19,17 +19,18 @@ import (
 // Every setting's environment variable is automatically derived via
 // EnvVarName(key) -> "CALLIMACHUS_" + strings.ToUpper(key).
 const (
-	KeyLibraryRoot          = "library_root"
-	KeyProwlarrURL          = "prowlarr_url"
-	KeyProwlarrAPIKey       = "prowlarr_api_key"
-	KeyProwlarrSyncInterval = "prowlarr_sync_interval"
-	KeyIndexerSyncInterval  = "indexer_sync_interval"
-	KeyStagingPollInterval  = "staging_poll_interval"
-	KeyQualityProfileName   = "quality_profile_name"
-	KeyAllowedLanguages     = "allowed_languages"
-	KeyAllowedFormats       = "allowed_formats"
-	KeyPreferSingleFileM4B  = "prefer_single_file_m4b"
-	KeyMaxFileSizeMB        = "max_file_size_mb"
+	KeyLibraryRoot            = "library_root"
+	KeyProwlarrURL            = "prowlarr_url"
+	KeyProwlarrAPIKey         = "prowlarr_api_key"
+	KeyProwlarrSyncInterval   = "prowlarr_sync_interval"
+	KeyIndexerSyncInterval    = "indexer_sync_interval"
+	KeyStagingPollInterval    = "staging_poll_interval"
+	KeyQualityProfileName     = "quality_profile_name"
+	KeyAllowedLanguages       = "allowed_languages"
+	KeyAllowedFormats         = "allowed_formats"
+	KeyEbookFormatPreferences = "ebook_format_preferences"
+	KeyPreferSingleFileM4B    = "prefer_single_file_m4b"
+	KeyMaxFileSizeMB          = "max_file_size_mb"
 )
 
 // Bootstrap setting keys (resolved before opening SQLite).
@@ -76,6 +77,7 @@ var registry = []SettingSpec{
 	{Key: KeyQualityProfileName, Kind: KindString, Default: "Standard Audiobook"},
 	{Key: KeyAllowedLanguages, Kind: KindStringList, Default: "en"},
 	{Key: KeyAllowedFormats, Kind: KindStringList, Default: "EPUB,M4B"},
+	{Key: KeyEbookFormatPreferences, Kind: KindStringList, Default: "EPUB,AZW3,MOBI,PDF,CBR,CBZ"},
 	{Key: KeyPreferSingleFileM4B, Kind: KindBool, Default: "true"},
 	{Key: KeyMaxFileSizeMB, Kind: KindInt, Default: "2048"},
 }
@@ -110,17 +112,18 @@ type OverrideInfo struct {
 
 // Settings holds the effective resolved application configuration.
 type Settings struct {
-	LibraryRoot          string        `json:"libraryRoot"`
-	ProwlarrURL          string        `json:"prowlarrUrl"`
-	ProwlarrAPIKey       string        `json:"-"`
-	ProwlarrSyncInterval time.Duration `json:"prowlarrSyncInterval"`
-	IndexerSyncInterval  time.Duration `json:"indexerSyncInterval"`
-	StagingPollInterval  time.Duration `json:"stagingPollInterval"`
-	QualityProfileName   string        `json:"qualityProfileName"`
-	AllowedLanguages     []string      `json:"allowedLanguages"`
-	AllowedFormats       []string      `json:"allowedFormats"`
-	PreferSingleFileM4B  bool          `json:"preferSingleFileM4b"`
-	MaxFileSizeMB        int           `json:"maxFileSizeMb"`
+	LibraryRoot            string        `json:"libraryRoot"`
+	ProwlarrURL            string        `json:"prowlarrUrl"`
+	ProwlarrAPIKey         string        `json:"-"`
+	ProwlarrSyncInterval   time.Duration `json:"prowlarrSyncInterval"`
+	IndexerSyncInterval    time.Duration `json:"indexerSyncInterval"`
+	StagingPollInterval    time.Duration `json:"stagingPollInterval"`
+	QualityProfileName     string        `json:"qualityProfileName"`
+	AllowedLanguages       []string      `json:"allowedLanguages"`
+	AllowedFormats         []string      `json:"allowedFormats"`
+	EbookFormatPreferences []string      `json:"ebookFormatPreferences"`
+	PreferSingleFileM4B    bool          `json:"preferSingleFileM4b"`
+	MaxFileSizeMB          int           `json:"maxFileSizeMb"`
 }
 
 // ToQualityProfile builds a downloaders.QualityProfile from the resolved settings.
@@ -135,10 +138,11 @@ func (s Settings) ToQualityProfile() downloaders.QualityProfile {
 		fmts[i] = strings.ToLower(strings.TrimSpace(f))
 	}
 	return downloaders.QualityProfile{
-		AllowedLanguages: langs,
-		AllowedFormats:   fmts,
-		PreferSingleM4B:  s.PreferSingleFileM4B,
-		MaxFileSizeMB:    s.MaxFileSizeMB,
+		AllowedLanguages:       langs,
+		AllowedFormats:         fmts,
+		EbookFormatPreferences: s.EbookFormatPreferences,
+		PreferSingleM4B:        s.PreferSingleFileM4B,
+		MaxFileSizeMB:          s.MaxFileSizeMB,
 	}
 }
 
@@ -386,6 +390,28 @@ func validateAndNormalize(spec SettingSpec, raw string) (string, error) {
 		}
 		return d.String(), nil
 	case KindStringList:
+		if spec.Key == KeyEbookFormatPreferences {
+			var items []string
+			if err := json.Unmarshal([]byte(trimmed), &items); err != nil || items == nil {
+				return "", errors.New("expected an ordered array of ebook formats")
+			}
+			seen := make(map[string]bool)
+			for i, item := range items {
+				format := strings.ToUpper(strings.TrimSpace(item))
+				switch format {
+				case "EPUB", "AZW3", "MOBI", "PDF", "CBR", "CBZ":
+				default:
+					return "", fmt.Errorf("unsupported ebook format %q", item)
+				}
+				if seen[format] {
+					return "", fmt.Errorf("duplicate ebook format %q", format)
+				}
+				seen[format] = true
+				items[i] = format
+			}
+			encoded, err := json.Marshal(items)
+			return string(encoded), err
+		}
 		items := parseList(trimmed)
 		if spec.Key == KeyAllowedFormats {
 			for i := range items {
@@ -431,17 +457,18 @@ func callerOverridesMap(c Overrides) map[string]string {
 
 func materializeSettings(vals map[string]string) Settings {
 	return Settings{
-		LibraryRoot:          vals[KeyLibraryRoot],
-		ProwlarrURL:          strings.TrimRight(vals[KeyProwlarrURL], "/"),
-		ProwlarrAPIKey:       vals[KeyProwlarrAPIKey],
-		ProwlarrSyncInterval: parseDurationOr(vals[KeyProwlarrSyncInterval], time.Hour),
-		IndexerSyncInterval:  parseDurationOr(vals[KeyIndexerSyncInterval], 15*time.Minute),
-		StagingPollInterval:  parseDurationOr(vals[KeyStagingPollInterval], 5*time.Second),
-		QualityProfileName:   orDefault(vals[KeyQualityProfileName], "Standard Audiobook"),
-		AllowedLanguages:     parseLowerList(vals[KeyAllowedLanguages], []string{"en"}),
-		AllowedFormats:       parseUpperList(vals[KeyAllowedFormats], []string{"EPUB", "M4B"}),
-		PreferSingleFileM4B:  parseBoolOr(vals[KeyPreferSingleFileM4B], true),
-		MaxFileSizeMB:        parseNonNegIntOr(vals[KeyMaxFileSizeMB], 2048),
+		LibraryRoot:            vals[KeyLibraryRoot],
+		ProwlarrURL:            strings.TrimRight(vals[KeyProwlarrURL], "/"),
+		ProwlarrAPIKey:         vals[KeyProwlarrAPIKey],
+		ProwlarrSyncInterval:   parseDurationOr(vals[KeyProwlarrSyncInterval], time.Hour),
+		IndexerSyncInterval:    parseDurationOr(vals[KeyIndexerSyncInterval], 15*time.Minute),
+		StagingPollInterval:    parseDurationOr(vals[KeyStagingPollInterval], 5*time.Second),
+		QualityProfileName:     orDefault(vals[KeyQualityProfileName], "Standard Audiobook"),
+		AllowedLanguages:       parseLowerList(vals[KeyAllowedLanguages], []string{"en"}),
+		AllowedFormats:         parseUpperList(vals[KeyAllowedFormats], []string{"EPUB", "M4B"}),
+		EbookFormatPreferences: parseList(strings.ToUpper(vals[KeyEbookFormatPreferences])),
+		PreferSingleFileM4B:    parseBoolOr(vals[KeyPreferSingleFileM4B], true),
+		MaxFileSizeMB:          parseNonNegIntOr(vals[KeyMaxFileSizeMB], 2048),
 	}
 }
 

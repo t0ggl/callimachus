@@ -1,4 +1,5 @@
 export const FORMAT_TYPES = ['EPUB', 'M4B', 'PDF', 'MP3', 'AZW3', 'MOBI', 'CBR', 'CBZ'] as const;
+export const DEFAULT_EBOOK_PREFERENCES: FormatType[] = ['EPUB', 'AZW3', 'MOBI', 'PDF', 'CBR', 'CBZ'];
 export type FormatType = typeof FORMAT_TYPES[number];
 
 export interface Author {
@@ -180,6 +181,7 @@ export interface QualityProfile {
   name: string;
   allowedLanguages: string[];
   allowedFormats: FormatType[];
+  ebookFormatPreferences?: FormatType[];
   preferSingleFileM4b: boolean;
   maxFileSizeMb: number;
 }

@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
+  ArrowUp,
+  ArrowDown,
   Globe,
   Download,
   Sliders,
@@ -19,6 +21,7 @@ import {
   SettingsOverridesMap,
   FormatType,
   FORMAT_TYPES,
+  DEFAULT_EBOOK_PREFERENCES,
 } from '../types';
 
 export interface SettingsUpdatePayload {
@@ -36,6 +39,7 @@ export interface SettingsUpdatePayload {
     name?: string;
     allowedLanguages?: string[];
     allowedFormats?: FormatType[];
+    ebookFormatPreferences?: FormatType[];
     preferSingleFileM4b?: boolean;
     maxFileSizeMb?: number;
   };
@@ -92,6 +96,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     ...initialQuality,
     allowedLanguages: initialQuality.allowedLanguages ?? ['en'],
     allowedFormats: initialQuality.allowedFormats ?? ['EPUB', 'M4B'],
+    ebookFormatPreferences: initialQuality.ebookFormatPreferences ?? DEFAULT_EBOOK_PREFERENCES,
     maxFileSizeMb: initialQuality.maxFileSizeMb ?? 2048,
   });
   const [languagesInput, setLanguagesInput] = useState(
@@ -122,6 +127,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       ...initialQuality,
       allowedLanguages: langs,
       allowedFormats: initialQuality.allowedFormats ?? ['EPUB', 'M4B'],
+      ebookFormatPreferences: initialQuality.ebookFormatPreferences ?? DEFAULT_EBOOK_PREFERENCES,
       maxFileSizeMb: initialQuality.maxFileSizeMb ?? 2048,
     });
     setLanguagesInput(langs.join(', '));
@@ -200,6 +206,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           : {}),
         ...(!isOverridden('allowed_formats')
           ? { allowedFormats: qualityProfile.allowedFormats }
+          : {}),
+        ...(!isOverridden('ebook_format_preferences')
+          ? { ebookFormatPreferences: qualityProfile.ebookFormatPreferences }
           : {}),
         ...(!isOverridden('prefer_single_file_m4b')
           ? { preferSingleFileM4b: qualityProfile.preferSingleFileM4b }
@@ -728,35 +737,62 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <span className="block text-zinc-400 font-medium">Allowed File Formats</span>
                 <OverrideBadge settingKey="allowed_formats" />
               </div>
-              <div className="flex flex-wrap gap-2">
-                {FORMAT_TYPES.map((fmt) => {
-                  const isChecked = (qualityProfile.allowedFormats ?? []).includes(fmt);
-                  const locked = isOverridden('allowed_formats');
+              <p className="text-zinc-400 mb-3">Enable formats to allow downloads. Move eBook formats up to prefer them; disabled formats are never acquired.</p>
+              <OverrideBadge settingKey="ebook_format_preferences" />
+              <ol aria-label="eBook format priority" className="space-y-2 max-w-lg">
+                {[...(qualityProfile.ebookFormatPreferences ?? []), ...FORMAT_TYPES.filter(
+                  (fmt) => !qualityProfile.ebookFormatPreferences?.includes(fmt)
+                )].map((fmt, index) => {
+                  const isChecked = qualityProfile.allowedFormats.includes(fmt);
+                  const preferences = qualityProfile.ebookFormatPreferences ?? [];
+                  const ranked = index < preferences.length;
+                  const move = (direction: number) => {
+                    const next = [...preferences];
+                    [next[index], next[index + direction]] = [next[index + direction], next[index]];
+                    setQualityProfile((prev) => ({ ...prev, ebookFormatPreferences: next }));
+                  };
                   return (
-                    <button
-                      key={fmt}
-                      type="button"
-                      disabled={locked}
-                      aria-pressed={isChecked}
-                      onClick={() => {
-                        setQualityProfile((prev) => ({
+                    <li key={fmt} className="flex items-center gap-3 rounded-md border border-zinc-800 px-3 py-2">
+                      <span className="w-6 text-zinc-400 tabular-nums">{ranked ? index + 1 : ''}</span>
+                      <button
+                        type="button"
+                        disabled={isOverridden('allowed_formats')}
+                        aria-pressed={isChecked}
+                        onClick={() => setQualityProfile((prev) => ({
                           ...prev,
                           allowedFormats: isChecked
-                            ? (prev.allowedFormats ?? []).filter((f) => f !== fmt)
-                            : [...(prev.allowedFormats ?? []), fmt],
-                        }));
-                      }}
-                      className={`px-3 py-1.5 rounded-md font-mono border transition-colors ${
-                        isChecked
-                          ? 'bg-blue-600/20 text-blue-300 border-blue-600/50'
-                          : 'bg-zinc-950 text-zinc-500 border-zinc-800'
-                      } ${locked ? 'opacity-60 cursor-not-allowed' : ''}`}
-                    >
-                      {fmt}
-                    </button>
+                            ? prev.allowedFormats.filter((f) => f !== fmt)
+                            : [...prev.allowedFormats, fmt],
+                        }))}
+                        className="flex-1 text-left text-zinc-200 rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-60"
+                      >
+                        {fmt}<span aria-hidden="true" className="ml-3 text-zinc-400">{isChecked ? 'Enabled' : 'Disabled'}</span>
+                      </button>
+                      {!ranked && DEFAULT_EBOOK_PREFERENCES.includes(fmt) && (
+                        <button type="button" aria-label={`Add ${fmt} to priorities`}
+                          disabled={isOverridden('ebook_format_preferences')}
+                          onClick={() => setQualityProfile((prev) => ({ ...prev, ebookFormatPreferences: [...(prev.ebookFormatPreferences ?? []), fmt] }))}
+                          className="p-2 rounded text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
+                          Prioritize
+                        </button>
+                      )}
+                      {ranked && <>
+                        <button type="button" aria-label={`Move ${fmt} up`}
+                          disabled={isOverridden('ebook_format_preferences') || index === 0}
+                          onClick={() => move(-1)} className="p-2 rounded hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
+                          <ArrowUp size={16} aria-hidden="true" />
+                        </button>
+                        <button type="button" aria-label={`Move ${fmt} down`}
+                          disabled={isOverridden('ebook_format_preferences') || index === preferences.length - 1}
+                          onClick={() => move(1)} className="p-2 rounded hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
+                          <ArrowDown size={16} aria-hidden="true" />
+                        </button>
+                      </>}
+                    </li>
                   );
                 })}
-              </div>
+              </ol>
+              <OverrideNote settingKey="ebook_format_preferences" />
               <OverrideNote settingKey="allowed_formats" />
             </div>
 

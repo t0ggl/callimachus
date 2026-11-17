@@ -217,3 +217,42 @@ func TestResolveBootstrap_EnvOverridesFlags(t *testing.T) {
 		t.Errorf("Port = %d, want 9090", boot.Port)
 	}
 }
+
+func TestEbookPreferencesPersistenceAndOverrides(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	const ordered = `["pdf","EPUB","mobi"]`
+	resolved, err := SaveNonOverridden(ctx, db, map[string]string{KeyEbookFormatPreferences: ordered}, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"PDF", "EPUB", "MOBI"}
+	if !reflect.DeepEqual(resolved.Settings.ToQualityProfile().EbookFormatPreferences, want) {
+		t.Fatalf("order lost: %+v", resolved.Settings)
+	}
+	var stored string
+	if err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", KeyEbookFormatPreferences).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != `["PDF","EPUB","MOBI"]` {
+		t.Fatalf("not stored as ordered JSON: %s", stored)
+	}
+	for _, invalid := range []string{`["PDF","pdf"]`, `["M4B"]`, `["EXE"]`, `[""]`, `null`, `"EPUB"`} {
+		if _, err := SaveNonOverridden(ctx, db, map[string]string{KeyEbookFormatPreferences: invalid}, Overrides{}); err == nil {
+			t.Errorf("accepted invalid sequence %s", invalid)
+		}
+	}
+	t.Setenv(EnvVarName(KeyEbookFormatPreferences), "MOBI,PDF")
+	resolved, err = SaveNonOverridden(ctx, db, map[string]string{KeyEbookFormatPreferences: `["EPUB"]`}, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(resolved.Settings.EbookFormatPreferences, []string{"MOBI", "PDF"}) || !resolved.Overrides[KeyEbookFormatPreferences].IsOverridden {
+		t.Fatalf("env override not applied: %+v", resolved)
+	}
+	t.Setenv(EnvVarName(KeyEbookFormatPreferences), "")
+	resolved, err = Load(ctx, db, Overrides{})
+	if err != nil || !reflect.DeepEqual(resolved.Settings.EbookFormatPreferences, want) {
+		t.Fatalf("override mutated DB: %+v, %v", resolved, err)
+	}
+}

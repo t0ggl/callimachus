@@ -389,3 +389,47 @@ func TestQualityProfile_EvaluateRelease_MaxFileSizeMB(t *testing.T) {
 		t.Fatalf("expected 600MB candidate rejected by 500MB limit")
 	}
 }
+
+func TestEbookFormatPreferenceScoring(t *testing.T) {
+	profile := DefaultQualityProfile()
+	profile.AllowedFormats = []string{"epub", "pdf", "mobi", "m4b"}
+	profile.EbookFormatPreferences = []string{"PDF", "EPUB", "MOBI"}
+	releases := []ReleaseCandidate{
+		{Title: "Book.mobi"},
+		{Format: ".EPUB"},
+		{Format: "pdf"},
+		{Format: "m4b", IsAudio: true},
+		{Format: "pdf", Language: "de"},
+		{Format: "exe"},
+	}
+	ranked := profile.RankReleases(releases)
+	if len(ranked) != 4 || ranked[0].Format != "pdf" || ranked[1].Format != ".EPUB" || ranked[2].Title != "Book.mobi" || !ranked[3].IsAudio {
+		t.Fatalf("unexpected ranking: %+v", ranked)
+	}
+	if profile.ScoreRelease(releases[2]) <= profile.ScoreRelease(releases[1]) || profile.ScoreRelease(releases[1]) <= profile.ScoreRelease(releases[0]) {
+		t.Fatal("higher-ranked ebook formats must have strictly higher scores")
+	}
+	profile.EbookFormatPreferences = []string{"EPUB", "PDF", "MOBI"}
+	if got := profile.RankReleases(releases); got[0].Format != ".EPUB" {
+		t.Fatalf("reordering did not change precedence: %+v", got)
+	}
+	profile.AllowedFormats = []string{"m4b"}
+	if profile.ScoreRelease(releases[1]) != -1 {
+		t.Fatal("preference must not bypass allowed formats")
+	}
+}
+
+func TestEbookRankingStableTiesAndEmptyPreferences(t *testing.T) {
+	profile := DefaultQualityProfile()
+	profile.EbookFormatPreferences = nil
+	releases := []ReleaseCandidate{{Title: "First", Format: "epub"}, {Title: "Second", Format: "pdf"}}
+	for _, release := range releases {
+		if got := profile.ScoreRelease(release); got != 0 {
+			t.Fatalf("empty preferences scored %d", got)
+		}
+	}
+	ranked := profile.RankReleases(releases)
+	if len(ranked) != 2 || ranked[0].Title != "First" || ranked[1].Title != "Second" {
+		t.Fatalf("ties reordered: %+v", ranked)
+	}
+}

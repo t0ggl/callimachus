@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/t0ggl/callimachus/pkg/auth"
+	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/database"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
@@ -860,5 +861,56 @@ func TestRun_RejectsRemovedAuthCLIFlags(t *testing.T) {
 		if err := run(ctx, []string{flagArg}); err == nil {
 			t.Errorf("expected run(%q) to fail since auth CLI flags were removed", flagArg)
 		}
+	}
+}
+
+func TestSettingsEbookFormatPreferences(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test.db")
+	testutil.PrepareTestDBFile(t, dbPath)
+	srv, err := NewServer(Config{ConfigDir: tempDir, DBPath: dbPath, Host: "127.0.0.1", Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+	cookie := createTestSessionCookie(t, srv, "format-admin", "formatadmin", auth.RoleAdmin)
+	call := func(method, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, "/api/settings", strings.NewReader(body))
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		return rec
+	}
+	for _, body := range []string{`{"qualityProfile":{"ebookFormatPreferences":["pdf","EPUB","MOBI"]}}`, `{"qualityProfile":{"ebookFormatPreferences":[]}}`} {
+		if rec := call(http.MethodPut, body); rec.Code != http.StatusOK {
+			t.Fatalf("PUT status %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+	const body = `{"qualityProfile":{"ebookFormatPreferences":["pdf","EPUB","MOBI"]}}`
+	if rec := call(http.MethodPut, body); rec.Code != http.StatusOK {
+		t.Fatal(rec.Body.String())
+	}
+	rec := call(http.MethodGet, "")
+	var got APISettingsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.QualityProfile.EbookFormatPreferences, ",") != "PDF,EPUB,MOBI" {
+		t.Fatalf("order lost: %+v", got.QualityProfile)
+	}
+	for _, formats := range []string{`["PDF","pdf"]`, `["M4B"]`, `["EPUB,PDF"]`, `["EXE"]`, `"EPUB"`} {
+		rec := call(http.MethodPut, `{"qualityProfile":{"ebookFormatPreferences":`+formats+`}}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("accepted %s: status %d", formats, rec.Code)
+		}
+	}
+	t.Setenv("CALLIMACHUS_EBOOK_FORMAT_PREFERENCES", "MOBI,PDF")
+	rec = call(http.MethodPut, body)
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.QualityProfile.EbookFormatPreferences, ",") != "MOBI,PDF" || !got.Overrides[config.KeyEbookFormatPreferences].IsOverridden {
+		t.Fatalf("missing env lock: %s", rec.Body.String())
 	}
 }

@@ -187,6 +187,9 @@ export const App: React.FC = () => {
         allowedLanguages: Array.isArray(data.qualityProfile.allowedLanguages)
           ? data.qualityProfile.allowedLanguages
           : prev.allowedLanguages,
+        ebookFormatPreferences: Array.isArray(data.qualityProfile.ebookFormatPreferences)
+          ? data.qualityProfile.ebookFormatPreferences
+          : prev.ebookFormatPreferences,
         allowedFormats: Array.isArray(data.qualityProfile.allowedFormats)
           ? data.qualityProfile.allowedFormats
           : prev.allowedFormats,
