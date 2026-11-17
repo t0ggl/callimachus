@@ -6,6 +6,7 @@
   "ignorePresets": [
     "docker:pinDigests"
   ],
+  "prHourlyLimit": 4,
   "automerge": true,
   "labels": [
     "dependencies"
