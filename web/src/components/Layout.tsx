@@ -34,6 +34,8 @@ export const Layout: React.FC<LayoutProps> = ({
   onLogout,
   children,
 }) => {
+  const activeAcquisitionsCount = activeDownloadsCount + transcodingJobsCount;
+
   const navItems = [
     {
       id: 'catalog' as NavView,
@@ -45,7 +47,7 @@ export const Layout: React.FC<LayoutProps> = ({
       id: 'activity' as NavView,
       label: 'Activity',
       icon: Activity,
-      badge: transcodingJobsCount > 0 || activeDownloadsCount > 0 ? `${transcodingJobsCount + activeDownloadsCount}` : undefined,
+      badge: activeAcquisitionsCount > 0 ? `${activeAcquisitionsCount}` : undefined,
       shortcut: '2',
     },
     {
@@ -201,22 +203,16 @@ export const Layout: React.FC<LayoutProps> = ({
           {/* Quick status bar items */}
           <div className="hidden md:flex items-center gap-4">
             <div className="flex items-center gap-2 text-xs">
-              <span
+              <button
+                type="button"
                 onClick={() => onNavigate('activity')}
-                className="cursor-pointer flex items-center gap-1.5 px-2.5 py-1 rounded-sm bg-zinc-800/60 hover:bg-zinc-800 text-zinc-300 border border-zinc-700/60"
-                title="Active Transcodes"
-              >
-                <Zap className="w-3.5 h-3.5 text-amber-400" />
-                <span className="font-mono text-[11px]">{transcodingJobsCount}</span>
-              </span>
-              <span
-                onClick={() => onNavigate('activity')}
-                className="cursor-pointer flex items-center gap-1.5 px-2.5 py-1 rounded-sm bg-zinc-800/60 hover:bg-zinc-800 text-zinc-300 border border-zinc-700/60"
+                className="cursor-pointer flex items-center gap-1.5 px-2.5 py-1 rounded-sm bg-zinc-800/60 hover:bg-zinc-800 text-zinc-300 border border-zinc-700/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
                 title="Active Downloads"
+                aria-label={`Active Downloads: ${activeAcquisitionsCount}`}
               >
-                <DownloadCloud className="w-3.5 h-3.5 text-cyan-400" />
-                <span className="font-mono text-[11px]">{activeDownloadsCount}</span>
-              </span>
+                <DownloadCloud aria-hidden="true" className="w-3.5 h-3.5 text-cyan-400" />
+                <span className="font-mono text-[11px]">{activeAcquisitionsCount}</span>
+              </button>
             </div>
 
             <div className="h-4 w-px bg-zinc-800" />

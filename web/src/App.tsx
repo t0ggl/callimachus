@@ -339,7 +339,7 @@ export const App: React.FC = () => {
     );
   };
 
-  const activeDownloadsCount = downloads.filter((d) => d.status === 'downloading').length;
+  const activeDownloadsCount = downloads.filter((d) => d.status === 'downloading' || d.status === 'importing').length;
   const transcodingJobsCount = transcodeJobs.filter((j) => j.status === 'processing').length;
 
   return (

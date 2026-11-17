@@ -92,7 +92,7 @@ export interface DownloadItem {
   title: string;
   category: DownloadCategory;
   clientType: string;
-  status: 'downloading' | 'paused' | 'completed' | 'queued' | 'error';
+  status: 'downloading' | 'importing' | 'paused' | 'completed' | 'queued' | 'error';
   progressPercent: number;
   downloadSpeedBps: number;
   totalSizeBytes: number;
