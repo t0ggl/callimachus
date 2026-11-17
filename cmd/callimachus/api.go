@@ -184,6 +184,7 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/books/", s.handleGetBooks)
 	mux.HandleFunc("GET /api/authors", s.handleGetAuthors)
 	mux.HandleFunc("GET /api/authors/", s.handleGetAuthors)
+	mux.HandleFunc("GET /api/series/books", s.handleSeriesBooks)
 	mux.HandleFunc("GET /api/series", s.handleGetSeries)
 	mux.HandleFunc("GET /api/series/", s.handleGetSeries)
 	mux.HandleFunc("GET /api/activity", s.handleGetActivity)

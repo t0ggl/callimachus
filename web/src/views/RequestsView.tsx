@@ -2,7 +2,9 @@ import React, { useState } from 'react';
 import { Check } from 'lucide-react';
 import { BookRequest, RequestType } from '../types';
 import { ManualSearch } from '../components/ManualSearch';
-type Match = { title: string; authors: string[]; year: number; library_book_id?: string };
+import { SeriesBadge } from '../components/SeriesBadge';
+import { SeriesDetailModal } from '../components/SeriesDetailModal';
+type Match = { series?: string; series_index?: number; series_total?: number; title: string; authors: string[]; year: number; library_book_id?: string };
 interface Props {
   requests: BookRequest[];
   onOpenBook?: (id: string) => void;
@@ -14,6 +16,7 @@ interface Props {
   ) => Promise<void>;
 }
 export function RequestsView({ requests, onSubmitRequest, onOpenBook }: Props) {
+  const [selectedSeries, setSelectedSeries] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [format, setFormat] = useState<RequestType>('both');
   const [matches, setMatches] = useState<Match[]>([]);
@@ -55,6 +58,7 @@ export function RequestsView({ requests, onSubmitRequest, onOpenBook }: Props) {
   };
   return (
     <div className="space-y-6 text-zinc-100">
+      {selectedSeries && <SeriesDetailModal title={selectedSeries} onClose={() => setSelectedSeries(null)} />}
       <div className="border-b border-zinc-800 pb-4">
         <h1 className="text-xl font-bold">Find a book</h1>
         <p className="text-sm text-zinc-300 mt-1">
@@ -106,6 +110,7 @@ export function RequestsView({ requests, onSubmitRequest, onOpenBook }: Props) {
           <li key={i} className="flex justify-between gap-4 py-3">
             <div>
               <strong>{m.title}</strong>
+              <SeriesBadge title={m.series} index={m.series_index} total={m.series_total} onSelect={setSelectedSeries} />
               <p className="text-sm text-zinc-300">
                 {m.authors.join(', ')} {m.year > 0 && `(${m.year})`}
               </p>
