@@ -62,6 +62,8 @@ type Server struct {
 	baseOverrides      config.Overrides
 	db                 *database.DB
 	sessionMgr         *auth.SessionManager
+	maintenance        config.MaintenanceConfig
+	maintenanceDone    chan struct{}
 	fallbackAuth       *auth.FallbackAuthenticator
 	syncer             *indexers.Syncer
 	prowlarrHTTPClient *http.Client
@@ -79,6 +81,11 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	if cfg.Commit == "" {
 		cfg.Commit = commit
+	}
+
+	maintenance, err := config.LoadMaintenanceFromEnv()
+	if err != nil {
+		return nil, err
 	}
 
 	boot := config.ResolveBootstrap(cfg.ConfigDir, cfg.DBPath, cfg.Host, cfg.Port, true)
@@ -213,6 +220,7 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	srv := &Server{
+		maintenance:   maintenance,
 		cfg:           cfg,
 		baseOverrides: baseOverrides,
 		db:            db,
@@ -282,6 +290,12 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}()
 
+	s.maintenanceDone = make(chan struct{})
+	go func() {
+		defer close(s.maintenanceDone)
+		s.runMaintenance(workerCtx)
+	}()
+
 	// Start background indexer syncer
 	s.syncer.Start(ctx)
 
@@ -318,6 +332,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.acquisitionCancel != nil {
 		s.acquisitionCancel()
 		<-s.acquisitionDone
+		if s.maintenanceDone != nil {
+			<-s.maintenanceDone
+		}
 	}
 	var errs []error
 
