@@ -24,6 +24,7 @@ type BookMetadata struct {
 	Authors       []string          `json:"authors"`
 	Narrators     []string          `json:"narrators"`
 	Series        string            `json:"series"`
+	SeriesTotal   int               `json:"series_total,omitempty"`
 	SeriesIndex   *float64          `json:"series_index"`
 	Publisher     string            `json:"publisher"`
 	PublishDate   string            `json:"publish_date"`

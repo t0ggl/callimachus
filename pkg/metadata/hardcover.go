@@ -131,18 +131,6 @@ type hardcoverBookNode struct {
 	Image          *hardcoverImage         `json:"image"`
 }
 
-type hardcoverSearchResult struct {
-	ID             int                     `json:"id"`
-	Title          string                  `json:"title"`
-	Slug           string                  `json:"slug"`
-	ReleaseYear    int                     `json:"release_year"`
-	Rating         float64                 `json:"rating"`
-	RatingsCount   int                     `json:"ratings_count"`
-	UsersReadCount int                     `json:"users_read_count"`
-	Contributions  []hardcoverContribution `json:"contributions"`
-	Image          *hardcoverImage         `json:"image"`
-}
-
 func (p *HardcoverProvider) doQuery(ctx context.Context, query string, vars map[string]interface{}, out interface{}) error {
 	reqBody, err := json.Marshal(graphQLRequest{
 		Query:     query,
@@ -182,6 +170,17 @@ func (p *HardcoverProvider) doQuery(ctx context.Context, query string, vars map[
 		return fmt.Errorf("hardcover: read response body: %w", err)
 	}
 
+	var envelope struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(bodyBytes, &envelope); err != nil {
+		return fmt.Errorf("hardcover: invalid response: %w", err)
+	}
+	if len(envelope.Errors) > 0 {
+		return fmt.Errorf("hardcover: GraphQL: %s", envelope.Errors[0].Message)
+	}
 	if err := json.Unmarshal(bodyBytes, out); err != nil {
 		return fmt.Errorf("hardcover: unmarshal response: %w", err)
 	}
@@ -226,6 +225,7 @@ func mapHardcoverBookNode(b *hardcoverBookNode) BookMetadata {
 	for _, bs := range b.BookSeries {
 		if bs.Series.Name != "" {
 			meta.Series = bs.Series.Name
+			meta.SeriesTotal = bs.Series.BooksCount
 			if bs.SeriesPosition != nil {
 				pos := *bs.SeriesPosition
 				meta.SeriesIndex = &pos
@@ -251,66 +251,36 @@ func mapHardcoverBookNode(b *hardcoverBookNode) BookMetadata {
 
 // Search searches books on Hardcover by title/query string.
 func (p *HardcoverProvider) Search(ctx context.Context, query string) ([]BookMetadata, error) {
-	const gql = `
-query SearchBooks($query: String!) {
-  search(query: $query) {
-    results {
-      id
-      title
-      slug
-      release_year
-      rating
-      ratings_count
-      users_read_count
-      contributions {
-        author {
-          id
-          name
-          slug
-        }
-        contribution
-      }
-      image {
-        url
-      }
-    }
-  }
-}`
-
-	var res struct {
+	var search struct {
 		Data struct {
 			Search struct {
-				Results []hardcoverSearchResult `json:"results"`
+				IDs []int `json:"ids"`
 			} `json:"search"`
 		} `json:"data"`
 	}
-
-	if err := p.doQuery(ctx, gql, map[string]interface{}{"query": query}, &res); err != nil {
+	if err := p.doQuery(ctx, `query SearchBooks($query: String!) { search(query: $query, query_type: "Book", per_page: 25) { ids } }`, map[string]interface{}{"query": query}, &search); err != nil {
 		return nil, err
 	}
-
-	var results []BookMetadata
-	for _, r := range res.Data.Search.Results {
-		meta := BookMetadata{
-			HardcoverID: strconv.Itoa(r.ID),
-			Title:       r.Title,
-			Year:        r.ReleaseYear,
-		}
-		if r.Image != nil {
-			meta.CoverURL = r.Image.URL
-		}
-		for _, c := range r.Contributions {
-			if c.Author.Name != "" {
-				if strings.EqualFold(c.Contribution, "Narrator") {
-					meta.Narrators = append(meta.Narrators, c.Author.Name)
-				} else {
-					meta.Authors = append(meta.Authors, c.Author.Name)
-				}
+	if len(search.Data.Search.IDs) == 0 {
+		return []BookMetadata{}, nil
+	}
+	var res hardcoverBookResponse
+	if err := p.doQuery(ctx, `query SearchDetails($ids: [Int!]!) { books(where: {id: {_in: $ids}}) {
+ id title release_year release_date image: cached_image
+ contributions { author { name } contribution }
+ book_series { series_position: position series { id name books_count } }
+ } }`, map[string]interface{}{"ids": search.Data.Search.IDs}, &res); err != nil {
+		return nil, err
+	}
+	results := make([]BookMetadata, 0, len(res.Data.Books))
+	for _, id := range search.Data.Search.IDs {
+		for _, b := range res.Data.Books {
+			if b.ID == id {
+				results = append(results, mapHardcoverBookNode(&b))
+				break
 			}
 		}
-		results = append(results, meta)
 	}
-
 	return results, nil
 }
 
@@ -369,7 +339,7 @@ query GetBook($id: Int!) {
       contribution
     }
     book_series {
-      series_position
+      series_position: position
       series {
         id
         name
@@ -430,10 +400,11 @@ query BookByISBN($isbn: String!) {
         contribution
       }
       book_series {
-        series_position
+        series_position: position
         series {
           id
           name
+          books_count
         }
       }
       editions {
@@ -485,10 +456,11 @@ query BookByASIN($asin: String!) {
         contribution
       }
       book_series {
-        series_position
+        series_position: position
         series {
           id
           name
+          books_count
         }
       }
       editions {
@@ -513,4 +485,31 @@ query BookByASIN($asin: String!) {
 		return nil, err
 	}
 	return p.parseBookResponse(res)
+}
+
+// SeriesBooks returns the provider's reading order, including books not held locally.
+func (p *HardcoverProvider) SeriesBooks(ctx context.Context, title string) ([]BookMetadata, error) {
+	const query = `query SeriesBooks($title: String!) {
+ books(where: {book_series: {series: {name: {_eq: $title}}}}) {
+ id title release_date release_year
+ contributions { author { name } contribution }
+ book_series { series_position: position series { name books_count } }
+ }
+ }`
+	var res hardcoverBookResponse
+	if err := p.doQuery(ctx, query, map[string]interface{}{"title": title}, &res); err != nil {
+		return nil, err
+	}
+	books := make([]BookMetadata, 0, len(res.Data.Books))
+	for _, b := range res.Data.Books {
+		// A book may belong to several series; select the requested membership.
+		for _, bs := range b.BookSeries {
+			if bs.Series.Name == title {
+				b.BookSeries = []hardcoverBookSeries{bs}
+				break
+			}
+		}
+		books = append(books, mapHardcoverBookNode(&b))
+	}
+	return books, nil
 }

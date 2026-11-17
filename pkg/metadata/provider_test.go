@@ -40,6 +40,9 @@ func TestHardcoverProvider_Search(t *testing.T) {
 	}
 
 	res0 := results[0]
+	if res0.Series != "Test Series" || res0.SeriesTotal != 4 || res0.SeriesIndex == nil || *res0.SeriesIndex != 2.5 {
+		t.Fatalf("missing series metadata: %+v", res0)
+	}
 	if res0.HardcoverID != "1001" {
 		t.Errorf("expected HardcoverID 1001, got %s", res0.HardcoverID)
 	}

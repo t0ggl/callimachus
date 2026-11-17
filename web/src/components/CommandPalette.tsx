@@ -2,6 +2,9 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, Book as BookIcon, User, Layers, ArrowRight, CornerDownLeft, X } from 'lucide-react';
 import { Book, Author, Series } from '../types';
 
+import { SeriesBadge } from './SeriesBadge';
+import { SeriesDetailModal } from './SeriesDetailModal';
+
 interface CommandPaletteProps {
   isOpen: boolean;
   onClose: () => void;
@@ -18,6 +21,7 @@ interface PaletteItem {
   title: string;
   subtitle?: string;
   badge?: string;
+  book?: Book;
   action: () => void;
 }
 
@@ -30,6 +34,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onNavigate,
   onSelectBook,
 }) => {
+  const [selectedSeries, setSelectedSeries] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -108,7 +113,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         id: `book_${b.id}`,
         type: 'book',
         title: b.title,
-        subtitle: `${b.authorName}${b.seriesTitle ? ` • ${b.seriesTitle} (${b.seriesIndexDisplay || `#${b.seriesIndex}`})` : ''}`,
+        subtitle: b.authorName,
+        book: b,
         badge: b.formats.join('/'),
         action: () => {
           onSelectBook(b);
@@ -141,8 +147,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         subtitle: `${s.totalBooks || 'Multiple'} volumes • ${s.status || 'Active'}`,
         badge: 'Series',
         action: () => {
-          onNavigate('catalog');
-          onClose();
+          setSelectedSeries(s.title);
         },
       });
     });
@@ -155,7 +160,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     return rawItems.filter(
       (item) =>
         item.title.toLowerCase().includes(q) ||
-        (item.subtitle && item.subtitle.toLowerCase().includes(q))
+        (item.subtitle && item.subtitle.toLowerCase().includes(q)) ||
+        item.book?.seriesTitle?.toLowerCase().includes(q)
     );
   }, [books, authors, series, query, onNavigate, onSelectBook, onClose]);
 
@@ -185,6 +191,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   if (!isOpen) return null;
 
   return (
+    <>
+    {selectedSeries && <SeriesDetailModal title={selectedSeries} onClose={() => setSelectedSeries(null)} />}
     <div
       role="dialog"
       aria-modal="true"
@@ -255,6 +263,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                     </span>
                     <div className="truncate">
                       <div className="font-medium text-zinc-100 truncate">{item.title}</div>
+                      {item.book && <SeriesBadge title={item.book.seriesTitle} index={item.book.seriesIndex} total={series.find(s => s.id === item.book?.seriesId)?.totalBooks} onSelect={setSelectedSeries} />}
                       {item.subtitle && (
                         <div className="text-xs text-zinc-400 truncate">{item.subtitle}</div>
                       )}
@@ -292,5 +301,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         </div>
       </div>
     </div>
+    </>
   );
 };

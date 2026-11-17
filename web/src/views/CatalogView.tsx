@@ -10,6 +10,9 @@ import {
 } from 'lucide-react';
 import { Book, Author, Series, FormatType, FORMAT_TYPES } from '../types';
 
+import { SeriesBadge } from '../components/SeriesBadge';
+import { SeriesDetailModal } from '../components/SeriesDetailModal';
+
 interface CatalogViewProps {
   books: Book[];
   authors: Author[];
@@ -27,6 +30,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
   selectedIndex,
   onScanComplete,
 }) => {
+  const [selectedSeries, setSelectedSeries] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanMessage, setScanMessage] = useState('');
   const scan = async () => {
@@ -78,6 +82,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {selectedSeries && <SeriesDetailModal title={selectedSeries} onClose={() => setSelectedSeries(null)} />}
       <div className="flex flex-wrap items-center gap-3">
         <button disabled={scanning} onClick={() => void scan()} className="px-3 py-2 bg-zinc-800 text-zinc-100 rounded-md disabled:opacity-50">{scanning ? 'Scanning…' : 'Scan Library'}</button>
         {scanMessage && <p role="status" className="text-sm text-zinc-300">{scanMessage}</p>}
@@ -278,11 +283,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                         </p>
                       </div>
 
-                      {book.seriesTitle && (
-                        <p className="text-[10px] text-purple-400/90 truncate mt-2 font-mono">
-                          {book.seriesTitle}
-                        </p>
-                      )}
+                      <SeriesBadge title={book.seriesTitle} index={book.seriesIndex} total={series.find(s => s.id === book.seriesId)?.totalBooks} onSelect={setSelectedSeries} />
                     </div>
                   </div>
                 );
@@ -322,12 +323,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                         <td className="py-3 px-4 text-zinc-300">{book.authorName}</td>
                         <td className="py-3 px-4">
                           {book.seriesTitle ? (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-zinc-300 truncate">{book.seriesTitle}</span>
-                              <span className="font-mono text-[10px] px-1.5 py-0.2 bg-zinc-800 border border-zinc-700 text-purple-300 rounded shrink-0">
-                                {book.seriesIndexDisplay || `#${book.seriesIndex}`}
-                              </span>
-                            </div>
+                            <SeriesBadge title={book.seriesTitle} index={book.seriesIndex} total={series.find(s => s.id === book.seriesId)?.totalBooks} onSelect={setSelectedSeries} />
                           ) : (
                             <span className="text-zinc-600">—</span>
                           )}
@@ -410,7 +406,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <Layers className="w-4 h-4 text-purple-400" />
-                    <h3 className="text-sm font-bold text-zinc-100">{s.title}</h3>
+                    <h3 className="text-sm font-bold text-zinc-100"><button onClick={() => setSelectedSeries(s.title)} className="text-purple-300 underline underline-offset-2">{s.title}</button></h3>
                     <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">
                       {s.status}
                     </span>

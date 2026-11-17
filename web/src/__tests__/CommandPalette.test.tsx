@@ -60,7 +60,7 @@ describe('CommandPalette Component', () => {
 
     // Should match Obsidian Path book and The Obsidian Archive series
     expect(screen.getByText('The Obsidian Path')).toBeInTheDocument();
-    expect(screen.getByText('The Obsidian Archive')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'The Obsidian Archive' })).toBeInTheDocument();
   });
 
   it('calls onSelectBook when a book is selected', async () => {

@@ -37,7 +37,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		found, err := p.Search(r.Context(), query)
 		if err == nil {
 			success = true
-			books = append(books, found...)
+			books = append(found, books...)
 		}
 	}
 	if cfg.Settings.GoogleBooksAPIKey != "" {
