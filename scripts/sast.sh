@@ -13,6 +13,15 @@ else
   exit 1
 fi
 
+# Work around semgrep/semgrep#11979: Python 3.15 reports RLIM_INFINITY as 2^64-1
+# instead of -1, causing semgrep to pass a ~6 EB stack limit and crash semgrep-core (-11).
+if [ "$(ulimit -Hs 2>/dev/null || true)" = "unlimited" ]; then
+  if ! ulimit -Hs 1048576 2>/dev/null; then
+    ulimit -Ss 8192 2>/dev/null || true
+    ulimit -Hs 1048576 2>/dev/null || true
+  fi
+fi
+
 exec "${SEMGREP_CMD[@]}" scan \
   --config p/default \
   --metrics=off \
