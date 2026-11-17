@@ -2,7 +2,6 @@ import React from 'react';
 import {
   Library,
   Activity,
-  Send,
   Settings,
   Search,
   LogOut,
@@ -12,7 +11,7 @@ import {
 } from 'lucide-react';
 import { UserProfile } from '../types';
 
-export type NavView = 'catalog' | 'activity' | 'requests' | 'settings';
+export type NavView = 'catalog' | 'activity' | 'settings';
 
 interface LayoutProps {
   currentView: NavView;
@@ -38,28 +37,22 @@ export const Layout: React.FC<LayoutProps> = ({
   const navItems = [
     {
       id: 'catalog' as NavView,
-      label: 'Library & Catalog',
+      label: 'Library',
       icon: Library,
       shortcut: '1',
     },
     {
       id: 'activity' as NavView,
-      label: 'Activity & Queues',
+      label: 'Activity',
       icon: Activity,
       badge: transcodingJobsCount > 0 || activeDownloadsCount > 0 ? `${transcodingJobsCount + activeDownloadsCount}` : undefined,
       shortcut: '2',
     },
     {
-      id: 'requests' as NavView,
-      label: 'Request Portal',
-      icon: Send,
-      shortcut: '3',
-    },
-    {
       id: 'settings' as NavView,
       label: 'Settings',
       icon: Settings,
-      shortcut: '4',
+      shortcut: '3',
     },
   ];
 
@@ -187,12 +180,16 @@ export const Layout: React.FC<LayoutProps> = ({
           {/* Global Search / Command Palette Trigger */}
           <button
             onClick={onOpenPalette}
+            onFocus={(e) => {
+              if (!(e.relatedTarget as HTMLElement | null)?.closest('[role="dialog"]')) onOpenPalette();
+            }}
+            aria-haspopup="dialog"
             data-testid="global-search-trigger"
-            className="flex items-center justify-between w-72 sm:w-96 px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-md text-xs text-zinc-400 hover:text-zinc-200 hover:border-zinc-700 transition-colors shadow-inner"
+            className="flex items-center justify-between w-full max-w-96 px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-md text-xs text-zinc-400 hover:text-zinc-200 hover:border-zinc-700 transition-colors shadow-inner"
           >
             <div className="flex items-center gap-2">
               <Search className="w-3.5 h-3.5 text-zinc-500" />
-              <span>Search catalog or commands...</span>
+              <span>Search books, authors, or keywords…</span>
             </div>
             <div className="flex items-center gap-1 font-mono text-[10px] text-zinc-500">
               <kbd className="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded-sm">Ctrl+K</kbd>

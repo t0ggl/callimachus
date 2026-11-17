@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, Book as BookIcon, User, Layers, ArrowRight, CornerDownLeft, X } from 'lucide-react';
-import { Book, Author, Series } from '../types';
+import { Book, Author, Series, RequestType } from '../types';
 
+import { DiscoveryResults } from './DiscoveryResults';
 import { SeriesBadge } from './SeriesBadge';
 import { SeriesDetailModal } from './SeriesDetailModal';
 
 interface CommandPaletteProps {
+  onSubmitRequest?: (title: string, author: string, type: RequestType, year?: number) => Promise<void>;
+  onOpenBook?: (id: string) => void;
   isOpen: boolean;
   onClose: () => void;
   books: Book[];
@@ -26,6 +29,8 @@ interface PaletteItem {
 }
 
 export const CommandPalette: React.FC<CommandPaletteProps> = ({
+  onSubmitRequest,
+  onOpenBook,
   isOpen,
   onClose,
   books,
@@ -39,25 +44,33 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const previousFocus = useRef<HTMLElement | null>(null);
+  const closePalette = () => {
+    previousFocus.current?.focus({ preventScroll: true });
+    onClose();
+  };
 
   // Focus input when opened and listen for global Escape
   useEffect(() => {
     if (isOpen) {
       setQuery('');
       setSelectedIndex(0);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      previousFocus.current = document.activeElement as HTMLElement | null;
+      inputRef.current?.focus();
 
       const handleGlobalKeyDown = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') {
+        if (e.key === 'Escape' && !(e.target as HTMLElement | null)?.closest?.('dialog')) {
           e.preventDefault();
-          onClose();
+          closePalette();
         }
       };
 
       window.addEventListener('keydown', handleGlobalKeyDown);
-      return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+      return () => {
+        window.removeEventListener('keydown', handleGlobalKeyDown);
+      };
     }
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   const items: PaletteItem[] = useMemo(() => {
     const rawItems: PaletteItem[] = [
@@ -69,7 +82,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         badge: 'View',
         action: () => {
           onNavigate('catalog');
-          onClose();
+          closePalette();
         },
       },
       {
@@ -80,18 +93,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         badge: 'View',
         action: () => {
           onNavigate('activity');
-          onClose();
-        },
-      },
-      {
-        id: 'nav_requests',
-        type: 'navigation',
-        title: 'Request Portal',
-        subtitle: 'Find books and manage acquisitions',
-        badge: 'View',
-        action: () => {
-          onNavigate('requests');
-          onClose();
+          closePalette();
         },
       },
       {
@@ -102,7 +104,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         badge: 'View',
         action: () => {
           onNavigate('settings');
-          onClose();
+          closePalette();
         },
       },
     ];
@@ -118,7 +120,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         badge: b.formats.join('/'),
         action: () => {
           onSelectBook(b);
-          onClose();
+          closePalette();
         },
       });
     });
@@ -133,7 +135,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         badge: 'Author',
         action: () => {
           onNavigate('catalog');
-          onClose();
+          closePalette();
         },
       });
     });
@@ -171,6 +173,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   // Handle keyboard events inside command palette
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if ((e.target as HTMLElement).tagName !== 'INPUT') return;
     if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) {
       e.preventDefault();
       setSelectedIndex((prev) => (items.length > 0 ? (prev + 1) % items.length : 0));
@@ -184,7 +187,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       }
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      onClose();
+      closePalette();
     }
   };
 
@@ -196,14 +199,22 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Command Palette"
+      aria-label="Search books and commands"
       className="fixed inset-0 z-50 flex items-start justify-center pt-20 bg-black/70 backdrop-blur-xs p-4 animate-in fade-in duration-150"
-      onClick={onClose}
+      onClick={closePalette}
     >
       <div
         className="w-full max-w-2xl bg-zinc-900 border border-zinc-800 rounded-lg shadow-2xl overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={handleKeyDown}
+        onKeyDown={(e) => {
+          handleKeyDown(e);
+          if (e.key === 'Tab') {
+            const controls = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('input, button:not(:disabled), select, [tabindex="0"]'));
+            const first = controls[0]; const last = controls[controls.length - 1];
+            if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+            else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+          }
+        }}
       >
         {/* Search Input Bar */}
         <div className="flex items-center px-4 py-3.5 border-b border-zinc-800 gap-3">
@@ -211,6 +222,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           <input
             ref={inputRef}
             type="text"
+            aria-label="Search books, authors, or keywords"
+            maxLength={500}
             data-testid="command-palette-input"
             placeholder="Search books, authors, series, or navigate (Ctrl+K, /)..."
             value={query}
@@ -231,6 +244,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           </kbd>
         </div>
 
+        <button onClick={closePalette} aria-label="Close search" className="self-end px-4 py-2 text-sm text-zinc-300">Close</button>
+        <div className="overflow-y-auto max-h-[65vh]">
+        {onSubmitRequest && query.trim() && <div className="p-4 border-b border-zinc-800"><DiscoveryResults query={query} onSubmitRequest={onSubmitRequest} onOpenBook={onOpenBook} /></div>}
         {/* Results List */}
         <div
           ref={listRef}
@@ -239,7 +255,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         >
           {items.length === 0 ? (
             <div className="py-12 text-center text-sm text-zinc-500">
-              No matching books, authors, or commands found for "{query}".
+              No library items or commands match "{query}".
             </div>
           ) : (
             items.map((item, index) => {
@@ -286,6 +302,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           )}
         </div>
 
+        </div>
         {/* Footer shortcuts */}
         <div className="px-4 py-2 border-t border-zinc-800 bg-zinc-950/60 flex items-center justify-between text-xs text-zinc-500">
           <div className="flex items-center gap-3">
