@@ -1,6 +1,7 @@
 package indexers
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -285,4 +287,68 @@ func isRelevantCategory(id int) bool {
 		// Also allow standard 7xxx and 3030
 		return (id >= 7000 && id < 8000) || id == 3030 || id == 3000
 	}
+}
+
+// ProwlarrRelease identifies a cached search result. Prowlarr chooses the download client.
+type ProwlarrRelease struct {
+	GUID      string `json:"guid"`
+	IndexerID int    `json:"indexerId"`
+	Title     string `json:"title"`
+	Protocol  string `json:"protocol"`
+	Size      int64  `json:"size"`
+}
+
+// Search populates Prowlarr's release cache, which is required for a subsequent grab.
+func (c *ProwlarrClient) Search(ctx context.Context, query string, categories []int) ([]ProwlarrRelease, error) {
+	values := url.Values{"query": {query}, "type": {"search"}}
+	for _, category := range categories {
+		values.Add("categories", strconv.Itoa(category))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/v1/search?"+values.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	c.setHeaders(req)
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("prowlarr search: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("prowlarr search: HTTP %d", resp.StatusCode)
+	}
+	releases := []ProwlarrRelease{}
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return nil, fmt.Errorf("prowlarr search: %w", err)
+	}
+	return releases, nil
+}
+
+// Grab dispatches a cached release; expired results must be searched again.
+func (c *ProwlarrClient) Grab(ctx context.Context, release ProwlarrRelease) error {
+	if strings.TrimSpace(release.GUID) == "" || release.IndexerID <= 0 {
+		return fmt.Errorf("prowlarr grab requires a search GUID and indexer ID")
+	}
+	payload, err := json.Marshal(struct {
+		GUID      string `json:"guid"`
+		IndexerID int    `json:"indexerId"`
+	}{release.GUID, release.IndexerID})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/api/v1/search", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	c.setHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("prowlarr grab: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("prowlarr grab: HTTP %d (search again if the release expired)", resp.StatusCode)
+	}
+	return nil
 }

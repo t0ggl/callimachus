@@ -2,9 +2,11 @@ package downloaders
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
 	"errors"
 	"fmt"
-	"net/http"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,25 +23,22 @@ import (
 
 // StagingConfig defines configuration options for StagingMonitor.
 type StagingConfig struct {
-	DB             *database.DB
-	Catalog        *catalog.Catalog
-	Transcoder     *transcoder.Queue
-	LibraryRoot    string
-	PollInterval   time.Duration
-	ClientResolver func(ctx context.Context, clientID string) (DownloadClient, error)
-	HTTPClient     *http.Client
+	DB            *database.DB
+	Catalog       *catalog.Catalog
+	Transcoder    *transcoder.Queue
+	LibraryRoot   string
+	PollInterval  time.Duration
+	CompletedRoot string
 }
 
-// StagingMonitor monitors the download_queue in SQLite, periodically polls download clients
-// for job progress, updates the database, and dispatches completed downloads to the post-processing pipeline.
+// StagingMonitor sends completed downloads to the post-processing pipeline.
 type StagingMonitor struct {
-	db             *database.DB
-	catalog        *catalog.Catalog
-	transcoder     *transcoder.Queue
-	libraryRoot    string
-	pollInterval   time.Duration
-	clientResolver func(ctx context.Context, clientID string) (DownloadClient, error)
-	httpClient     *http.Client
+	db            *database.DB
+	catalog       *catalog.Catalog
+	transcoder    *transcoder.Queue
+	libraryRoot   string
+	pollInterval  time.Duration
+	completedRoot string
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -53,19 +52,14 @@ func NewStagingMonitor(cfg StagingConfig) *StagingMonitor {
 	if pollInterval <= 0 {
 		pollInterval = 5 * time.Second
 	}
-	httpClient := cfg.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
-	}
 
 	return &StagingMonitor{
-		db:             cfg.DB,
-		catalog:        cfg.Catalog,
-		transcoder:     cfg.Transcoder,
-		libraryRoot:    cfg.LibraryRoot,
-		pollInterval:   pollInterval,
-		clientResolver: cfg.ClientResolver,
-		httpClient:     httpClient,
+		db:            cfg.DB,
+		catalog:       cfg.Catalog,
+		transcoder:    cfg.Transcoder,
+		libraryRoot:   cfg.LibraryRoot,
+		pollInterval:  pollInterval,
+		completedRoot: cfg.CompletedRoot,
 	}
 }
 
@@ -93,7 +87,9 @@ func (sm *StagingMonitor) Start(ctx context.Context) error {
 			case <-sm.stopCh:
 				return
 			case <-ticker.C:
-				_ = sm.PollOnce(ctx)
+				if err := sm.PollOnce(ctx); err != nil {
+					log.Printf("[staging] %v", err)
+				}
 			}
 		}
 	}()
@@ -115,135 +111,72 @@ func (sm *StagingMonitor) Stop() {
 	sm.wg.Wait()
 }
 
-// PollOnce executes a single polling cycle over all active items in download_queue.
+// SetCompletedRoot applies settings changes between ingestion passes.
+func (sm *StagingMonitor) SetCompletedRoot(root string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.completedRoot = root
+}
+
+// PollOnce ingests completed-only entries. Clients must move finished jobs here atomically.
 func (sm *StagingMonitor) PollOnce(ctx context.Context) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 	if sm.db == nil {
 		return errors.New("database connection not available")
 	}
-
-	query := `
-		SELECT id, client_id, edition_id, download_client_task_id, title, protocol,
-		       info_hash, status, progress_percent, size_bytes, staging_path,
-		       error_message, created_at, updated_at
-		FROM download_queue
-		WHERE status IN ('queued', 'downloading')
-		ORDER BY created_at ASC;
-	`
-	rows, err := sm.db.QueryContext(ctx, query)
+	if sm.completedRoot == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(sm.completedRoot)
 	if err != nil {
-		return fmt.Errorf("failed to query active download queue: %w", err)
+		return fmt.Errorf("read completed downloads: %w", err)
 	}
-	defer rows.Close()
-
-	var items []database.DownloadQueueItem
-	for rows.Next() {
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") || entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		path := filepath.Join(sm.completedRoot, entry.Name())
+		ebooks, audio, err := findMediaFiles(path)
+		if err != nil || len(ebooks)+len(audio) == 0 {
+			continue
+		}
+		title := entry.Name()
+		if !entry.IsDir() {
+			title = strings.TrimSuffix(title, filepath.Ext(title))
+		}
 		var item database.DownloadQueueItem
-		if err := rows.Scan(
-			&item.ID, &item.ClientID, &item.EditionID, &item.DownloadClientTaskID,
-			&item.Title, &item.Protocol, &item.InfoHash, &item.Status,
-			&item.ProgressPercent, &item.SizeBytes, &item.StagingPath,
-			&item.ErrorMessage, &item.CreatedAt, &item.UpdatedAt,
-		); err != nil {
-			return fmt.Errorf("scan download queue item: %w", err)
+		// Match selected releases by their exact release name, never fuzzy-match books.
+		err = sm.db.QueryRowContext(ctx, `SELECT id, title, edition_id, status FROM download_queue WHERE staging_path = ? OR (title = ? AND status IN ('queued', 'downloading')) ORDER BY created_at LIMIT 1`, path, title).Scan(&item.ID, &item.Title, &item.EditionID, &item.Status)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
 		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	for _, item := range items {
-		client, err := sm.resolveClient(ctx, item.ClientID)
-		if err != nil {
-			sm.recordError(ctx, item.ID, fmt.Sprintf("resolve client: %v", err))
-			continue
-		}
-
-		status, err := client.GetTaskStatus(ctx, item.DownloadClientTaskID)
-		if err != nil {
-			sm.recordError(ctx, item.ID, fmt.Sprintf("get task status: %v", err))
-			continue
-		}
-
-		// Calculate updated fields
-		newStatus := item.Status
-		if status.IsCompleted {
-			newStatus = "completed"
-		} else if item.Status == "queued" && (status.Progress > 0 || status.State != "") {
-			newStatus = "downloading"
-		}
-
-		stagingPath := status.ContentPath
-		if stagingPath == "" {
-			stagingPath = status.SavePath
-		}
-		if stagingPath == "" && item.StagingPath != nil {
-			stagingPath = *item.StagingPath
-		}
-
-		sizeBytes := item.SizeBytes
-		if status.TotalBytes > 0 {
-			sizeBytes = status.TotalBytes
-		}
-
-		updateQuery := `
-			UPDATE download_queue
-			SET status = ?,
-			    progress_percent = ?,
-			    size_bytes = ?,
-			    staging_path = ?,
-			    error_message = NULL,
-			    updated_at = CURRENT_TIMESTAMP
-			WHERE id = ?;
-		`
-		_, err = sm.db.ExecContext(ctx, updateQuery, newStatus, status.Progress, sizeBytes, stagingPath, item.ID)
-		if err != nil {
-			sm.recordError(ctx, item.ID, fmt.Sprintf("update queue record: %v", err))
-			continue
-		}
-
-		if status.IsCompleted {
-			item.StagingPath = &stagingPath
-			if err := sm.dispatchPostProcessing(ctx, item, status, stagingPath); err != nil {
-				sm.recordError(ctx, item.ID, fmt.Sprintf("post-processing: %v", err))
+		if errors.Is(err, sql.ErrNoRows) {
+			item.ID = fmt.Sprintf("staging-%x", sha256.Sum256([]byte(path)))
+			item.Title = title
+			_, err = sm.db.ExecContext(ctx, `INSERT OR IGNORE INTO download_queue (id, download_client_task_id, title, protocol, staging_path) VALUES (?, ?, ?, 'prowlarr', ?)`, item.ID, item.ID, title, path)
+			if err != nil {
+				return err
 			}
 		}
+		if item.Status == "completed" {
+			continue
+		}
+		if _, err := sm.db.ExecContext(ctx, `UPDATE download_queue SET staging_path = ? WHERE id = ?`, path, item.ID); err != nil {
+			return err
+		}
+		if err := sm.dispatchPostProcessing(ctx, item, path); err != nil {
+			sm.recordError(ctx, item.ID, fmt.Sprintf("post-processing: %v", err))
+			continue // Leave queued so a later pass retries failed ingestion.
+		}
+		if _, err := sm.db.ExecContext(ctx, `UPDATE download_queue SET status = 'completed', progress_percent = 100, error_message = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, item.ID); err != nil {
+			return err
+		}
 	}
-
 	return nil
 }
 
-func (sm *StagingMonitor) resolveClient(ctx context.Context, clientID string) (DownloadClient, error) {
-	if sm.clientResolver != nil {
-		return sm.clientResolver(ctx, clientID)
-	}
-
-	if sm.db == nil {
-		return nil, errors.New("database connection not available to resolve client")
-	}
-
-	query := `SELECT id, name, type, host, port, use_ssl, username, password, api_token, category_ebook, category_audiobook, enabled, created_at, updated_at FROM download_clients WHERE id = ?;`
-	row := sm.db.QueryRowContext(ctx, query, clientID)
-
-	var dc database.DownloadClient
-	var useSSLInt int
-	var enabledInt int
-	err := row.Scan(
-		&dc.ID, &dc.Name, &dc.Type, &dc.Host, &dc.Port,
-		&useSSLInt, &dc.Username, &dc.Password, &dc.APIToken,
-		&dc.CategoryEbook, &dc.CategoryAudiobook, &enabledInt,
-		&dc.CreatedAt, &dc.UpdatedAt,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query download client %s: %w", clientID, err)
-	}
-	dc.UseSSL = useSSLInt == 1
-	dc.Enabled = enabledInt == 1
-
-	return NewClientFromConfig(&dc, sm.httpClient)
-}
-
-func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item database.DownloadQueueItem, status *TaskStatus, stagingPath string) error {
+func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item database.DownloadQueueItem, stagingPath string) error {
 	if strings.TrimSpace(stagingPath) == "" {
 		return errors.New("empty staging path for completed task")
 	}
@@ -516,7 +449,13 @@ func findMediaFiles(stagingPath string) (ebooks []string, audios []string, err e
 		if walkErr != nil {
 			return walkErr
 		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
 		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		name := d.Name()

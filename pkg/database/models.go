@@ -137,24 +137,6 @@ type Indexer struct {
 	UpdatedAt  time.Time  `json:"updated_at" db:"updated_at"`
 }
 
-// DownloadClient represents a torrent or Usenet download client configuration.
-type DownloadClient struct {
-	ID                string    `json:"id" db:"id"`
-	Name              string    `json:"name" db:"name"`
-	Type              string    `json:"type" db:"type"` // 'qbittorrent', 'transmission', 'deluge', 'sabnzbd', 'nzbget'
-	Host              string    `json:"host" db:"host"`
-	Port              int       `json:"port" db:"port"`
-	UseSSL            bool      `json:"use_ssl" db:"use_ssl"`
-	Username          *string   `json:"username,omitempty" db:"username"`
-	Password          *string   `json:"password,omitempty" db:"password"`
-	APIToken          *string   `json:"api_token,omitempty" db:"api_token"`
-	CategoryEbook     string    `json:"category_ebook" db:"category_ebook"`
-	CategoryAudiobook string    `json:"category_audiobook" db:"category_audiobook"`
-	Enabled           bool      `json:"enabled" db:"enabled"`
-	CreatedAt         time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at" db:"updated_at"`
-}
-
 // DownloadQueueItem represents an active or ingested client download task.
 type DownloadQueueItem struct {
 	ID                   string    `json:"id" db:"id"`

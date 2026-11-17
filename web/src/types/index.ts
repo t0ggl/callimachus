@@ -86,13 +86,12 @@ export interface TranscodeJob {
 }
 
 export type DownloadCategory = 'callimachus-ebooks' | 'callimachus-audiobooks';
-export type DownloadClientType = 'qBittorrent' | 'Transmission' | 'SABnzbd';
 
 export interface DownloadItem {
   id: string;
   title: string;
   category: DownloadCategory;
-  clientType: DownloadClientType;
+  clientType: string;
   status: 'downloading' | 'paused' | 'completed' | 'queued' | 'error';
   progressPercent: number;
   downloadSpeedBps: number;
@@ -144,18 +143,6 @@ export interface IndexerConfig {
   status: 'online' | 'degraded' | 'offline';
 }
 
-export interface DownloadClientConfig {
-  id: string;
-  name: string;
-  type: DownloadClientType;
-  enabled: boolean;
-  host: string;
-  port: number;
-  useSsl: boolean;
-  categoryPath: string;
-  status: 'connected' | 'error';
-}
-
 export interface SettingOverrideInfo {
   isOverridden: boolean;
   overriddenBy?: string;
@@ -165,6 +152,7 @@ export interface SettingOverrideInfo {
 export type SettingsOverridesMap = Record<string, SettingOverrideInfo>;
 
 export interface LibrarySettings {
+  completedDownloadRoot?: string;
   rootPath: string;
   stagingPollInterval: string;
   indexerSyncInterval: string;

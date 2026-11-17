@@ -14,50 +14,7 @@ import (
 	"github.com/t0ggl/callimachus/pkg/transcoder"
 )
 
-type mockDownloadClient struct {
-	clientType string
-	statusMap  map[string]*downloaders.TaskStatus
-}
-
-func (m *mockDownloadClient) Type() string {
-	return m.clientType
-}
-
-func (m *mockDownloadClient) AddTorrent(ctx context.Context, urlOrMagnet string, category string) (string, error) {
-	return "mock-torrent-task-id", nil
-}
-
-func (m *mockDownloadClient) AddNZB(ctx context.Context, nzbURL string, category string) (string, error) {
-	return "mock-nzb-task-id", nil
-}
-
-func (m *mockDownloadClient) GetTaskStatus(ctx context.Context, taskID string) (*downloaders.TaskStatus, error) {
-	if st, ok := m.statusMap[taskID]; ok {
-		return st, nil
-	}
-	return nil, downloaders.ErrTaskNotFound
-}
-
-func (m *mockDownloadClient) RemoveTask(ctx context.Context, taskID string, deleteFiles bool) error {
-	delete(m.statusMap, taskID)
-	return nil
-}
-
-func setupTestDB(t *testing.T) *database.DB {
-	t.Helper()
-	db := testutil.NewTestDB(t)
-
-	// Insert dummy download_client
-	_, err := db.ExecContext(context.Background(), `
-		INSERT INTO download_clients (id, name, type, host, port, use_ssl, enabled)
-		VALUES ('mock-dc-1', 'Mock Client', 'qbittorrent', 'localhost', 8080, 0, 1);
-	`)
-	if err != nil {
-		t.Fatalf("insert mock download client failed: %v", err)
-	}
-
-	return db
-}
+func setupTestDB(t *testing.T) *database.DB { t.Helper(); return testutil.NewTestDB(t) }
 
 func TestStagingMonitor_EBookIngestionLifecycle(t *testing.T) {
 	t.Parallel()
@@ -65,7 +22,11 @@ func TestStagingMonitor_EBookIngestionLifecycle(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()
 	libraryRoot := t.TempDir()
-	stagingDir := t.TempDir()
+	completedRoot := t.TempDir()
+	stagingDir := filepath.Join(completedRoot, "release")
+	if err := os.Mkdir(stagingDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create dummy synthetic ebook file in staging
 	ebookPayload := filepath.Join(stagingDir, "Synthetic Author - Synthetic Test Book (2024).epub")
@@ -82,66 +43,16 @@ func TestStagingMonitor_EBookIngestionLifecycle(t *testing.T) {
 		t.Fatalf("insert download queue item failed: %v", err)
 	}
 
-	mockClient := &mockDownloadClient{
-		clientType: "qbittorrent",
-		statusMap: map[string]*downloaders.TaskStatus{
-			"task-eb-1": {
-				TaskID:          "task-eb-1",
-				Name:            "Synthetic Author - Synthetic Test Book (2024)",
-				Progress:        35.0,
-				DownloadRate:    512000,
-				TotalBytes:      1048576,
-				DownloadedBytes: 367001,
-				State:           "downloading",
-				SavePath:        stagingDir,
-				ContentPath:     ebookPayload,
-				IsCompleted:     false,
-			},
-		},
-	}
-
 	cat := catalog.New(db)
 	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{
-		DB:          db,
-		Catalog:     cat,
-		LibraryRoot: libraryRoot,
-		ClientResolver: func(ctx context.Context, clientID string) (downloaders.DownloadClient, error) {
-			return mockClient, nil
-		},
+		DB:            db,
+		Catalog:       cat,
+		LibraryRoot:   libraryRoot,
+		CompletedRoot: completedRoot,
 	})
-
-	// Poll 1: Active downloading
-	if err := sm.PollOnce(ctx); err != nil {
-		t.Fatalf("PollOnce downloading failed: %v", err)
-	}
 
 	var status string
 	var progress float64
-	err = db.QueryRowContext(ctx, `SELECT status, progress_percent FROM download_queue WHERE id = 'dq-ebook-1'`).Scan(&status, &progress)
-	if err != nil {
-		t.Fatalf("query status failed: %v", err)
-	}
-	if status != "downloading" {
-		t.Errorf("expected status 'downloading', got '%s'", status)
-	}
-	if progress != 35.0 {
-		t.Errorf("expected progress 35.0, got %f", progress)
-	}
-
-	// Poll 2: Completed download
-	mockClient.statusMap["task-eb-1"] = &downloaders.TaskStatus{
-		TaskID:          "task-eb-1",
-		Name:            "Synthetic Author - Synthetic Test Book (2024)",
-		Progress:        100.0,
-		DownloadRate:    0,
-		TotalBytes:      1048576,
-		DownloadedBytes: 1048576,
-		State:           "uploading",
-		SavePath:        stagingDir,
-		ContentPath:     ebookPayload,
-		IsCompleted:     true,
-	}
-
 	if err := sm.PollOnce(ctx); err != nil {
 		t.Fatalf("PollOnce completed failed: %v", err)
 	}
@@ -180,7 +91,11 @@ func TestStagingMonitor_MultiPartMP3_DispatchesToTranscoder(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()
 	libraryRoot := t.TempDir()
-	stagingDir := t.TempDir()
+	completedRoot := t.TempDir()
+	stagingDir := filepath.Join(completedRoot, "release")
+	if err := os.Mkdir(stagingDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create multi-part MP3 files
 	part1 := filepath.Join(stagingDir, "01_Synthetic_Part1.mp3")
@@ -201,35 +116,15 @@ func TestStagingMonitor_MultiPartMP3_DispatchesToTranscoder(t *testing.T) {
 		t.Fatalf("insert download queue item failed: %v", err)
 	}
 
-	mockClient := &mockDownloadClient{
-		clientType: "transmission",
-		statusMap: map[string]*downloaders.TaskStatus{
-			"task-mp3-1": {
-				TaskID:          "task-mp3-1",
-				Name:            "Synthetic Voice - Synthetic Audiobook Series #1",
-				Progress:        100.0,
-				DownloadRate:    0,
-				TotalBytes:      50000000,
-				DownloadedBytes: 50000000,
-				State:           "seeding",
-				SavePath:        stagingDir,
-				ContentPath:     stagingDir,
-				IsCompleted:     true,
-			},
-		},
-	}
-
 	cat := catalog.New(db)
 	tq := transcoder.NewQueue(db)
 
 	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{
-		DB:          db,
-		Catalog:     cat,
-		Transcoder:  tq,
-		LibraryRoot: libraryRoot,
-		ClientResolver: func(ctx context.Context, clientID string) (downloaders.DownloadClient, error) {
-			return mockClient, nil
-		},
+		DB:            db,
+		Catalog:       cat,
+		Transcoder:    tq,
+		LibraryRoot:   libraryRoot,
+		CompletedRoot: completedRoot,
 	})
 
 	if err := sm.PollOnce(ctx); err != nil {
@@ -277,7 +172,11 @@ func TestStagingMonitor_DirectM4B_Ingestion(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()
 	libraryRoot := t.TempDir()
-	stagingDir := t.TempDir()
+	completedRoot := t.TempDir()
+	stagingDir := filepath.Join(completedRoot, "release")
+	if err := os.Mkdir(stagingDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create single .m4b file
 	m4bFile := filepath.Join(stagingDir, "Synthetic Direct Audiobook (2022).m4b")
@@ -293,35 +192,15 @@ func TestStagingMonitor_DirectM4B_Ingestion(t *testing.T) {
 		t.Fatalf("insert download queue failed: %v", err)
 	}
 
-	mockClient := &mockDownloadClient{
-		clientType: "sabnzbd",
-		statusMap: map[string]*downloaders.TaskStatus{
-			"task-m4b-1": {
-				TaskID:          "task-m4b-1",
-				Name:            "Synthetic Direct Author - Synthetic Direct Audiobook (2022)",
-				Progress:        100.0,
-				DownloadRate:    0,
-				TotalBytes:      60000000,
-				DownloadedBytes: 60000000,
-				State:           "Completed",
-				SavePath:        stagingDir,
-				ContentPath:     m4bFile,
-				IsCompleted:     true,
-			},
-		},
-	}
-
 	cat := catalog.New(db)
 	tq := transcoder.NewQueue(db)
 
 	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{
-		DB:          db,
-		Catalog:     cat,
-		Transcoder:  tq,
-		LibraryRoot: libraryRoot,
-		ClientResolver: func(ctx context.Context, clientID string) (downloaders.DownloadClient, error) {
-			return mockClient, nil
-		},
+		DB:            db,
+		Catalog:       cat,
+		Transcoder:    tq,
+		LibraryRoot:   libraryRoot,
+		CompletedRoot: completedRoot,
 	})
 
 	if err := sm.PollOnce(ctx); err != nil {
@@ -349,9 +228,6 @@ func TestStagingMonitor_StartStop(t *testing.T) {
 	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{
 		DB:           db,
 		PollInterval: 20 * time.Millisecond,
-		ClientResolver: func(ctx context.Context, clientID string) (downloaders.DownloadClient, error) {
-			return &mockDownloadClient{}, nil
-		},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -366,6 +242,58 @@ func TestStagingMonitor_StartStop(t *testing.T) {
 		t.Errorf("expected error on duplicate Start, got nil")
 	}
 
-	time.Sleep(50 * time.Millisecond)
 	sm.Stop()
+}
+
+func TestStagingMonitor_RetryAndIdempotency(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	root := t.TempDir()
+	release := filepath.Join(root, "Author - Book")
+	if err := os.Mkdir(release, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// An unfinished job outside the completed directory is never ingested.
+	unfinished := filepath.Join(t.TempDir(), "unfinished.epub.part")
+	if err := os.WriteFile(unfinished, []byte("partial"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(release, "01.mp3"), []byte("audio"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(release, "02.mp3"), []byte("audio"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{DB: db, CompletedRoot: root, LibraryRoot: t.TempDir()})
+	if err := sm.PollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	var message *string
+	if err := db.QueryRow(`SELECT status, error_message FROM download_queue`).Scan(&status, &message); err != nil || status != "queued" || message == nil {
+		t.Fatalf("failed import should remain retryable: %s %v %v", status, message, err)
+	}
+	// Replace the failed multipart job with a completed ebook, then retry.
+	if err := os.RemoveAll(release); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(release, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(release, "Book.pdf"), []byte("book"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	sm = downloaders.NewStagingMonitor(downloaders.StagingConfig{DB: db, Catalog: catalog.New(db), CompletedRoot: root, LibraryRoot: t.TempDir()})
+	for i := 0; i < 2; i++ {
+		if err := sm.PollOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.QueryRow(`SELECT status, error_message FROM download_queue`).Scan(&status, &message); err != nil || status != "completed" || message != nil {
+		t.Fatalf("retry: %s %v %v", status, message, err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM media_assets`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("idempotency: %d %v", count, err)
+	}
 }

@@ -114,24 +114,11 @@ type APIIndexerConfig struct {
 	Status         string `json:"status"`
 }
 
-type APIDownloadClientConfig struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	Host       string `json:"host"`
-	Port       int    `json:"port"`
-	Enabled    bool   `json:"enabled"`
-	Status     string `json:"status"`
-	Categories struct {
-		Ebooks     string `json:"ebooks"`
-		Audiobooks string `json:"audiobooks"`
-	} `json:"categories"`
-}
-
 type APILibrarySettings struct {
-	RootPath            string `json:"rootPath"`
-	StagingPollInterval string `json:"stagingPollInterval"`
-	IndexerSyncInterval string `json:"indexerSyncInterval"`
+	CompletedDownloadRoot string `json:"completedDownloadRoot"`
+	RootPath              string `json:"rootPath"`
+	StagingPollInterval   string `json:"stagingPollInterval"`
+	IndexerSyncInterval   string `json:"indexerSyncInterval"`
 }
 
 type APIProwlarrSettings struct {
@@ -152,19 +139,19 @@ type APIQualityProfileSettings struct {
 }
 
 type APISettingsResponse struct {
-	Indexers        []APIIndexerConfig             `json:"indexers"`
-	DownloadClients []APIDownloadClientConfig      `json:"downloadClients"`
-	Library         APILibrarySettings             `json:"library"`
-	Prowlarr        APIProwlarrSettings            `json:"prowlarr"`
-	QualityProfile  APIQualityProfileSettings      `json:"qualityProfile"`
-	Overrides       map[string]config.OverrideInfo `json:"overrides"`
+	Indexers       []APIIndexerConfig             `json:"indexers"`
+	Library        APILibrarySettings             `json:"library"`
+	Prowlarr       APIProwlarrSettings            `json:"prowlarr"`
+	QualityProfile APIQualityProfileSettings      `json:"qualityProfile"`
+	Overrides      map[string]config.OverrideInfo `json:"overrides"`
 }
 
 type APISettingsUpdateRequest struct {
 	Library *struct {
-		RootPath            *string `json:"rootPath"`
-		StagingPollInterval *string `json:"stagingPollInterval"`
-		IndexerSyncInterval *string `json:"indexerSyncInterval"`
+		CompletedDownloadRoot *string `json:"completedDownloadRoot"`
+		RootPath              *string `json:"rootPath"`
+		StagingPollInterval   *string `json:"stagingPollInterval"`
+		IndexerSyncInterval   *string `json:"indexerSyncInterval"`
 	} `json:"library"`
 	Prowlarr *struct {
 		URL          *string `json:"url"`
@@ -195,6 +182,8 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/settings", s.handleRejectSettingsPost)
 	mux.HandleFunc("POST /api/settings/prowlarr/sync", s.handleSyncProwlarr)
 	mux.HandleFunc("GET /api/events", s.handleEventsSSE)
+	mux.Handle("GET /api/releases", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleSearchReleases)))
+	mux.Handle("POST /api/releases/grab", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleGrabRelease)))
 }
 
 func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
@@ -408,7 +397,7 @@ func (s *Server) handleGetActivity(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var item APIDownloadItem
 			item.Category = "callimachus-audiobooks"
-			item.ClientType = "qBittorrent"
+			item.ClientType = "Prowlarr"
 			if err := rows.Scan(
 				&item.ID, &item.Title, &item.Status, &item.ProgressPercent, &item.TotalSizeBytes,
 			); err == nil {
@@ -423,7 +412,6 @@ func (s *Server) handleGetActivity(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.ResolvedSettings) APISettingsResponse {
 	var resp APISettingsResponse
 	resp.Indexers = make([]APIIndexerConfig, 0)
-	resp.DownloadClients = make([]APIDownloadClientConfig, 0)
 
 	if resolved == nil {
 		var err error
@@ -439,9 +427,10 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 
 	// Library & Storage
 	resp.Library = APILibrarySettings{
-		RootPath:            cfg.LibraryRoot,
-		StagingPollInterval: cfg.StagingPollInterval.String(),
-		IndexerSyncInterval: cfg.IndexerSyncInterval.String(),
+		RootPath:              cfg.LibraryRoot,
+		CompletedDownloadRoot: cfg.CompletedDownloadRoot,
+		StagingPollInterval:   cfg.StagingPollInterval.String(),
+		IndexerSyncInterval:   cfg.IndexerSyncInterval.String(),
 	}
 
 	// Prowlarr Integration (never expose raw API key)
@@ -480,19 +469,6 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 			}
 		}
 
-		// Query download clients
-		if rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, host, port, enabled, category_ebook, category_audiobook FROM download_clients`); err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var dc APIDownloadClientConfig
-				var en int
-				if err := rows.Scan(&dc.ID, &dc.Name, &dc.Type, &dc.Host, &dc.Port, &en, &dc.Categories.Ebooks, &dc.Categories.Audiobooks); err == nil {
-					dc.Enabled = en == 1
-					dc.Status = "connected"
-					resp.DownloadClients = append(resp.DownloadClients, dc)
-				}
-			}
-		}
 	}
 
 	return resp
@@ -574,6 +550,9 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	updates := make(map[string]string)
 
 	if req.Library != nil {
+		if req.Library.CompletedDownloadRoot != nil {
+			updates[config.KeyCompletedDownloadRoot] = *req.Library.CompletedDownloadRoot
+		}
 		if req.Library.RootPath != nil {
 			updates[config.KeyLibraryRoot] = *req.Library.RootPath
 		}
@@ -636,18 +615,24 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.stagingMon != nil {
+		s.stagingMon.SetCompletedRoot(resolved.Settings.CompletedDownloadRoot)
+	}
 	resp := s.buildSettingsResponse(r.Context(), resolved)
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handleSyncProwlarr(w http.ResponseWriter, r *http.Request) {
-	if s.syncer != nil {
-		go func() {
-			if _, err := s.syncer.SyncOnce(r.Context()); err != nil {
-				log.Printf("[prowlarr] sync error: %v", err)
-			}
-		}()
+	client, err := s.prowlarrClient(r)
+	if err != nil || client.BaseURL == "" || client.APIKey == "" {
+		http.Error(w, "Configure the Prowlarr URL and API key in Settings", http.StatusServiceUnavailable)
+		return
 	}
+	if _, err := client.SyncIndexers(r.Context(), s.db); err != nil {
+		http.Error(w, "Prowlarr indexer sync failed", http.StatusBadGateway)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})

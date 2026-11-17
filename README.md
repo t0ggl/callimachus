@@ -33,3 +33,30 @@ precedence over the saved setting, locking the corresponding UI control. The
 settings API exposes `qualityProfile.maxEbookSizeBytes` in bytes (whole MB values)
 and override metadata under `max_ebook_size_mb`. No unprefixed environment alias
 is supported.
+
+## Acquisition through Prowlarr
+
+Set the Prowlarr URL and API key in **Settings → Indexers & Prowlarr** (or
+`CALLIMACHUS_PROWLARR_URL` and `CALLIMACHUS_PROWLARR_API_KEY`). Configure all
+download clients and their categories in Prowlarr, then sync the indexers.
+Callimachus does not connect to qBittorrent, Transmission, or SABnzbd directly.
+Existing download queue history is preserved during upgrade; stored direct-client
+credentials are removed.
+
+Curators and admins can search using `GET /api/releases?query=Author%20Title`.
+To acquire a result, send its `guid`, `indexerId`, `title`, `protocol`, and `size`
+as JSON to `POST /api/releases/grab`. Callimachus posts the GUID and indexer ID
+to Prowlarr's `/api/v1/search`; Prowlarr selects the configured download client.
+If Prowlarr's search cache expires, search again before retrying the grab.
+
+Set **Settings → Library & Storage → Completed Download Directory** or
+`CALLIMACHUS_COMPLETED_DOWNLOAD_ROOT` to a shared, completed-only directory.
+Configure download clients to move finished jobs there atomically, keeping
+incomplete downloads elsewhere. Use one top-level directory per release (or a
+single finished media file). Exact release names associate queued acquisitions;
+unmatched completed media is also ingested. Symlinks and hidden entries are
+ignored. Failed imports remain queued with an error and retry on the next scan;
+successfully imported paths are recorded to prevent duplicate ingestion.
+Leave the directory setting empty to disable ingestion. Callimachus reports the
+handoff as queued until the completed files arrive; it does not poll client
+progress or remove torrents from the client.

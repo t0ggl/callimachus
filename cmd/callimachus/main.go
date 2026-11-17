@@ -55,17 +55,18 @@ type Config struct {
 
 // Server coordinates the database, background workers, and HTTP services.
 type Server struct {
-	cfg           Config
-	baseOverrides config.Overrides
-	db            *database.DB
-	sessionMgr    *auth.SessionManager
-	fallbackAuth  *auth.FallbackAuthenticator
-	syncer        *indexers.Syncer
-	stagingMon    *downloaders.StagingMonitor
-	dispatcher    *notify.Dispatcher
-	httpServer    *http.Server
-	listener      net.Listener
-	staticFS      fs.FS
+	cfg                Config
+	baseOverrides      config.Overrides
+	db                 *database.DB
+	sessionMgr         *auth.SessionManager
+	fallbackAuth       *auth.FallbackAuthenticator
+	syncer             *indexers.Syncer
+	prowlarrHTTPClient *http.Client
+	stagingMon         *downloaders.StagingMonitor
+	dispatcher         *notify.Dispatcher
+	httpServer         *http.Server
+	listener           net.Listener
+	staticFS           fs.FS
 }
 
 // NewServer initializes a new Server instance with all components and routes configured.
@@ -180,11 +181,12 @@ func NewServer(cfg Config) (*Server, error) {
 
 	// 5. Download Staging Monitor
 	stagingMon := downloaders.NewStagingMonitor(downloaders.StagingConfig{
-		DB:           db,
-		Catalog:      catalog.New(db),
-		Transcoder:   transcoder.NewQueue(db),
-		LibraryRoot:  sCfg.LibraryRoot,
-		PollInterval: sCfg.StagingPollInterval,
+		DB:            db,
+		Catalog:       catalog.New(db),
+		Transcoder:    transcoder.NewQueue(db),
+		LibraryRoot:   sCfg.LibraryRoot,
+		CompletedRoot: sCfg.CompletedDownloadRoot,
+		PollInterval:  sCfg.StagingPollInterval,
 	})
 
 	// 6. Notification Dispatcher

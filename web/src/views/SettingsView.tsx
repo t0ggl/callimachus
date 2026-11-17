@@ -3,7 +3,6 @@ import {
   ArrowUp,
   ArrowDown,
   Globe,
-  Download,
   Sliders,
   HardDrive,
   RefreshCw,
@@ -14,7 +13,6 @@ import {
 } from 'lucide-react';
 import {
   IndexerConfig,
-  DownloadClientConfig,
   LibrarySettings,
   ProwlarrSettings,
   QualityProfile,
@@ -27,6 +25,7 @@ import {
 export interface SettingsUpdatePayload {
   library?: {
     rootPath?: string;
+    completedDownloadRoot?: string;
     stagingPollInterval?: string;
     indexerSyncInterval?: string;
   };
@@ -48,12 +47,11 @@ export interface SettingsUpdatePayload {
 
 interface SettingsViewProps {
   indexers: IndexerConfig[];
-  downloadClients: DownloadClientConfig[];
   librarySettings?: LibrarySettings;
   prowlarrSettings?: ProwlarrSettings;
   qualityProfile: QualityProfile;
   overrides?: SettingsOverridesMap;
-  onSyncIndexers?: () => void;
+  onSyncIndexers?: () => void | Promise<void>;
   onSaveSettings?: (payload: SettingsUpdatePayload) => Promise<void>;
 }
 
@@ -71,7 +69,6 @@ const DEFAULT_PROWLARR: ProwlarrSettings = {
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   indexers: initialIndexers,
-  downloadClients: initialClients,
   librarySettings: initialLibrary = DEFAULT_LIBRARY,
   prowlarrSettings: initialProwlarr = DEFAULT_PROWLARR,
   qualityProfile: initialQuality,
@@ -79,7 +76,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onSyncIndexers,
   onSaveSettings,
 }) => {
-  const [activeTab, setActiveTab] = useState<'indexers' | 'downloaders' | 'library' | 'quality'>('indexers');
+  const [activeTab, setActiveTab] = useState<'indexers' | 'library' | 'quality'>('indexers');
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncSuccess, setSyncSuccess] = useState(false);
 
@@ -88,7 +85,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const [indexers, setIndexers] = useState<IndexerConfig[]>(initialIndexers);
-  const [downloadClients, setDownloadClients] = useState<DownloadClientConfig[]>(initialClients);
   const [librarySettings, setLibrarySettings] = useState<LibrarySettings>(initialLibrary);
   const [prowlarrSettings, setProwlarrSettings] = useState<ProwlarrSettings>(initialProwlarr);
   const [prowlarrApiKeyDraft, setProwlarrApiKeyDraft] = useState('');
@@ -105,15 +101,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     (initialQuality.allowedLanguages ?? ['en']).join(', ')
   );
 
-  const [testResult, setTestResult] = useState<{ id: string; success: boolean } | null>(null);
 
   useEffect(() => {
     setIndexers(initialIndexers);
   }, [initialIndexers]);
 
-  useEffect(() => {
-    setDownloadClients(initialClients);
-  }, [initialClients]);
 
   useEffect(() => {
     setLibrarySettings(initialLibrary);
@@ -185,6 +177,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
     const payload: SettingsUpdatePayload = {
       library: {
+        ...(!isOverridden("completed_download_root") ? { completedDownloadRoot: librarySettings.completedDownloadRoot ?? "" } : {}),
         ...(!isOverridden('library_root') ? { rootPath: librarySettings.rootPath } : {}),
         ...(!isOverridden('staging_poll_interval')
           ? { stagingPollInterval: librarySettings.stagingPollInterval }
@@ -249,21 +242,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  const handleSync = () => {
+  const handleSync = async () => {
     setIsSyncing(true);
     setSyncSuccess(false);
-    if (onSyncIndexers) onSyncIndexers();
-
-    setTimeout(() => {
-      setIsSyncing(false);
+    setSaveError(null);
+    try {
+      if (onSyncIndexers) await onSyncIndexers();
+      else {
+        const response = await fetch('/api/settings/prowlarr/sync', { method: 'POST' });
+        if (!response.ok) throw new Error('Prowlarr sync failed. Check the URL and API key, then try again.');
+      }
       setSyncSuccess(true);
-      setTimeout(() => setSyncSuccess(false), 3000);
-    }, 800);
-  };
-
-  const handleTestClient = (id: string) => {
-    setTestResult({ id, success: true });
-    setTimeout(() => setTestResult(null), 3000);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Prowlarr sync failed');
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   const toggleIndexer = (id: string) => {
@@ -339,17 +333,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <Globe className="w-3.5 h-3.5 text-blue-400" />
           Indexers & Prowlarr
         </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab('downloaders')}
-          data-testid="tab-settings-downloaders"
-          className={`px-3 py-1.5 rounded-md flex items-center gap-2 whitespace-nowrap transition-colors ${
-            activeTab === 'downloaders' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200'
-          }`}
-        >
-          <Download className="w-3.5 h-3.5 text-cyan-400" />
-          Download Clients
-        </button>
+
         <button
           type="button"
           onClick={() => setActiveTab('library')}
@@ -529,82 +513,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       )}
 
-      {/* TAB 2: DOWNLOAD CLIENTS */}
-      {activeTab === 'downloaders' && (
-        <div className="space-y-4">
-          {downloadClients.length === 0 ? (
-            <div className="py-16 text-center border border-dashed border-zinc-800 rounded-xl">
-              <Download className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
-              <div className="text-sm font-medium text-zinc-400">No download clients configured</div>
-              <div className="text-xs text-zinc-500 mt-1">
-                Configure qBittorrent, Transmission, or SABnzbd clients in your cluster configuration.
-              </div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {downloadClients.map((client) => (
-                <div
-                  key={client.id}
-                  className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4 shadow-sm"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
-                        <Download className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <h4 className="text-sm font-bold text-zinc-100">{client.name}</h4>
-                        <p className="text-xs text-zinc-400">{client.type}</p>
-                      </div>
-                    </div>
-                    <span
-                      className={`text-[10px] font-mono px-2 py-0.5 rounded border capitalize ${
-                        client.enabled
-                          ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800/60'
-                          : 'bg-zinc-800 text-zinc-500 border-zinc-700'
-                      }`}
-                    >
-                      {client.enabled ? 'Enabled' : 'Disabled'}
-                    </span>
-                  </div>
-
-                  <div className="space-y-2 text-xs font-mono bg-zinc-950/60 p-3 rounded-lg border border-zinc-800">
-                    <div className="flex justify-between text-zinc-400">
-                      <span>Host / Endpoint:</span>
-                      <span className="text-zinc-200">
-                        {client.useSsl ? 'https://' : 'http://'}{client.host}:{client.port}
-                      </span>
-                    </div>
-                    <div className="flex justify-between text-zinc-400">
-                      <span>Category Path:</span>
-                      <span className="text-zinc-200">{client.categoryPath}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between pt-1">
-                    <div className="text-xs">
-                      {testResult?.id === client.id && (
-                        <span className="text-emerald-400 flex items-center gap-1 font-medium">
-                          <CheckCircle2 className="w-3.5 h-3.5" /> Connection verified!
-                        </span>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleTestClient(client.id)}
-                      data-testid={`test-client-${client.id}`}
-                      className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium rounded-md transition-colors"
-                    >
-                      Test Connection
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* TAB 3: LIBRARY & STORAGE */}
       {activeTab === 'library' && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 space-y-5 max-w-2xl">
@@ -619,6 +527,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
 
           <div className="space-y-4 text-xs">
+            <div>
+              <label htmlFor="completed-download-root" className="block text-zinc-400 font-medium mb-1">Completed Download Directory</label>
+              <input id="completed-download-root" type="text" value={librarySettings.completedDownloadRoot ?? ''}
+                disabled={isOverridden('completed_download_root')}
+                onChange={(e) => setLibrarySettings((prev) => ({ ...prev, completedDownloadRoot: e.target.value }))}
+                className={inputClass(isOverridden('completed_download_root'))} aria-describedby="completed-download-help" />
+              <p id="completed-download-help" className="mt-1.5 text-xs text-zinc-400">Configure your download clients in Prowlarr. Move finished downloads into this shared directory only after completion. Leave empty to disable ingestion.</p>
+              <OverrideNote settingKey="completed_download_root" />
+            </div>
+
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label htmlFor="library-root" className="block text-zinc-400 font-medium">

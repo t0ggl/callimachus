@@ -196,7 +196,6 @@ func TestMigrationAndTables(t *testing.T) {
 		"media_assets",
 		"transcode_queue",
 		"indexers",
-		"download_clients",
 		"download_queue",
 		"blocklist",
 		"users",

@@ -66,7 +66,7 @@ describe('SettingsView Environment Overrides', () => {
     render(
       <SettingsView
         indexers={[]}
-        downloadClients={[]}
+
         librarySettings={baseLibrary}
         prowlarrSettings={baseProwlarr}
         qualityProfile={baseQuality}
@@ -122,7 +122,7 @@ describe('SettingsView Environment Overrides', () => {
     render(
       <SettingsView
         indexers={[]}
-        downloadClients={[]}
+
         librarySettings={baseLibrary}
         prowlarrSettings={baseProwlarr}
         qualityProfile={baseQuality}
@@ -149,6 +149,7 @@ describe('SettingsView Environment Overrides', () => {
     const payload = onSaveSettings.mock.calls[0][0];
 
     expect(payload.library).toEqual({
+      completedDownloadRoot: "",
       stagingPollInterval: '15s',
       indexerSyncInterval: '15m0s',
     });
@@ -178,7 +179,7 @@ it('offers common ebook formats and saves selections with the exact audiobook co
   render(
     <SettingsView
       indexers={[]}
-      downloadClients={[]}
+
       librarySettings={baseLibrary}
       prowlarrSettings={baseProwlarr}
       qualityProfile={baseQuality}
@@ -210,7 +211,7 @@ it('offers common ebook formats and saves selections with the exact audiobook co
 it('edits and saves the ebook ceiling in bytes while displaying MB', async () => {
   const user = userEvent.setup({ delay: null });
   const save = vi.fn().mockResolvedValue(undefined);
-  render(<SettingsView indexers={[]} downloadClients={[]} qualityProfile={baseQuality} onSaveSettings={save} />);
+  render(<SettingsView indexers={[]}  qualityProfile={baseQuality} onSaveSettings={save} />);
   await user.click(screen.getByTestId('tab-settings-quality'));
   const input = screen.getByLabelText('Maximum eBook File Size (MB)');
   expect(input).toHaveValue(100);
@@ -225,7 +226,7 @@ it('edits and saves the ebook ceiling in bytes while displaying MB', async () =>
 it('reorders ebook priorities in both directions and saves the sequence independently of allowed formats', async () => {
   const user = userEvent.setup({ delay: null });
   const onSaveSettings = vi.fn().mockResolvedValue(undefined);
-  render(<SettingsView indexers={[]} downloadClients={[]} librarySettings={baseLibrary}
+  render(<SettingsView indexers={[]}  librarySettings={baseLibrary}
     prowlarrSettings={baseProwlarr} qualityProfile={baseQuality} onSaveSettings={onSaveSettings} />);
   await user.click(screen.getByTestId('tab-settings-quality'));
   expect(screen.getByRole('button', { name: 'Move EPUB up' })).toBeDisabled();
@@ -243,7 +244,7 @@ it('reorders ebook priorities in both directions and saves the sequence independ
 it('locks priority arrows and omits preferences from saves when managed by the environment', async () => {
   const user = userEvent.setup({ delay: null });
   const onSaveSettings = vi.fn().mockResolvedValue(undefined);
-  render(<SettingsView indexers={[]} downloadClients={[]} librarySettings={baseLibrary}
+  render(<SettingsView indexers={[]}  librarySettings={baseLibrary}
     prowlarrSettings={baseProwlarr} qualityProfile={{...baseQuality, ebookFormatPreferences: ['PDF', 'EPUB']}}
     overrides={{ebook_format_preferences: {isOverridden: true, overriddenBy: 'CALLIMACHUS_EBOOK_FORMAT_PREFERENCES', envVar: 'CALLIMACHUS_EBOOK_FORMAT_PREFERENCES'}}}
     onSaveSettings={onSaveSettings} />);
@@ -258,7 +259,7 @@ it('locks priority arrows and omits preferences from saves when managed by the e
 it('can add an unranked ebook format to a saved partial preference list', async () => {
   const user = userEvent.setup({ delay: null });
   const onSaveSettings = vi.fn().mockResolvedValue(undefined);
-  render(<SettingsView indexers={[]} downloadClients={[]} librarySettings={baseLibrary}
+  render(<SettingsView indexers={[]}  librarySettings={baseLibrary}
     prowlarrSettings={baseProwlarr} qualityProfile={{...baseQuality, ebookFormatPreferences: ['PDF']}}
     onSaveSettings={onSaveSettings} />);
   await user.click(screen.getByTestId('tab-settings-quality'));
@@ -266,4 +267,19 @@ it('can add an unranked ebook format to a saved partial preference list', async 
   await user.click(screen.getByRole('button', {name: 'Move EPUB up'}));
   await user.click(screen.getByTestId('save-settings-btn'));
   expect(onSaveSettings.mock.calls[0][0].qualityProfile.ebookFormatPreferences).toEqual(['EPUB', 'PDF']);
+});
+
+it('delegates clients to Prowlarr and locks the completed download directory override', async () => {
+  const user = userEvent.setup({ delay: null });
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<SettingsView indexers={[]} qualityProfile={baseQuality}
+    librarySettings={{...baseLibrary, completedDownloadRoot: '/downloads/completed'}}
+    overrides={{completed_download_root: {isOverridden: true, overriddenBy: 'CALLIMACHUS_COMPLETED_DOWNLOAD_ROOT', envVar: 'CALLIMACHUS_COMPLETED_DOWNLOAD_ROOT'}}}
+    onSaveSettings={save} />);
+  expect(screen.queryByText('Download Clients')).not.toBeInTheDocument();
+  await user.click(screen.getByTestId('tab-settings-library'));
+  expect(screen.getByLabelText('Completed Download Directory')).toBeDisabled();
+  expect(screen.getByLabelText('Completed Download Directory')).toHaveValue('/downloads/completed');
+  await user.click(screen.getByTestId('save-settings-btn'));
+  expect(save.mock.calls[0][0].library).not.toHaveProperty('completedDownloadRoot');
 });

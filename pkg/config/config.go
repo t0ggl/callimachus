@@ -19,6 +19,7 @@ import (
 // Every setting's environment variable is automatically derived via
 // EnvVarName(key) -> "CALLIMACHUS_" + strings.ToUpper(key).
 const (
+	KeyCompletedDownloadRoot  = "completed_download_root"
 	KeyLibraryRoot            = "library_root"
 	KeyProwlarrURL            = "prowlarr_url"
 	KeyProwlarrAPIKey         = "prowlarr_api_key"
@@ -70,6 +71,7 @@ func EnvVarName(settingKey string) string {
 
 var registry = []SettingSpec{
 	{Key: KeyLibraryRoot, Kind: KindString},
+	{Key: KeyCompletedDownloadRoot, Kind: KindString},
 	{Key: KeyProwlarrURL, Kind: KindString},
 	{Key: KeyProwlarrAPIKey, Kind: KindString, Secret: true},
 	{Key: KeyProwlarrSyncInterval, Kind: KindDuration, Default: "1h"},
@@ -114,6 +116,7 @@ type OverrideInfo struct {
 
 // Settings holds the effective resolved application configuration.
 type Settings struct {
+	CompletedDownloadRoot  string        `json:"completedDownloadRoot"`
 	LibraryRoot            string        `json:"libraryRoot"`
 	ProwlarrURL            string        `json:"prowlarrUrl"`
 	ProwlarrAPIKey         string        `json:"-"`
@@ -468,6 +471,7 @@ func callerOverridesMap(c Overrides) map[string]string {
 func materializeSettings(vals map[string]string) Settings {
 	return Settings{
 		LibraryRoot:            vals[KeyLibraryRoot],
+		CompletedDownloadRoot:  vals[KeyCompletedDownloadRoot],
 		ProwlarrURL:            strings.TrimRight(vals[KeyProwlarrURL], "/"),
 		ProwlarrAPIKey:         vals[KeyProwlarrAPIKey],
 		ProwlarrSyncInterval:   parseDurationOr(vals[KeyProwlarrSyncInterval], time.Hour),

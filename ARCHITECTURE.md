@@ -54,7 +54,8 @@ flowchart TD
     AuthMid --> OIDC
     API --> CatalogMgr
     Scheduler -->|Torznab RSS Sync & Queries| Prowlarr
-    DownloaderMgr -->|Torrent / Usenet Injection| Clients
+    API -->|JSON Search & Release Grab| Prowlarr
+    Prowlarr -->|Torrent / Usenet Dispatch| Clients
     Clients -->|Completed Downloads in Shared Staging| DownloaderMgr
     DownloaderMgr -->|Inspection & Normalization| MetadataEngine
     MetadataEngine -->|Deterministic / Audnexus / Hardcover| MetaSources
@@ -127,12 +128,9 @@ callimachus/
 │   │   ├── query.go                  # Book/author/edition search query builder
 │   │   ├── parser.go                 # Torznab XML item & attribute extractor
 │   │   └── sync.go                   # Periodic RSS feed sync manager
-│   ├── downloaders/                  # Torrent & Usenet download client drivers
-│   │   ├── client.go                 # Generic DownloadClient interface
-│   │   ├── qbittorrent/              # qBittorrent Web API client
-│   │   ├── transmission/             # Transmission RPC client
-│   │   ├── sabnzbd/                  # SABnzbd REST client
-│   │   ├── staging.go                # Shared staging directory monitor & post-processing dispatcher
+│   ├── downloaders/                  # Completed-download ingestion & quality policies
+│   │   ├── staging.go                # Completed-only directory monitor & post-processing dispatcher
+│   │   ├── profile.go                # Release quality policy
 │   │   └── blocklist.go              # Info-hash & release blocklist enforcement
 │   ├── auth/                         # Authentication & RBAC
 │   │   ├── oidc.go                   # OIDC token validation & claim mapping (Authentik, Keycloak, Authelia)
@@ -341,28 +339,12 @@ CREATE TABLE indexers (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- 10. Download Clients (qBittorrent, Transmission, SABnzbd)
-CREATE TABLE download_clients (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    type TEXT NOT NULL,                        -- 'qbittorrent', 'transmission', 'deluge', 'sabnzbd', 'nzbget'
-    host TEXT NOT NULL,
-    port INTEGER NOT NULL,
-    use_ssl INTEGER NOT NULL DEFAULT 0,
-    username TEXT,
-    password TEXT,
-    api_token TEXT,
-    category_ebook TEXT NOT NULL DEFAULT 'callimachus-ebooks',
-    category_audiobook TEXT NOT NULL DEFAULT 'callimachus-audiobooks',
-    enabled INTEGER NOT NULL DEFAULT 1,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+-- Direct client configuration removed by migration 0004; Prowlarr owns clients.
 
 -- 11. Download Queue (Active / Ingested client tasks)
 CREATE TABLE download_queue (
     id TEXT PRIMARY KEY,
-    client_id TEXT NOT NULL REFERENCES download_clients(id) ON DELETE CASCADE,
+    client_id TEXT NOT NULL DEFAULT 'prowlarr', -- Historical attribution, no direct client configuration
     edition_id TEXT REFERENCES book_editions(id) ON DELETE SET NULL,
     download_client_task_id TEXT NOT NULL,     -- Hash or client job ID
     title TEXT NOT NULL,                       -- Release title
@@ -560,7 +542,7 @@ flowchart TD
     QualityFilter -- Yes --> Scorer["Heuristic Confidence Scorer"]
     Scorer --> Confidence{"Score >= 0.85?"}
     Confidence -- No --> ManualReview["Queue for Manual UI Approval"]
-    Confidence -- Yes --> Downloader["Inject into Download Client<br/>(qBittorrent / SABnzbd)"]
+    Confidence -- Yes --> Downloader["Dispatch via Prowlarr<br/>(configured download client)"]
     Downloader --> Staging["Download Client Completes in Shared Staging"]
     Staging --> ImportEngine["Import Engine: EPUB Parser / Audio Transcoder"]
 ```
@@ -650,7 +632,7 @@ testdata/
 
 ### 8.1 Test Implementation Principles
 1. **Mock HTTP Transport (`http.RoundTripper`):**
-   - Every external client (Hardcover, Audnexus, OpenLibrary, Prowlarr, qBittorrent, SABnzbd) accepts a custom `http.Client`.
+   - Every external client (Hardcover, Audnexus, OpenLibrary, Prowlarr) accepts a custom `http.Client`.
    - In tests, an offline `testutil.MockTransport` intercepts requests and serves static JSON/XML fixtures from `testdata/`.
    - **Zero live network calls** in `go test ./...`. Any attempted outbound network connection in unit tests immediately panics.
 2. **Sub-5-Second Test Execution:**

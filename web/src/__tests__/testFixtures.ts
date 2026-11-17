@@ -96,7 +96,7 @@ export const testDownloads: DownloadItem[] = [
     id: 'dl_201',
     title: 'The Obsidian Path - Audiobook M4B',
     category: 'callimachus-audiobooks',
-    clientType: 'qBittorrent',
+    clientType: 'Prowlarr',
     status: 'downloading',
     progressPercent: 64.2,
     downloadSpeedBps: 8420000,

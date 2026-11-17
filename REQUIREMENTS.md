@@ -33,7 +33,7 @@ It adopts the proven management paradigm of the `*arr` stack (Radarr, Sonarr, Li
   - `pkg/epub`: EPUB inspection, metadata injection, and OPF generation with high-reliability parser and optional Calibre `ebook-meta` driver.
   - `pkg/transcoder`: FFmpeg runner, M4B muxer, chapter generator (`FFMETADATA1`), and metadata tagger.
   - `pkg/indexers`: Prowlarr Torznab/Newznab client, RSS syncer, and search query builder.
-  - `pkg/downloaders`: Client drivers (qBittorrent, Transmission, SABnzbd).
+  - `pkg/downloaders`: Completed-directory ingestion, quality profiles, and blocklist.
   - `pkg/auth`: OIDC authenticator, session manager, and single-password fallback.
   - `pkg/database`: SQLite database using modern Go driver (pure Go or cgo-free `modernc.org/sqlite`) with migration engine.
 - **Storage:** Single embedded SQLite database (`callimachus.db`) with WAL mode.
@@ -157,8 +157,9 @@ It adopts the proven management paradigm of the `*arr` stack (Radarr, Sonarr, Li
   - Audiobooks: Single M4B 64kbps+ preferred over multi-part MP3s.
 
 ### 6.3 Download Clients & Blocklist
-- Integrations: qBittorrent, Transmission, Deluge, SABnzbd, NZBGet.
-- Applies dedicated categories (`callimachus-ebooks`, `callimachus-audiobooks`).
+- Configure download clients and categories in Prowlarr; Callimachus requires only the Prowlarr URL and API key.
+- Search through Prowlarr and dispatch cached releases via its release download endpoint.
+- Ingest finished media from the shared completed-download directory (`CALLIMACHUS_COMPLETED_DOWNLOAD_ROOT`); incomplete downloads must remain elsewhere.
 - Release blocklist: permanently blacklists failed or corrupt torrent info-hashes to avoid redownload loops.
 - Roadmap: Anna's Archive (MD5/IPFS lookup) and Z-Library direct acquisition.
 

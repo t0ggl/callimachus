@@ -15,7 +15,6 @@ import {
   BookRequest,
   ImportLog,
   IndexerConfig,
-  DownloadClientConfig,
   LibrarySettings,
   ProwlarrSettings,
   QualityProfile,
@@ -38,7 +37,6 @@ export const App: React.FC = () => {
   const [requests, setRequests] = useState<BookRequest[]>([]);
   const [logs, setLogs] = useState<ImportLog[]>([]);
   const [indexers, setIndexers] = useState<IndexerConfig[]>([]);
-  const [downloadClients, setDownloadClients] = useState<DownloadClientConfig[]>([]);
   const [librarySettings, setLibrarySettings] = useState<LibrarySettings>({
     rootPath: './books',
     stagingPollInterval: '5s',
@@ -174,7 +172,6 @@ export const App: React.FC = () => {
   const applySettingsResponse = useCallback((data: any) => {
     if (!data || typeof data !== 'object') return;
     if (Array.isArray(data.indexers)) setIndexers(data.indexers);
-    if (Array.isArray(data.downloadClients)) setDownloadClients(data.downloadClients);
     if (data.library) {
       setLibrarySettings((prev) => ({ ...prev, ...data.library }));
     }
@@ -235,15 +232,11 @@ export const App: React.FC = () => {
   }, [applySettingsResponse, redirectToOIDC]);
 
   const handleSyncIndexers = useCallback(async () => {
-    try {
-      const res = await fetch('/api/settings/prowlarr/sync', { method: 'POST' });
-      if (res.status === 401) {
-        redirectToOIDC();
-      }
-    } catch (err) {
-      console.error('Failed to sync indexers', err);
-    }
-  }, [redirectToOIDC]);
+    const res = await fetch('/api/settings/prowlarr/sync', { method: 'POST' });
+    if (res.status === 401) redirectToOIDC();
+    if (!res.ok) throw new Error('Prowlarr sync failed. Check the URL and API key, then try again.');
+    await fetchSettings();
+  }, [redirectToOIDC, fetchSettings]);
 
   useEffect(() => {
     fetchAuthUser();
@@ -427,7 +420,6 @@ export const App: React.FC = () => {
         {currentView === 'settings' && (
           <SettingsView
             indexers={indexers}
-            downloadClients={downloadClients}
             librarySettings={librarySettings}
             prowlarrSettings={prowlarrSettings}
             qualityProfile={qualityProfile}
