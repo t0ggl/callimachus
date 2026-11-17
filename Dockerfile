@@ -1,7 +1,7 @@
-# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+# syntax=docker/dockerfile:1
 
 # Stage 1: Build Web UI
-FROM --platform=$BUILDPLATFORM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS web-builder
+FROM --platform=$BUILDPLATFORM node:20-alpine AS web-builder
 WORKDIR /app/web
 COPY web/package*.json ./
 RUN if [ -f package.json ]; then \
@@ -13,7 +13,7 @@ COPY web/ ./
 RUN if [ -f package.json ]; then npm run build; fi
 
 # Stage 2: Build Go Server & Worker
-FROM --platform=$BUILDPLATFORM golang:alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS go-builder
+FROM --platform=$BUILDPLATFORM golang:alpine AS go-builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG COMMIT_TAG
@@ -42,7 +42,7 @@ RUN if [ -f go.mod ]; then \
     fi
 
 # Stage 3: Runtime
-FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc AS runner
+FROM alpine:3.20 AS runner
 RUN apk add --no-cache ca-certificates tzdata ffmpeg curl
 
 WORKDIR /app

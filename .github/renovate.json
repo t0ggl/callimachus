@@ -3,6 +3,10 @@
   "extends": [
     "config:best-practices"
   ],
+  "ignorePresets": [
+    "docker:pinDigests"
+  ],
+  "automerge": true,
   "labels": [
     "dependencies"
   ],
