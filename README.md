@@ -102,3 +102,29 @@ Environment overrides: `CALLIMACHUS_CONVERT_EBOOKS=true` and
 The optional real Calibre integration check is
 `CALLIMACHUS_REAL_CALIBRE=1 go test ./pkg/transcoder -run TestWorkerEbookRealCalibre -v`;
 standard tests mock every converter subprocess.
+
+### Log retention and maintenance
+
+The server prunes historical download/import and transcode job records on startup
+and every 24 hours. The default retention is **30 days**. Set
+`CALLIMACHUS_LOG_RETENTION_DAYS` to a positive integer (1–365000) to override it;
+invalid values stop server startup. This is backend, environment-only configuration,
+not a database or Settings UI option. Unprefixed `LOG_RETENTION_DAYS` is unsupported.
+
+Only completed, failed, or cancelled jobs whose creation **and last update** are
+older than the retention window are removed. Pending/running jobs and download
+history still required by unfinished acquisition requests are preserved. Related
+cached candidates for available requests are removed with expired download
+history; books, media, requests and failed-release tombstones are retained.
+Indexed timestamp queries delete at most 500 jobs per transaction, allowing WAL
+readers to continue and releasing the SQLite writer between batches. Freed pages
+are reused by SQLite; maintenance does not run a blocking `VACUUM`.
+
+There are currently no separate persisted activity/audit log tables (the activity
+API's `logs` list is a placeholder). Both server and worker application logs go to
+stderr; neither creates log files. If capturing stderr to disk, configure the host
+or logging collector to expire logs after 30 days. For a daily file capture using
+logrotate, use `daily`, `rotate 30`, `maxage 30`, `missingok`, `notifempty` and
+`copytruncate` (the processes do not reopen log files). Run logrotate daily;
+container logging drivers with size-based rotation bound space but do not enforce
+an exact 30-day age policy, so use an age-aware collector when required.
