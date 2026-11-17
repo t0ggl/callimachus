@@ -209,9 +209,8 @@ func TestQualityProfile_EvaluateRelease_AudioBitrate(t *testing.T) {
 	t.Parallel()
 
 	profile := QualityProfile{
-		AllowedLanguages:    []string{"en"},
-		AllowedFormats:      []string{"epub", "m4b", "mp3"},
-		MinAudioBitrateKbps: 64,
+		AllowedLanguages: []string{"en"},
+		AllowedFormats:   []string{"epub", "m4b", "mp3"},
 	}
 
 	tests := []struct {
@@ -221,24 +220,22 @@ func TestQualityProfile_EvaluateRelease_AudioBitrate(t *testing.T) {
 		reasonSubstr string
 	}{
 		{
-			name: "Bitrate below threshold rejected (32kbps < 64kbps)",
+			name: "Low bitrate M4B accepted for passthrough",
 			candidate: ReleaseCandidate{
 				Title:       "Synthetic Author - Low Quality Audio",
 				Format:      "m4b",
 				BitrateKbps: 32,
 			},
-			wantAccepted: false,
-			reasonSubstr: "bitrate",
+			wantAccepted: true,
 		},
 		{
-			name: "Bitrate below threshold rejected (48kbps < 64kbps)",
+			name: "Low bitrate MP3 accepted for conversion",
 			candidate: ReleaseCandidate{
 				Title:       "Synthetic Author - Subpar Audio",
 				Format:      "mp3",
 				BitrateKbps: 48,
 			},
-			wantAccepted: false,
-			reasonSubstr: "bitrate",
+			wantAccepted: true,
 		},
 		{
 			name: "Bitrate exactly at threshold accepted (64kbps == 64kbps)",
@@ -392,4 +389,3 @@ func TestQualityProfile_EvaluateRelease_MaxFileSizeMB(t *testing.T) {
 		t.Fatalf("expected 600MB candidate rejected by 500MB limit")
 	}
 }
-

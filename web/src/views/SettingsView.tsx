@@ -35,8 +35,6 @@ export interface SettingsUpdatePayload {
     name?: string;
     allowedLanguages?: string[];
     allowedFormats?: FormatType[];
-    audioMinBitrateKbps?: number;
-    audioTargetBitrateKbps?: number;
     preferSingleFileM4b?: boolean;
     maxFileSizeMb?: number;
   };
@@ -201,12 +199,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           : {}),
         ...(!isOverridden('allowed_formats')
           ? { allowedFormats: qualityProfile.allowedFormats }
-          : {}),
-        ...(!isOverridden('audio_min_bitrate_kbps')
-          ? { audioMinBitrateKbps: qualityProfile.audioMinBitrateKbps }
-          : {}),
-        ...(!isOverridden('audio_target_bitrate_kbps')
-          ? { audioTargetBitrateKbps: qualityProfile.audioTargetBitrateKbps }
           : {}),
         ...(!isOverridden('prefer_single_file_m4b')
           ? { preferSingleFileM4b: qualityProfile.preferSingleFileM4b }
@@ -766,60 +758,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <OverrideNote settingKey="allowed_formats" />
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label htmlFor="audio-min-bitrate" className="block text-zinc-400 font-medium">
-                    Audio Min Bitrate (kbps)
-                  </label>
-                  <OverrideBadge settingKey="audio_min_bitrate_kbps" />
-                </div>
-                <select
-                  id="audio-min-bitrate"
-                  value={qualityProfile.audioMinBitrateKbps}
-                  disabled={isOverridden('audio_min_bitrate_kbps')}
-                  onChange={(e) =>
-                    setQualityProfile((prev) => ({
-                      ...prev,
-                      audioMinBitrateKbps: Number(e.target.value),
-                    }))
-                  }
-                  className={inputClass(isOverridden('audio_min_bitrate_kbps'))}
-                >
-                  <option value={32}>32 kbps (Mono)</option>
-                  <option value={64}>64 kbps (Standard Audiobook)</option>
-                  <option value={96}>96 kbps (Enhanced)</option>
-                  <option value={128}>128 kbps (High Fidelity)</option>
-                </select>
-                <OverrideNote settingKey="audio_min_bitrate_kbps" />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label htmlFor="audio-target-bitrate" className="block text-zinc-400 font-medium">
-                    Audio Target Bitrate (kbps)
-                  </label>
-                  <OverrideBadge settingKey="audio_target_bitrate_kbps" />
-                </div>
-                <select
-                  id="audio-target-bitrate"
-                  value={qualityProfile.audioTargetBitrateKbps}
-                  disabled={isOverridden('audio_target_bitrate_kbps')}
-                  onChange={(e) =>
-                    setQualityProfile((prev) => ({
-                      ...prev,
-                      audioTargetBitrateKbps: Number(e.target.value),
-                    }))
-                  }
-                  className={inputClass(isOverridden('audio_target_bitrate_kbps'))}
-                >
-                  <option value={64}>64 kbps AAC</option>
-                  <option value={96}>96 kbps AAC</option>
-                  <option value={128}>128 kbps AAC</option>
-                </select>
-                <OverrideNote settingKey="audio_target_bitrate_kbps" />
-              </div>
-
+            <div className="max-w-sm">
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label htmlFor="max-file-size-mb" className="block text-zinc-400 font-medium">

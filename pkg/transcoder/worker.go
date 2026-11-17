@@ -18,8 +18,6 @@ import (
 type WorkerConfig struct {
 	WorkerID      string
 	PollInterval  time.Duration
-	AudioCodec    string
-	Bitrate       string
 	SampleRate    int
 	Channels      int
 	WorkDir       string
@@ -43,20 +41,12 @@ func NewWorker(queue *Queue, runner CommandRunner, cfg WorkerConfig) *Worker {
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 1 * time.Second
 	}
-	if cfg.AudioCodec == "" {
-		cfg.AudioCodec = "aac"
-	}
-	if cfg.Bitrate == "" {
-		cfg.Bitrate = "64k"
-	}
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = filepath.Join(os.TempDir(), "callimachus-transcoder")
 	}
 
 	prober := NewProber(runner)
 	muxer := NewMuxer(runner, MuxerConfig{
-		AudioCodec: cfg.AudioCodec,
-		Bitrate:    cfg.Bitrate,
 		SampleRate: cfg.SampleRate,
 		Channels:   cfg.Channels,
 		TempDir:    cfg.WorkDir,
@@ -164,7 +154,9 @@ func (w *Worker) ProcessJob(ctx context.Context, job *database.TranscodeQueueIte
 	w.reportStage(ctx, job.ID, StageProbing, 20.0)
 
 	// Step 2: Encoding / Chapter preparation
-	w.reportStage(ctx, job.ID, StageEncoding, 25.0)
+	if !isM4BPassthrough(audioFiles) {
+		w.reportStage(ctx, job.ID, StageEncoding, 25.0)
+	}
 
 	jobWorkDir := filepath.Join(w.cfg.WorkDir, fmt.Sprintf("job-%s", job.ID))
 	if err := os.MkdirAll(jobWorkDir, 0755); err != nil {
@@ -190,7 +182,10 @@ func (w *Worker) ProcessJob(ctx context.Context, job *database.TranscodeQueueIte
 	}
 
 	metaPath := filepath.Join(jobWorkDir, "metadata.txt")
-	if err := WriteFFMetadataFile(metaPath, meta, chapters); err != nil {
+	if isM4BPassthrough(audioFiles) {
+		// Keep the original chapter table and all existing tags during remuxing.
+		metaPath = ""
+	} else if err := WriteFFMetadataFile(metaPath, meta, chapters); err != nil {
 		return fmt.Errorf("write ffmetadata file: %w", err)
 	}
 

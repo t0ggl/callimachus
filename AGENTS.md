@@ -44,8 +44,9 @@ Welcome to the **Callimachus** project codebase. These guidelines govern all sub
      - In frontend Vitest suites, always initialize user events with `userEvent.setup({ delay: null })` to prevent synthetic typing delays from inflating test execution time.
    - **Mandatory Slow-Outlier Audit Before Merging:**
      - Before merging any branch or opening a pull request, run `go test -v ./...` and `npm test` to audit test execution durations.
-     - Any single test taking > 500ms or package taking > 2.5s is an outlier bottleneck that must be investigated and resolved before merging.
-     - Ensure the entire repository test suite executes in under 5 seconds.
+     - Investigate slow outliers: use individual tests taking > 500ms or packages taking > 2.5s as investigation signals, not automatic failures. Consider the work performed, host load, compilation/startup overhead, and race instrumentation when judging whether a duration is suspicious.
+     - Fix unjustified delays, unnecessary repeated setup, unmocked external work, and other avoidable bottlenecks before merging. Record the reason for legitimately slower tests rather than weakening their coverage to meet a timing threshold.
+     - Do not impose a fixed aggregate time limit on the repository test suite; its duration depends on suite size, hardware, and execution mode.
    - **Static Application Security Testing (SAST):**
      - Semgrep OSS SAST runs automatically in CI (`.github/workflows/ci.yml`) and locally via `make sast` or `./scripts/sast.sh` (also included in `make test`).
      - Run `./scripts/sast.sh` before opening a pull request and resolve findings rather than bypassing them; only suppress verified false positives with inline `nosemgrep:` comments explaining the rationale.

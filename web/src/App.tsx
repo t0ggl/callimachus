@@ -54,8 +54,6 @@ export const App: React.FC = () => {
     name: 'Standard Audiobook',
     allowedLanguages: ['en'],
     allowedFormats: ['EPUB', 'M4B'],
-    audioMinBitrateKbps: 32,
-    audioTargetBitrateKbps: 64,
     preferSingleFileM4b: true,
     maxFileSizeMb: 2048,
   });

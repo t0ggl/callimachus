@@ -21,8 +21,6 @@ func run(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("callimachus-worker", flag.ContinueOnError)
 	dbFlag := fs.String("db", "", "Path to Callimachus SQLite database (default: $CALLIMACHUS_DATABASE_PATH or ./callimachus.db)")
 	pollFlag := fs.Duration("poll", 100*time.Millisecond, "Queue polling interval (override: $CALLIMACHUS_WORKER_POLL_INTERVAL)")
-	bitrateFlag := fs.String("bitrate", "64k", "Target audio bitrate (override: $CALLIMACHUS_WORKER_BITRATE)")
-	codecFlag := fs.String("codec", "aac", "Target audio codec (override: $CALLIMACHUS_WORKER_CODEC)")
 	workerIDFlag := fs.String("worker-id", "", "Worker identifier (override: $CALLIMACHUS_WORKER_ID)")
 	workDirFlag := fs.String("workdir", "", "Working directory for temporary transcode files (override: $CALLIMACHUS_WORKER_WORKDIR)")
 
@@ -37,16 +35,6 @@ func run(ctx context.Context, args []string) error {
 		if d, err := time.ParseDuration(envVal); err == nil && d > 0 {
 			pollInterval = d
 		}
-	}
-
-	bitrate := *bitrateFlag
-	if envVal, _, ok := config.LookupEnvForSetting("worker_bitrate"); ok {
-		bitrate = envVal
-	}
-
-	codec := *codecFlag
-	if envVal, _, ok := config.LookupEnvForSetting("worker_codec"); ok {
-		codec = envVal
 	}
 
 	workerID := *workerIDFlag
@@ -87,8 +75,6 @@ func run(ctx context.Context, args []string) error {
 	worker := transcoder.NewWorker(queue, runner, transcoder.WorkerConfig{
 		WorkerID:     workerID,
 		PollInterval: pollInterval,
-		Bitrate:      bitrate,
-		AudioCodec:   codec,
 		WorkDir:      workDir,
 	})
 

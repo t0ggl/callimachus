@@ -12,8 +12,6 @@ import (
 func TestMuxer_CLIArgumentGeneration(t *testing.T) {
 	// Case 1: Multi-part concat with metadata, cover image, custom audio params
 	cfg := MuxerConfig{
-		AudioCodec: "libfdk_aac",
-		Bitrate:    "128k",
 		SampleRate: 44100,
 		Channels:   2,
 	}
@@ -54,7 +52,7 @@ func TestMuxer_CLIArgumentGeneration(t *testing.T) {
 	}
 
 	// Audio encoding parameters
-	if !strings.Contains(argsStr, "-c:a libfdk_aac -b:a 128k -ar 44100 -ac 2") {
+	if !strings.Contains(argsStr, "-c:a aac -b:a 128k -ar 44100 -ac 2") {
 		t.Errorf("missing audio encoding flags: %s", argsStr)
 	}
 
@@ -72,10 +70,7 @@ func TestMuxer_CLIArgumentGeneration(t *testing.T) {
 	}
 
 	// Case 2: Single audio file, no cover image -> -vn
-	cfgSingle := MuxerConfig{
-		AudioCodec: "aac",
-		Bitrate:    "64k",
-	}
+	cfgSingle := MuxerConfig{}
 	inputSingle := MuxInput{
 		AudioFiles: []string{"/tmp/single.mp3"},
 		OutputFile: "/tmp/single.m4b",
@@ -89,8 +84,8 @@ func TestMuxer_CLIArgumentGeneration(t *testing.T) {
 	if !strings.Contains(argsSingleStr, "-vn") {
 		t.Errorf("expected -vn for no-cover input: %s", argsSingleStr)
 	}
-	if !strings.Contains(argsSingleStr, "-c:a aac -b:a 64k") {
-		t.Errorf("missing default aac/64k flags: %s", argsSingleStr)
+	if !strings.Contains(argsSingleStr, "-c:a aac -b:a 128k") {
+		t.Errorf("missing default aac/128k flags: %s", argsSingleStr)
 	}
 }
 

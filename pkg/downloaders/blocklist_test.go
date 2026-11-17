@@ -106,7 +106,6 @@ func TestBlocklistManager_CheckByTitle(t *testing.T) {
 		t.Errorf("expected isBlocked=true for scene title match")
 	}
 
-
 	// 3. Case variation
 	upperTitle := "SYNTHETIC AUTHOR - SYNTHETIC BOOK BETA"
 	isBlocked, _, err = bm.IsBlocklisted(ctx, "", upperTitle)
@@ -256,9 +255,8 @@ func TestShouldDownload_Pipeline(t *testing.T) {
 	ctx := context.Background()
 
 	profile := QualityProfile{
-		AllowedLanguages:    []string{"en"},
-		AllowedFormats:      []string{"epub", "m4b"},
-		MinAudioBitrateKbps: 64,
+		AllowedLanguages: []string{"en"},
+		AllowedFormats:   []string{"epub", "m4b"},
 	}
 
 	// 1. Blocklisted release by hash
@@ -309,7 +307,7 @@ func TestShouldDownload_Pipeline(t *testing.T) {
 		t.Errorf("expected shouldDl=false for foreign language [FR], reason: %s", reason)
 	}
 
-	// 4. Rejected by quality profile (low bitrate)
+	// 4. Existing M4B is accepted regardless of bitrate for passthrough
 	cand4 := ReleaseCandidate{
 		Title:       "Synthetic Audio Release",
 		Format:      "m4b",
@@ -320,8 +318,8 @@ func TestShouldDownload_Pipeline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ShouldDownload failed: %v", err)
 	}
-	if shouldDl {
-		t.Errorf("expected shouldDl=false for low bitrate audio, reason: %s", reason)
+	if !shouldDl {
+		t.Errorf("expected shouldDl=true for M4B passthrough, reason: %s", reason)
 	}
 
 	// 5. Rejected by quality profile (unsupported format)

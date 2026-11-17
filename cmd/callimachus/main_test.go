@@ -90,13 +90,15 @@ func TestServer_StartupHealthAndShutdown(t *testing.T) {
 
 	baseURL := "http://" + srv.Addr()
 	noRedirectClient := &http.Client{
+		// Avoid pooled connections racing graceful shutdown's idle-connection scan.
+		Transport: &http.Transport{DisableKeepAlives: true},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
 
 	// 1. Verify /healthz endpoint
-	resp, err := http.Get(baseURL + "/healthz")
+	resp, err := noRedirectClient.Get(baseURL + "/healthz")
 	if err != nil {
 		t.Fatalf("GET /healthz failed: %v", err)
 	}
@@ -115,7 +117,7 @@ func TestServer_StartupHealthAndShutdown(t *testing.T) {
 	}
 
 	// 2. Verify /api/health endpoint
-	apiHealthResp, err := http.Get(baseURL + "/api/health")
+	apiHealthResp, err := noRedirectClient.Get(baseURL + "/api/health")
 	if err != nil {
 		t.Fatalf("GET /api/health failed: %v", err)
 	}
@@ -290,6 +292,7 @@ func TestServer_FallbackHTMLWhenDistEmpty(t *testing.T) {
 
 	baseURL := "http://" + srv.Addr()
 	noRedirectClient := &http.Client{
+		Transport: &http.Transport{DisableKeepAlives: true},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -419,6 +422,7 @@ func TestServer_OIDCAndAuthWiring(t *testing.T) {
 
 	// 1. Visiting web root "/" without a session redirects to /api/auth/oidc/login -> OIDC provider
 	noRedirectClient := &http.Client{
+		Transport: &http.Transport{DisableKeepAlives: true},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -474,7 +478,7 @@ func TestServer_OIDCAndAuthWiring(t *testing.T) {
 
 	// 3. Verify fallback password authentication and authenticated SSE stream
 	loginBody := strings.NewReader(`{"password":"supersecretfallback"}`)
-	loginResp, err := http.Post(baseURL+"/api/auth/login", "application/json", loginBody)
+	loginResp, err := noRedirectClient.Post(baseURL+"/api/auth/login", "application/json", loginBody)
 	if err != nil {
 		t.Fatalf("POST /api/auth/login failed: %v", err)
 	}
@@ -567,6 +571,11 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 		t.Fatalf("GET /api/settings leaked raw prowlarr API key in response")
 	}
 
+	for _, removed := range []string{"audioMinBitrateKbps", "audioTargetBitrateKbps", "audio_min_bitrate_kbps", "audio_target_bitrate_kbps"} {
+		if strings.Contains(rec.Body.String(), removed) {
+			t.Errorf("GET /api/settings exposes removed setting %s", removed)
+		}
+	}
 	var got APISettingsResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode GET /api/settings: %v", err)
@@ -588,15 +597,12 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 	if ov := got.Overrides["prowlarr_url"]; !ov.IsOverridden || ov.OverriddenBy != "CALLIMACHUS_PROWLARR_URL" {
 		t.Errorf("overrides[prowlarr_url] = %+v, want IsOverridden=true OverriddenBy=CALLIMACHUS_PROWLARR_URL", ov)
 	}
-	if ov := got.Overrides["audio_min_bitrate_kbps"]; ov.IsOverridden || ov.EnvVar != "CALLIMACHUS_AUDIO_MIN_BITRATE_KBPS" {
-		t.Errorf("overrides[audio_min_bitrate_kbps] = %+v, want IsOverridden=false", ov)
-	}
 
 	// 4. Authenticated PUT /api/settings persists non-overridden fields and protects overridden ones
 	putBody := `{
 		"library": {"rootPath": "/ui/attempted-override", "stagingPollInterval": "10s"},
 		"prowlarr": {"url": "http://ui-attempted:9696"},
-		"qualityProfile": {"audioMinBitrateKbps": 96, "allowedFormats": ["EPUB", "M4B", "MP3"], "maxFileSizeMb": 1024}
+		"qualityProfile": {"allowedFormats": ["EPUB", "M4B", "MP3"], "maxFileSizeMb": 1024}
 	}`
 	putReq := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(putBody))
 	putReq.Header.Set("Content-Type", "application/json")
@@ -626,9 +632,6 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 	// Non-overridden fields persisted
 	if updated.Library.StagingPollInterval != "10s" {
 		t.Errorf("after PUT, StagingPollInterval = %q, want 10s", updated.Library.StagingPollInterval)
-	}
-	if updated.QualityProfile.AudioMinBitrateKbps != 96 {
-		t.Errorf("after PUT, AudioMinBitrateKbps = %d, want 96", updated.QualityProfile.AudioMinBitrateKbps)
 	}
 	if len(updated.QualityProfile.AllowedFormats) != 3 {
 		t.Errorf("after PUT, AllowedFormats = %v, want 3 entries", updated.QualityProfile.AllowedFormats)
@@ -721,7 +724,8 @@ func TestServer_EnvOnlyAuth_IgnoresDatabaseAndFailsSafely(t *testing.T) {
 	baseURL := "http://" + srv.Addr()
 
 	// OIDC login must report not configured (400) rather than using DB rows
-	oidcResp, err := http.Get(baseURL + "/api/auth/oidc/login")
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	oidcResp, err := client.Get(baseURL + "/api/auth/oidc/login")
 	if err != nil {
 		t.Fatalf("GET /api/auth/oidc/login failed: %v", err)
 	}
@@ -731,7 +735,7 @@ func TestServer_EnvOnlyAuth_IgnoresDatabaseAndFailsSafely(t *testing.T) {
 	}
 
 	// Fallback login with DB-seeded admin_password must be rejected (401 unauthorized because fallbackAuth is disabled)
-	loginResp, err := http.Post(baseURL+"/api/auth/login", "application/json", strings.NewReader(`{"password":"legacy-db-password"}`))
+	loginResp, err := client.Post(baseURL+"/api/auth/login", "application/json", strings.NewReader(`{"password":"legacy-db-password"}`))
 	if err != nil {
 		t.Fatalf("POST /api/auth/login failed: %v", err)
 	}
@@ -770,9 +774,10 @@ func TestServer_SettingsAPI_RejectsAuthSettingsAndDoesNotExposeAuth(t *testing.T
 	cookie := createTestSessionCookie(t, srv, "admin-lockdown", "adminlock", auth.RoleAdmin)
 
 	// 1. GET /api/settings must not expose authSettings or OIDC keys
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	getReq, _ := http.NewRequest(http.MethodGet, baseURL+"/api/settings", nil)
 	getReq.AddCookie(cookie)
-	getResp, err := http.DefaultClient.Do(getReq)
+	getResp, err := client.Do(getReq)
 	if err != nil {
 		t.Fatalf("GET /api/settings failed: %v", err)
 	}
@@ -802,7 +807,7 @@ func TestServer_SettingsAPI_RejectsAuthSettingsAndDoesNotExposeAuth(t *testing.T
 		req, _ := http.NewRequest(http.MethodPut, baseURL+"/api/settings", strings.NewReader(payload))
 		req.Header.Set("Content-Type", "application/json")
 		req.AddCookie(cookie)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("PUT /api/settings failed: %v", err)
 		}
@@ -816,7 +821,7 @@ func TestServer_SettingsAPI_RejectsAuthSettingsAndDoesNotExposeAuth(t *testing.T
 	postAuthReq, _ := http.NewRequest(http.MethodPost, baseURL+"/api/settings", strings.NewReader(`{"authSettings":{"oidcEnabled":true}}`))
 	postAuthReq.Header.Set("Content-Type", "application/json")
 	postAuthReq.AddCookie(cookie)
-	postAuthResp, err := http.DefaultClient.Do(postAuthReq)
+	postAuthResp, err := client.Do(postAuthReq)
 	if err != nil {
 		t.Fatalf("POST /api/settings (auth) failed: %v", err)
 	}
@@ -828,7 +833,7 @@ func TestServer_SettingsAPI_RejectsAuthSettingsAndDoesNotExposeAuth(t *testing.T
 	postReq, _ := http.NewRequest(http.MethodPost, baseURL+"/api/settings", strings.NewReader(`{"library":{"rootPath":"/books"}}`))
 	postReq.Header.Set("Content-Type", "application/json")
 	postReq.AddCookie(cookie)
-	postResp, err := http.DefaultClient.Do(postReq)
+	postResp, err := client.Do(postReq)
 	if err != nil {
 		t.Fatalf("POST /api/settings failed: %v", err)
 	}
@@ -857,5 +862,3 @@ func TestRun_RejectsRemovedAuthCLIFlags(t *testing.T) {
 		}
 	}
 }
-
-

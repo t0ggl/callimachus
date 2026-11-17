@@ -179,8 +179,6 @@ export interface QualityProfile {
   name: string;
   allowedLanguages: string[];
   allowedFormats: FormatType[];
-  audioMinBitrateKbps: number;
-  audioTargetBitrateKbps: number;
   preferSingleFileM4b: boolean;
   maxFileSizeMb: number;
 }

@@ -48,8 +48,8 @@ describe('RequestsView Component', () => {
     const authorInput = screen.getByTestId('request-author-input');
     const submitBtn = screen.getByTestId('submit-request-btn');
 
-    await user.type(titleInput, 'Test Fictional Title');
-    await user.type(authorInput, 'Test Fictional Author');
+    await user.type(titleInput, 'New Book');
+    await user.type(authorInput, 'An Author');
 
     // Select audiobook format
     await user.click(screen.getByTestId('request-format-audiobook'));
@@ -58,8 +58,8 @@ describe('RequestsView Component', () => {
     await user.click(submitBtn);
 
     expect(onSubmitRequestMock).toHaveBeenCalledWith(
-      'Test Fictional Title',
-      'Test Fictional Author',
+      'New Book',
+      'An Author',
       'audiobook',
       undefined
     );
@@ -109,7 +109,7 @@ describe('RequestsView Component', () => {
     expect(screen.getByText('Reject Book Request')).toBeInTheDocument();
     const reasonInput = screen.getByTestId('reject-reason-input');
 
-    await user.type(reasonInput, 'Audio master not available in target bitrate.');
+    await user.type(reasonInput, 'Unavailable');
 
     // Confirm rejection
     const confirmBtn = screen.getByTestId('confirm-reject-btn');
@@ -117,7 +117,7 @@ describe('RequestsView Component', () => {
 
     expect(onRejectRequestMock).toHaveBeenCalledWith(
       'req_401',
-      'Audio master not available in target bitrate.'
+      'Unavailable'
     );
 
     // Modal should close

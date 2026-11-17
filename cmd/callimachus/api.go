@@ -141,22 +141,20 @@ type APIProwlarrSettings struct {
 }
 
 type APIQualityProfileSettings struct {
-	ID                     string   `json:"id"`
-	Name                   string   `json:"name"`
-	AllowedLanguages       []string `json:"allowedLanguages"`
-	AllowedFormats         []string `json:"allowedFormats"`
-	AudioMinBitrateKbps    int      `json:"audioMinBitrateKbps"`
-	AudioTargetBitrateKbps int      `json:"audioTargetBitrateKbps"`
-	PreferSingleFileM4b    bool     `json:"preferSingleFileM4b"`
-	MaxFileSizeMb          int      `json:"maxFileSizeMb"`
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	AllowedLanguages    []string `json:"allowedLanguages"`
+	AllowedFormats      []string `json:"allowedFormats"`
+	PreferSingleFileM4b bool     `json:"preferSingleFileM4b"`
+	MaxFileSizeMb       int      `json:"maxFileSizeMb"`
 }
 
 type APISettingsResponse struct {
-	Indexers        []APIIndexerConfig           `json:"indexers"`
-	DownloadClients []APIDownloadClientConfig    `json:"downloadClients"`
-	Library         APILibrarySettings           `json:"library"`
-	Prowlarr        APIProwlarrSettings          `json:"prowlarr"`
-	QualityProfile  APIQualityProfileSettings    `json:"qualityProfile"`
+	Indexers        []APIIndexerConfig             `json:"indexers"`
+	DownloadClients []APIDownloadClientConfig      `json:"downloadClients"`
+	Library         APILibrarySettings             `json:"library"`
+	Prowlarr        APIProwlarrSettings            `json:"prowlarr"`
+	QualityProfile  APIQualityProfileSettings      `json:"qualityProfile"`
 	Overrides       map[string]config.OverrideInfo `json:"overrides"`
 }
 
@@ -172,13 +170,11 @@ type APISettingsUpdateRequest struct {
 		SyncInterval *string `json:"syncInterval"`
 	} `json:"prowlarr"`
 	QualityProfile *struct {
-		Name                   *string   `json:"name"`
-		AllowedLanguages       *[]string `json:"allowedLanguages"`
-		AllowedFormats         *[]string `json:"allowedFormats"`
-		AudioMinBitrateKbps    *int      `json:"audioMinBitrateKbps"`
-		AudioTargetBitrateKbps *int      `json:"audioTargetBitrateKbps"`
-		PreferSingleFileM4b    *bool     `json:"preferSingleFileM4b"`
-		MaxFileSizeMb          *int      `json:"maxFileSizeMb"`
+		Name                *string   `json:"name"`
+		AllowedLanguages    *[]string `json:"allowedLanguages"`
+		AllowedFormats      *[]string `json:"allowedFormats"`
+		PreferSingleFileM4b *bool     `json:"preferSingleFileM4b"`
+		MaxFileSizeMb       *int      `json:"maxFileSizeMb"`
 	} `json:"qualityProfile"`
 }
 
@@ -453,14 +449,12 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 
 	// Quality Profile
 	resp.QualityProfile = APIQualityProfileSettings{
-		ID:                     "default",
-		Name:                   cfg.QualityProfileName,
-		AllowedLanguages:       cfg.AllowedLanguages,
-		AllowedFormats:         cfg.AllowedFormats,
-		AudioMinBitrateKbps:    cfg.AudioMinBitrateKbps,
-		AudioTargetBitrateKbps: cfg.AudioTargetBitrateKbps,
-		PreferSingleFileM4b:    cfg.PreferSingleFileM4B,
-		MaxFileSizeMb:          cfg.MaxFileSizeMB,
+		ID:                  "default",
+		Name:                cfg.QualityProfileName,
+		AllowedLanguages:    cfg.AllowedLanguages,
+		AllowedFormats:      cfg.AllowedFormats,
+		PreferSingleFileM4b: cfg.PreferSingleFileM4B,
+		MaxFileSizeMb:       cfg.MaxFileSizeMB,
 	}
 
 	if s.db != nil {
@@ -606,12 +600,6 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.QualityProfile.AllowedFormats != nil {
 			updates[config.KeyAllowedFormats] = strings.Join(*req.QualityProfile.AllowedFormats, ",")
-		}
-		if req.QualityProfile.AudioMinBitrateKbps != nil {
-			updates[config.KeyAudioMinBitrateKbps] = strconv.Itoa(*req.QualityProfile.AudioMinBitrateKbps)
-		}
-		if req.QualityProfile.AudioTargetBitrateKbps != nil {
-			updates[config.KeyAudioTargetBitrateKbps] = strconv.Itoa(*req.QualityProfile.AudioTargetBitrateKbps)
 		}
 		if req.QualityProfile.PreferSingleFileM4b != nil {
 			updates[config.KeyPreferSingleFileM4B] = strconv.FormatBool(*req.QualityProfile.PreferSingleFileM4b)

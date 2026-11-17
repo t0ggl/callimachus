@@ -427,7 +427,7 @@ CREATE INDEX idx_user_requests_user ON user_requests(user_id);
 
 -- 15. Settings (Key-Value Application Configuration)
 CREATE TABLE settings (
-    key TEXT PRIMARY KEY,                      -- e.g. 'library.path', 'transcoder.bitrate', 'oidc.issuer'
+    key TEXT PRIMARY KEY,                      -- e.g. 'library_root', 'prowlarr_url', 'allowed_formats'
     value TEXT NOT NULL,                       -- String or JSON payload
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -559,7 +559,7 @@ flowchart TD
 
 ### 6.2 Quality & Language Profiles
 - **Language Filtering:** Strictly enforces ISO-639-1 language matching (default `en`). Rejects non-target languages based on title regex (e.g. `[FR]`, `GERMAN`, `SPANISH`) and Torznab language tags.
-- **Audio Cutoffs:** Rejects audiobooks below quality thresholds (e.g. `< 64kbps`), preferring pristine M4B releases over low-bitrate rips.
+- **Audio Conversion:** Converts non-M4B audio to fixed 128 kbps AAC. Single M4B downloads retain their original audio streams and chapters during metadata tagging; bitrate is not configurable.
 
 ### 6.3 Release Blocklist
 - Permanent tracking in the `blocklist` table by normalized 40-character info-hash and title.

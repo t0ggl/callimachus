@@ -26,12 +26,11 @@ var DefaultAllowedFormats = []string{"epub", "azw3", "pdf", "m4b", "mp3"}
 
 // QualityProfile defines rules for filtering discovered media releases.
 type QualityProfile struct {
-	AllowedLanguages    []string
-	AllowedFormats      []string
-	MinAudioBitrateKbps int
-	PreferSingleM4B     bool
-	MaxFileSizeMB       int
-	RejectPatterns      []*regexp.Regexp
+	AllowedLanguages []string
+	AllowedFormats   []string
+	PreferSingleM4B  bool
+	MaxFileSizeMB    int
+	RejectPatterns   []*regexp.Regexp
 }
 
 // ReleaseCandidate represents a candidate release evaluated for acquisition.
@@ -49,10 +48,9 @@ type ReleaseCandidate struct {
 // DefaultQualityProfile returns a QualityProfile initialized with standard defaults.
 func DefaultQualityProfile() QualityProfile {
 	return QualityProfile{
-		AllowedLanguages:    DefaultAllowedLanguages,
-		AllowedFormats:      DefaultAllowedFormats,
-		MinAudioBitrateKbps: 64,
-		PreferSingleM4B:     true,
+		AllowedLanguages: DefaultAllowedLanguages,
+		AllowedFormats:   DefaultAllowedFormats,
+		PreferSingleM4B:  true,
 	}
 }
 
@@ -222,20 +220,7 @@ func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string)
 		}
 	}
 
-	// 4. Evaluate Audio Bitrate
-	bitrate := release.BitrateKbps
-	if bitrate == 0 && release.Title != "" {
-		parsed := metadata.ParseRelease(release.Title)
-		bitrate = parsed.BitrateKbps
-	}
-
-	if isAudioRelease(release, format) && bitrate > 0 && p.MinAudioBitrateKbps > 0 {
-		if bitrate < p.MinAudioBitrateKbps {
-			return false, fmt.Sprintf("audio bitrate %dkbps below minimum %dkbps", bitrate, p.MinAudioBitrateKbps)
-		}
-	}
-
-	// 5. Evaluate Max File Size
+	// 4. Evaluate Max File Size
 	if p.MaxFileSizeMB > 0 && release.Size > 0 {
 		maxBytes := int64(p.MaxFileSizeMB) * 1024 * 1024
 		if release.Size > maxBytes {
@@ -249,22 +234,6 @@ func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string)
 // EvaluateRelease package-level wrapper for profile.EvaluateRelease.
 func EvaluateRelease(profile QualityProfile, release ReleaseCandidate) (bool, string) {
 	return profile.EvaluateRelease(release)
-}
-
-func isAudioRelease(release ReleaseCandidate, format string) bool {
-	if release.IsAudio {
-		return true
-	}
-	switch format {
-	case "m4b", "mp3", "flac", "aac", "ogg", "opus", "m4a", "wma", "wav":
-		return true
-	}
-	for _, c := range release.Categories {
-		if c == CategoryAudioRoot || c == CategoryAudioAudiobook {
-			return true
-		}
-	}
-	return false
 }
 
 // ShouldDownload coordinates blocklist and quality profile evaluations.

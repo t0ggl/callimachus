@@ -2,8 +2,12 @@ package transcoder
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -221,8 +225,6 @@ func TestWorker_EndToEndMultiStage(t *testing.T) {
 	worker := NewWorker(q, mockRunner, WorkerConfig{
 		WorkerID:      "test-mock-worker-2",
 		WorkDir:       filepath.Join(tempDir, "work"),
-		AudioCodec:    "aac",
-		Bitrate:       "64k",
 		OnStageChange: onStageChange,
 	})
 
@@ -320,5 +322,101 @@ func TestWorker_FailureHandling(t *testing.T) {
 	}
 	if failedJob.Attempts != 1 {
 		t.Errorf("expected attempts 1, got %d", failedJob.Attempts)
+	}
+}
+
+// All subprocesses are mocked: M4B tagging may remux, but must never encode.
+func TestWorker_FixedEncodingAndM4BPassthrough(t *testing.T) {
+	for _, ext := range []string{".mp3", ".flac", ".m4b", ".M4B"} {
+		t.Run(ext, func(t *testing.T) {
+			q, _ := setupTestQueueDB(t)
+			ctx := context.Background()
+			// Paths can contain flag substrings, including UUID segments like "-ac".
+			dir := filepath.Join(t.TempDir(), "job-ac123")
+			sourceDir := filepath.Join(dir, "download")
+			if err := os.MkdirAll(sourceDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			parts := 2
+			passthrough := strings.EqualFold(ext, ".m4b")
+			if passthrough {
+				parts = 1
+			}
+			for i := 0; i < parts; i++ {
+				if err := os.WriteFile(filepath.Join(sourceDir, fmt.Sprintf("%02d%s", i, ext)), []byte("source"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runner := NewMockRunner()
+			runner.SetDefaultHandler(func(_ context.Context, opt RunOptions) error {
+				t.Fatalf("unexpected subprocess: %s", opt.Name)
+				return nil
+			})
+			runner.RegisterHandler("ffprobe", func(_ context.Context, opt RunOptions) error {
+				_, err := io.WriteString(opt.Stdout, `{"streams":[{"codec_type":"audio","codec_name":"aac","duration":"10"}],"format":{"duration":"10"}}`)
+				return err
+			})
+			muxCalls := 0
+			runner.RegisterHandler("ffmpeg", func(_ context.Context, opt RunOptions) error {
+				muxCalls++
+				args := strings.Join(opt.Args, " ")
+				if passthrough {
+					for _, flag := range []string{"-c:a copy", "-map_chapters 0", "-map_metadata 0", "-map 0:v? -c:v copy"} {
+						if !strings.Contains(args, flag) {
+							t.Errorf("missing %s: %s", flag, args)
+						}
+					}
+					for _, flag := range []string{"-b:a", "-ar", "-ac", "concat"} {
+						if slices.Contains(opt.Args, flag) {
+							t.Errorf("unexpected %s in passthrough: %s", flag, args)
+						}
+					}
+					for _, arg := range opt.Args {
+						if filepath.Base(arg) == "metadata.txt" {
+							t.Errorf("unexpected metadata file in passthrough: %s", args)
+						}
+					}
+				} else {
+					if !strings.Contains(args, "-c:a aac -b:a 128k") || !strings.Contains(args, "-f concat") {
+						t.Errorf("expected multipart AAC 128k conversion: %s", args)
+					}
+				}
+				return os.WriteFile(opt.Args[len(opt.Args)-1], []byte("published"), 0644)
+			})
+			target := filepath.Join(dir, "Author", "Book (2026)", "Book (2026) - Author.m4b")
+			var stages []string
+			worker := NewWorker(q, runner, WorkerConfig{
+				WorkerID: "fixed-audio-test", WorkDir: filepath.Join(dir, "work"),
+				SampleRate: 22050, Channels: 1,
+				OnStageChange: func(stage string, _ float64) { stages = append(stages, stage) },
+			})
+			item, err := q.Enqueue(ctx, "synth-ed-1", sourceDir, target, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := worker.RunOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if muxCalls != 1 {
+				t.Fatalf("expected one tagging/conversion command, got %d", muxCalls)
+			}
+			for _, stage := range stages {
+				if passthrough && stage == StageEncoding {
+					t.Error("M4B entered encoding stage")
+				}
+			}
+			final, err := q.GetJob(ctx, item.ID)
+			if err != nil || final.Status != StatusCompleted {
+				t.Fatalf("job not completed: %+v, %v", final, err)
+			}
+			data, err := os.ReadFile(target)
+			if err != nil || string(data) != "published" {
+				t.Fatalf("canonical output missing: %q, %v", data, err)
+			}
+			entries, err := os.ReadDir(sourceDir)
+			if err != nil || len(entries) != parts {
+				t.Fatalf("source files were changed: %v", err)
+			}
+		})
 	}
 }

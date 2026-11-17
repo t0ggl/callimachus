@@ -13,8 +13,6 @@ import (
 
 // MuxerConfig holds encoding configuration for FFmpeg.
 type MuxerConfig struct {
-	AudioCodec string // Audio codec (e.g. "aac" or "libfdk_aac", default "aac")
-	Bitrate    string // Target bitrate (e.g. "64k", "128k", default "64k")
 	SampleRate int    // Target sample rate (e.g. 44100, 0 = keep source)
 	Channels   int    // Target channel count (e.g. 1=mono, 2=stereo, 0 = keep source)
 	TempDir    string // Temporary directory for staging
@@ -39,12 +37,6 @@ type Muxer struct {
 func NewMuxer(runner CommandRunner, cfg MuxerConfig) *Muxer {
 	if runner == nil {
 		runner = NewRealRunner()
-	}
-	if cfg.AudioCodec == "" {
-		cfg.AudioCodec = "aac"
-	}
-	if cfg.Bitrate == "" {
-		cfg.Bitrate = "64k"
 	}
 	return &Muxer{
 		runner: runner,
@@ -91,6 +83,8 @@ func BuildFFmpegArgs(cfg MuxerConfig, input MuxInput, concatListPath string) []s
 	// Metadata mapping
 	if metaIdx >= 0 {
 		args = append(args, "-map_metadata", fmt.Sprintf("%d", metaIdx))
+	} else if isM4BPassthrough(input.AudioFiles) {
+		args = append(args, "-map_metadata", "0")
 	}
 
 	// Cover image mapping & disposition
@@ -98,28 +92,23 @@ func BuildFFmpegArgs(cfg MuxerConfig, input MuxInput, concatListPath string) []s
 		args = append(args, "-map", fmt.Sprintf("%d:v", coverIdx))
 		args = append(args, "-disposition:v:0", "attached_pic")
 		args = append(args, "-c:v", "copy")
+	} else if isM4BPassthrough(input.AudioFiles) {
+		args = append(args, "-map", "0:v?", "-c:v", "copy")
 	} else {
 		args = append(args, "-vn")
 	}
 
-	// Audio encoding flags
-	codec := cfg.AudioCodec
-	if codec == "" {
-		codec = "aac"
-	}
-	args = append(args, "-c:a", codec)
-
-	bitrate := cfg.Bitrate
-	if bitrate == "" {
-		bitrate = "64k"
-	}
-	args = append(args, "-b:a", bitrate)
-
-	if cfg.SampleRate > 0 {
-		args = append(args, "-ar", fmt.Sprintf("%d", cfg.SampleRate))
-	}
-	if cfg.Channels > 0 {
-		args = append(args, "-ac", fmt.Sprintf("%d", cfg.Channels))
+	// A single M4B only needs tagging/remuxing; never alter its audio.
+	if isM4BPassthrough(input.AudioFiles) {
+		args = append(args, "-c:a", "copy", "-map_chapters", "0")
+	} else {
+		args = append(args, "-c:a", "aac", "-b:a", "128k")
+		if cfg.SampleRate > 0 {
+			args = append(args, "-ar", fmt.Sprintf("%d", cfg.SampleRate))
+		}
+		if cfg.Channels > 0 {
+			args = append(args, "-ac", fmt.Sprintf("%d", cfg.Channels))
+		}
 	}
 
 	// Explicit metadata flags if present
@@ -334,4 +323,9 @@ func (m *Muxer) Mux(ctx context.Context, input MuxInput, totalDurationMs float64
 	}
 
 	return nil
+}
+
+// isM4BPassthrough excludes multipart inputs, which still need conversion.
+func isM4BPassthrough(files []string) bool {
+	return len(files) == 1 && strings.EqualFold(filepath.Ext(files[0]), ".m4b")
 }

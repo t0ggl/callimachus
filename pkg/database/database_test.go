@@ -571,3 +571,31 @@ func TestConcurrentReadsDuringActiveWriteTransaction(t *testing.T) {
 		t.Errorf("expected 21 settings after commit, got %d", finalCount)
 	}
 }
+
+func TestMigrationRemoveAudioBitrateSettings(t *testing.T) {
+	db, _ := openMigratedTestDB(t)
+	ctx := context.Background()
+	// Simulate upgrading an existing installation with saved bitrate values.
+	if _, err := db.ExecContext(ctx, `
+  DELETE FROM schema_migrations WHERE version = '0003_remove_audio_bitrate_settings.sql';
+  INSERT INTO settings (key, value) VALUES
+   ('audio_min_bitrate_kbps', '32'), ('audio_target_bitrate_kbps', '64'),
+   ('worker_bitrate', '96k'), ('library_root', '/books');
+ `); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM settings").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("expected only unrelated setting to remain, got %d", count)
+	}
+	var root string
+	if err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = 'library_root'").Scan(&root); err != nil || root != "/books" {
+		t.Fatalf("unrelated setting changed: %q, %v", root, err)
+	}
+}

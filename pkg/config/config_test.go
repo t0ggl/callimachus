@@ -11,13 +11,12 @@ import (
 
 func TestEnvVarName(t *testing.T) {
 	cases := map[string]string{
-		"library_root":            "CALLIMACHUS_LIBRARY_ROOT",
-		"prowlarr_url":            "CALLIMACHUS_PROWLARR_URL",
-		"prowlarr_api_key":        "CALLIMACHUS_PROWLARR_API_KEY",
-		"max_file_size_mb":        "CALLIMACHUS_MAX_FILE_SIZE_MB",
-		"allowed_formats":         "CALLIMACHUS_ALLOWED_FORMATS",
-		"audio_min_bitrate_kbps":  "CALLIMACHUS_AUDIO_MIN_BITRATE_KBPS",
-		"oidc.issuer-url":         "CALLIMACHUS_OIDC_ISSUER_URL",
+		"library_root":             "CALLIMACHUS_LIBRARY_ROOT",
+		"prowlarr_url":             "CALLIMACHUS_PROWLARR_URL",
+		"prowlarr_api_key":         "CALLIMACHUS_PROWLARR_API_KEY",
+		"max_file_size_mb":         "CALLIMACHUS_MAX_FILE_SIZE_MB",
+		"allowed_formats":          "CALLIMACHUS_ALLOWED_FORMATS",
+		"oidc.issuer-url":          "CALLIMACHUS_OIDC_ISSUER_URL",
 		"  session_timeout_hours ": "CALLIMACHUS_SESSION_TIMEOUT_HOURS",
 	}
 	for input, want := range cases {
@@ -112,9 +111,8 @@ func TestAllRegisteredSettings_AutoEnvOverridePrecedence(t *testing.T) {
 	if !reflect.DeepEqual(s.AllowedLanguages, []string{"env1", "env2"}) {
 		t.Errorf("AllowedLanguages = %v, want [env1 env2]", s.AllowedLanguages)
 	}
-	if s.AudioMinBitrateKbps != 777 || s.AudioTargetBitrateKbps != 777 || s.MaxFileSizeMB != 777 {
-		t.Errorf("unexpected int values: min=%d target=%d maxSize=%d",
-			s.AudioMinBitrateKbps, s.AudioTargetBitrateKbps, s.MaxFileSizeMB)
+	if s.MaxFileSizeMB != 777 {
+		t.Errorf("MaxFileSizeMB = %d, want 777", s.MaxFileSizeMB)
 	}
 	if !s.PreferSingleFileM4B {
 		t.Errorf("expected boolean env override true, got preferM4B=%v", s.PreferSingleFileM4B)
@@ -131,8 +129,7 @@ func TestLoad_DatabaseAndDefaultFallbackWhenEnvUnset(t *testing.T) {
 		('library_root', '/mnt/audiobooks'),
 		('prowlarr_url', 'http://prowlarr.local:9696/'),
 		('allowed_formats', '["EPUB","PDF"]'),
-		('max_file_size_mb', '4096'),
-		('audio_min_bitrate_kbps', '64')
+		('max_file_size_mb', '4096')
 	`)
 	if err != nil {
 		t.Fatalf("insert settings: %v", err)
@@ -156,13 +153,6 @@ func TestLoad_DatabaseAndDefaultFallbackWhenEnvUnset(t *testing.T) {
 	if s.MaxFileSizeMB != 4096 {
 		t.Errorf("MaxFileSizeMB = %d, want 4096", s.MaxFileSizeMB)
 	}
-	if s.AudioMinBitrateKbps != 64 {
-		t.Errorf("AudioMinBitrateKbps = %d, want 64", s.AudioMinBitrateKbps)
-	}
-	// Default fallback for unset DB row
-	if s.AudioTargetBitrateKbps != 64 {
-		t.Errorf("AudioTargetBitrateKbps = %d, want 64 default", s.AudioTargetBitrateKbps)
-	}
 	if resolved.Overrides[KeyLibraryRoot].IsOverridden {
 		t.Errorf("expected library_root IsOverridden=false when env var unset")
 	}
@@ -175,9 +165,9 @@ func TestSaveNonOverridden_ProtectsEnvOverriddenKeys(t *testing.T) {
 	t.Setenv("CALLIMACHUS_PROWLARR_URL", "http://env-prowlarr:9696")
 
 	resolved, err := SaveNonOverridden(ctx, db, map[string]string{
-		KeyProwlarrURL:   "http://attempted-db-overwrite:9696",
-		KeyLibraryRoot:   "/data/library",
-		KeyMaxFileSizeMB: "1536",
+		KeyProwlarrURL:    "http://attempted-db-overwrite:9696",
+		KeyLibraryRoot:    "/data/library",
+		KeyMaxFileSizeMB:  "1536",
 		KeyAllowedFormats: "EPUB,M4B,MP3",
 	}, Overrides{})
 	if err != nil {

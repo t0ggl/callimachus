@@ -26,8 +26,6 @@ const baseQuality: QualityProfile = {
   name: 'Standard Audiobook',
   allowedLanguages: ['en'],
   allowedFormats: ['EPUB', 'M4B'],
-  audioMinBitrateKbps: 32,
-  audioTargetBitrateKbps: 64,
   preferSingleFileM4b: true,
   maxFileSizeMb: 4096,
 };
@@ -103,7 +101,8 @@ describe('SettingsView Environment Overrides', () => {
       'Managed via environment variable CALLIMACHUS_MAX_FILE_SIZE_MB and cannot be modified here.'
     );
     expect(screen.getByRole('button', { name: 'EPUB' })).toBeDisabled();
-    expect(screen.getByLabelText('Audio Min Bitrate (kbps)')).toBeEnabled();
+    expect(screen.queryByLabelText('Audio Min Bitrate (kbps)')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Audio Target Bitrate (kbps)')).not.toBeInTheDocument();
   });
 
   it('saves only non-overridden settings and omits authSettings from payload', async () => {
@@ -130,7 +129,8 @@ describe('SettingsView Environment Overrides', () => {
 
     // Edit a non-overridden field on Quality tab
     await user.click(screen.getByTestId('tab-settings-quality'));
-    await user.selectOptions(screen.getByLabelText('Audio Min Bitrate (kbps)'), '64');
+    expect(screen.queryByLabelText('Audio Min Bitrate (kbps)')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Audio Target Bitrate (kbps)')).not.toBeInTheDocument();
 
     // Save
     await user.click(screen.getByTestId('save-settings-btn'));
@@ -149,7 +149,8 @@ describe('SettingsView Environment Overrides', () => {
     });
     expect(payload.prowlarr.url).toBeUndefined();
 
-    expect(payload.qualityProfile.audioMinBitrateKbps).toBe(64);
+    expect(payload.qualityProfile).not.toHaveProperty('audioMinBitrateKbps');
+    expect(payload.qualityProfile).not.toHaveProperty('audioTargetBitrateKbps');
     expect(payload.qualityProfile.maxFileSizeMb).toBeUndefined();
     expect(payload.qualityProfile.allowedFormats).toBeUndefined();
 

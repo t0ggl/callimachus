@@ -19,19 +19,17 @@ import (
 // Every setting's environment variable is automatically derived via
 // EnvVarName(key) -> "CALLIMACHUS_" + strings.ToUpper(key).
 const (
-	KeyLibraryRoot            = "library_root"
-	KeyProwlarrURL            = "prowlarr_url"
-	KeyProwlarrAPIKey         = "prowlarr_api_key"
-	KeyProwlarrSyncInterval   = "prowlarr_sync_interval"
-	KeyIndexerSyncInterval    = "indexer_sync_interval"
-	KeyStagingPollInterval    = "staging_poll_interval"
-	KeyQualityProfileName     = "quality_profile_name"
-	KeyAllowedLanguages       = "allowed_languages"
-	KeyAllowedFormats         = "allowed_formats"
-	KeyAudioMinBitrateKbps    = "audio_min_bitrate_kbps"
-	KeyAudioTargetBitrateKbps = "audio_target_bitrate_kbps"
-	KeyPreferSingleFileM4B    = "prefer_single_file_m4b"
-	KeyMaxFileSizeMB          = "max_file_size_mb"
+	KeyLibraryRoot          = "library_root"
+	KeyProwlarrURL          = "prowlarr_url"
+	KeyProwlarrAPIKey       = "prowlarr_api_key"
+	KeyProwlarrSyncInterval = "prowlarr_sync_interval"
+	KeyIndexerSyncInterval  = "indexer_sync_interval"
+	KeyStagingPollInterval  = "staging_poll_interval"
+	KeyQualityProfileName   = "quality_profile_name"
+	KeyAllowedLanguages     = "allowed_languages"
+	KeyAllowedFormats       = "allowed_formats"
+	KeyPreferSingleFileM4B  = "prefer_single_file_m4b"
+	KeyMaxFileSizeMB        = "max_file_size_mb"
 )
 
 // Bootstrap setting keys (resolved before opening SQLite).
@@ -78,8 +76,6 @@ var registry = []SettingSpec{
 	{Key: KeyQualityProfileName, Kind: KindString, Default: "Standard Audiobook"},
 	{Key: KeyAllowedLanguages, Kind: KindStringList, Default: "en"},
 	{Key: KeyAllowedFormats, Kind: KindStringList, Default: "EPUB,M4B"},
-	{Key: KeyAudioMinBitrateKbps, Kind: KindInt, Default: "32"},
-	{Key: KeyAudioTargetBitrateKbps, Kind: KindInt, Default: "64"},
 	{Key: KeyPreferSingleFileM4B, Kind: KindBool, Default: "true"},
 	{Key: KeyMaxFileSizeMB, Kind: KindInt, Default: "2048"},
 }
@@ -114,19 +110,17 @@ type OverrideInfo struct {
 
 // Settings holds the effective resolved application configuration.
 type Settings struct {
-	LibraryRoot            string        `json:"libraryRoot"`
-	ProwlarrURL            string        `json:"prowlarrUrl"`
-	ProwlarrAPIKey         string        `json:"-"`
-	ProwlarrSyncInterval   time.Duration `json:"prowlarrSyncInterval"`
-	IndexerSyncInterval    time.Duration `json:"indexerSyncInterval"`
-	StagingPollInterval    time.Duration `json:"stagingPollInterval"`
-	QualityProfileName     string        `json:"qualityProfileName"`
-	AllowedLanguages       []string      `json:"allowedLanguages"`
-	AllowedFormats         []string      `json:"allowedFormats"`
-	AudioMinBitrateKbps    int           `json:"audioMinBitrateKbps"`
-	AudioTargetBitrateKbps int           `json:"audioTargetBitrateKbps"`
-	PreferSingleFileM4B    bool          `json:"preferSingleFileM4b"`
-	MaxFileSizeMB          int           `json:"maxFileSizeMb"`
+	LibraryRoot          string        `json:"libraryRoot"`
+	ProwlarrURL          string        `json:"prowlarrUrl"`
+	ProwlarrAPIKey       string        `json:"-"`
+	ProwlarrSyncInterval time.Duration `json:"prowlarrSyncInterval"`
+	IndexerSyncInterval  time.Duration `json:"indexerSyncInterval"`
+	StagingPollInterval  time.Duration `json:"stagingPollInterval"`
+	QualityProfileName   string        `json:"qualityProfileName"`
+	AllowedLanguages     []string      `json:"allowedLanguages"`
+	AllowedFormats       []string      `json:"allowedFormats"`
+	PreferSingleFileM4B  bool          `json:"preferSingleFileM4b"`
+	MaxFileSizeMB        int           `json:"maxFileSizeMb"`
 }
 
 // ToQualityProfile builds a downloaders.QualityProfile from the resolved settings.
@@ -141,11 +135,10 @@ func (s Settings) ToQualityProfile() downloaders.QualityProfile {
 		fmts[i] = strings.ToLower(strings.TrimSpace(f))
 	}
 	return downloaders.QualityProfile{
-		AllowedLanguages:    langs,
-		AllowedFormats:      fmts,
-		MinAudioBitrateKbps: s.AudioMinBitrateKbps,
-		PreferSingleM4B:     s.PreferSingleFileM4B,
-		MaxFileSizeMB:       s.MaxFileSizeMB,
+		AllowedLanguages: langs,
+		AllowedFormats:   fmts,
+		PreferSingleM4B:  s.PreferSingleFileM4B,
+		MaxFileSizeMB:    s.MaxFileSizeMB,
 	}
 }
 
@@ -438,19 +431,17 @@ func callerOverridesMap(c Overrides) map[string]string {
 
 func materializeSettings(vals map[string]string) Settings {
 	return Settings{
-		LibraryRoot:            vals[KeyLibraryRoot],
-		ProwlarrURL:            strings.TrimRight(vals[KeyProwlarrURL], "/"),
-		ProwlarrAPIKey:         vals[KeyProwlarrAPIKey],
-		ProwlarrSyncInterval:   parseDurationOr(vals[KeyProwlarrSyncInterval], time.Hour),
-		IndexerSyncInterval:    parseDurationOr(vals[KeyIndexerSyncInterval], 15*time.Minute),
-		StagingPollInterval:    parseDurationOr(vals[KeyStagingPollInterval], 5*time.Second),
-		QualityProfileName:     orDefault(vals[KeyQualityProfileName], "Standard Audiobook"),
-		AllowedLanguages:       parseLowerList(vals[KeyAllowedLanguages], []string{"en"}),
-		AllowedFormats:         parseUpperList(vals[KeyAllowedFormats], []string{"EPUB", "M4B"}),
-		AudioMinBitrateKbps:    parseIntOr(vals[KeyAudioMinBitrateKbps], 32),
-		AudioTargetBitrateKbps: parseIntOr(vals[KeyAudioTargetBitrateKbps], 64),
-		PreferSingleFileM4B:    parseBoolOr(vals[KeyPreferSingleFileM4B], true),
-		MaxFileSizeMB:          parseNonNegIntOr(vals[KeyMaxFileSizeMB], 2048),
+		LibraryRoot:          vals[KeyLibraryRoot],
+		ProwlarrURL:          strings.TrimRight(vals[KeyProwlarrURL], "/"),
+		ProwlarrAPIKey:       vals[KeyProwlarrAPIKey],
+		ProwlarrSyncInterval: parseDurationOr(vals[KeyProwlarrSyncInterval], time.Hour),
+		IndexerSyncInterval:  parseDurationOr(vals[KeyIndexerSyncInterval], 15*time.Minute),
+		StagingPollInterval:  parseDurationOr(vals[KeyStagingPollInterval], 5*time.Second),
+		QualityProfileName:   orDefault(vals[KeyQualityProfileName], "Standard Audiobook"),
+		AllowedLanguages:     parseLowerList(vals[KeyAllowedLanguages], []string{"en"}),
+		AllowedFormats:       parseUpperList(vals[KeyAllowedFormats], []string{"EPUB", "M4B"}),
+		PreferSingleFileM4B:  parseBoolOr(vals[KeyPreferSingleFileM4B], true),
+		MaxFileSizeMB:        parseNonNegIntOr(vals[KeyMaxFileSizeMB], 2048),
 	}
 }
 

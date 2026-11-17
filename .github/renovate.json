@@ -35,7 +35,8 @@
         "minor",
         "patch"
       ],
-      "groupName": "web devDependencies (non-major)"
+      "groupName": "web devDependencies (non-major)",
+      "minimumReleaseAge": "7 days"
     }
   ]
 }
