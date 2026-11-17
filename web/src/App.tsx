@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Layout, NavView } from './components/Layout';
 import { CatalogView } from './views/CatalogView';
 import { ActivityView } from './views/ActivityView';
-import { RequestsView } from './views/RequestsView';
+import { Acquisitions } from './components/Acquisitions';
 import { SettingsView } from './views/SettingsView';
 import { CommandPalette } from './components/CommandPalette';
 import { BookDetailModal } from './components/BookDetailModal';
@@ -288,12 +288,11 @@ export const App: React.FC = () => {
         return;
       }
 
-      // View switching shortcuts 1, 2, 3, 4
+      // View switching shortcuts 1, 2, 3
       if (!isInput && !isPaletteOpen && !selectedBook) {
         if (e.key === '1') setCurrentView('catalog');
         else if (e.key === '2') setCurrentView('activity');
-        else if (e.key === '3') setCurrentView('requests');
-        else if (e.key === '4') setCurrentView('settings');
+        else if (e.key === '3') setCurrentView('settings');
       }
     };
 
@@ -366,6 +365,8 @@ export const App: React.FC = () => {
         )}
 
         {currentView === 'activity' && (
+          <div className="space-y-6">
+          <Acquisitions requests={requests} />
           <ActivityView
             transcodeJobs={transcodeJobs}
             downloads={downloads}
@@ -374,14 +375,7 @@ export const App: React.FC = () => {
             onUpdateJobStatus={handleUpdateJobStatus}
             onUpdateDownloadStatus={handleUpdateDownloadStatus}
           />
-        )}
-
-        {currentView === 'requests' && (
-          <RequestsView
-            requests={requests}
-            onOpenBook={(id) => setSelectedBook(books.find((b) => b.id === id) ?? null)}
-            onSubmitRequest={handleSubmitRequest}
-          />
+          </div>
         )}
 
         {currentView === 'settings' && (
@@ -399,6 +393,8 @@ export const App: React.FC = () => {
 
       {/* Global Command Palette */}
       <CommandPalette
+        onSubmitRequest={handleSubmitRequest}
+        onOpenBook={(id) => { setSelectedBook(books.find((b) => b.id === id) ?? null); setIsPaletteOpen(false); }}
         isOpen={isPaletteOpen}
         onClose={() => setIsPaletteOpen(false)}
         books={books}

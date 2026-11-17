@@ -120,12 +120,10 @@ describe('App Integration', () => {
       expect(screen.getByTestId('tab-activity-transcode')).toBeInTheDocument();
     });
 
-    // Navigate to Requests view
-    const requestsNav = screen.getByTestId('nav-requests');
-    await user.click(requestsNav);
-
-    expect(screen.getByRole('heading', { name: /Find a book/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', {name:'Search'})).toBeInTheDocument();
+    expect(screen.queryByTestId('nav-requests')).not.toBeInTheDocument();
+    expect(screen.queryByText('Request Portal')).not.toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Acquisitions' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /Manual Search.*for Iron Sigil/ })).toBeInTheDocument();
 
     // Navigate to Settings view
     const settingsNav = screen.getByTestId('nav-settings');
