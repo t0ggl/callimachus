@@ -20,7 +20,7 @@ func TestPruneLogs(t *testing.T) {
 	exec(`INSERT INTO authors(id,name,sort_name) VALUES('a','Author','Author')`)
 	exec(`INSERT INTO books(id,author_id,title) VALUES('b','a','Book')`)
 	exec(`INSERT INTO book_editions(id,book_id,format) VALUES('e','b','M4B')`)
-	for _, table := range []string{"transcode_queue", "download_queue"} {
+	for _, table := range []string{"conversion_queue", "download_queue"} {
 		for _, days := range []int{10, 29, 31, 60} {
 			for _, status := range []string{"pending", "processing", "queued", "completed", "failed", "cancelled"} {
 				id := fmt.Sprintf("%s-%d-%s", table, days, status)
@@ -55,7 +55,7 @@ func TestPruneLogs(t *testing.T) {
 	if err := reader.QueryRow(`SELECT count(*) FROM download_queue`).Scan(&snapshot); err != nil || snapshot != before {
 		t.Fatalf("reader: %d %v", snapshot, err)
 	}
-	for _, table := range []string{"transcode_queue", "download_queue"} {
+	for _, table := range []string{"conversion_queue", "download_queue"} {
 		for _, days := range []int{10, 29, 31, 60} {
 			for _, status := range []string{"pending", "processing", "queued", "completed", "failed", "cancelled"} {
 				id := fmt.Sprintf("%s-%d-%s", table, days, status)
@@ -129,7 +129,7 @@ func TestPruneLogsRollsBackRelatedCandidates(t *testing.T) {
 
 func TestRetentionTimestampIndexes(t *testing.T) {
 	db := testutil.NewTestDB(t)
-	for _, table := range []string{"transcode_queue", "download_queue"} {
+	for _, table := range []string{"conversion_queue", "download_queue"} {
 		rows, err := db.Query(`EXPLAIN QUERY PLAN SELECT id FROM `+table+` WHERE status IN ('completed','failed','cancelled') AND updated_at < ? AND created_at < ? LIMIT 500`, "2026-01-01", "2026-01-01")
 		if err != nil {
 			t.Fatal(err)

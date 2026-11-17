@@ -1,4 +1,4 @@
-package transcoder
+package converter
 
 import (
 	"bytes"
@@ -38,7 +38,7 @@ func NewRealRunner() *RealRunner {
 // Run executes a command using os/exec and returns its standard output.
 func (r *RealRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- non-shell subprocess wrapper for mockable transcoder execution
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- non-shell subprocess wrapper for mockable converter execution
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -55,7 +55,7 @@ func (r *RealRunner) Run(ctx context.Context, name string, args ...string) ([]by
 
 // RunCustom executes a command with specified options using os/exec.
 func (r *RealRunner) RunCustom(ctx context.Context, opt RunOptions) error {
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- non-shell subprocess wrapper for mockable transcoder execution
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- non-shell subprocess wrapper for mockable converter execution
 	cmd := exec.CommandContext(ctx, opt.Name, opt.Args...)
 	if opt.Dir != "" {
 		cmd.Dir = opt.Dir

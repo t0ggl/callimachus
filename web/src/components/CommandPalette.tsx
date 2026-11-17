@@ -77,7 +77,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       {
         id: 'nav_catalog',
         type: 'navigation',
-        title: 'Library & Catalog',
+        title: 'Library',
         subtitle: 'View all books, authors, and series',
         badge: 'View',
         action: () => {
@@ -88,8 +88,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       {
         id: 'nav_activity',
         type: 'navigation',
-        title: 'Activity & Queues',
-        subtitle: 'Monitor transcode & download pipelines',
+        title: 'Activity',
+        subtitle: 'Monitor conversion & download pipelines',
         badge: 'View',
         action: () => {
           onNavigate('activity');

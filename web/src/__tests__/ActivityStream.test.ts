@@ -1,7 +1,7 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useActivityStream } from '../hooks/useActivityStream';
-import { testTranscodeJobs, testDownloads } from './testFixtures';
+import { testConversionJobs, testDownloads } from './testFixtures';
 
 // Mock EventSource
 class MockEventSource {
@@ -66,7 +66,7 @@ describe('useActivityStream Hook', () => {
     const { result } = renderHook(() =>
       useActivityStream({
         url: '/api/events',
-        initialTranscodeJobs: testTranscodeJobs,
+        initialConversionJobs: testConversionJobs,
         initialDownloads: testDownloads,
       })
     );
@@ -74,7 +74,7 @@ describe('useActivityStream Hook', () => {
     expect(MockEventSource.instances.length).toBe(1);
     const es = MockEventSource.instances[0];
     expect(es.url).toBe('/api/events');
-    expect(es.listeners['transcode_progress']).toBeDefined();
+    expect(es.listeners['conversion_progress']).toBeDefined();
     expect(es.listeners['download_progress']).toBeDefined();
 
     // Trigger onopen
@@ -85,11 +85,25 @@ describe('useActivityStream Hook', () => {
     expect(result.current.connectionStatus).toBe('connected');
   });
 
-  it('updates transcode job state when receiving transcode_progress event', () => {
+  it('replaces the full activity snapshot as editions enter and leave the queue', () => {
+    const { result } = renderHook(() => useActivityStream());
+    act(() => MockEventSource.instances[0].dispatchEvent('activity_snapshot', {
+      conversionJobs: testConversionJobs, downloads: testDownloads, logs: [],
+    }));
+    expect(result.current.conversionJobs).toEqual(testConversionJobs);
+    expect(result.current.downloads).toEqual(testDownloads);
+    act(() => MockEventSource.instances[0].dispatchEvent('activity_snapshot', {
+      conversionJobs: [], downloads: [], logs: [],
+    }));
+    expect(result.current.conversionJobs).toEqual([]);
+    expect(result.current.downloads).toEqual([]);
+  });
+
+  it('updates conversion job state when receiving conversion_progress event', () => {
     const { result } = renderHook(() =>
       useActivityStream({
         url: '/api/events',
-        initialTranscodeJobs: testTranscodeJobs,
+        initialConversionJobs: testConversionJobs,
         initialDownloads: testDownloads,
       })
     );
@@ -98,7 +112,7 @@ describe('useActivityStream Hook', () => {
 
     // Dispatch update for job tc_101
     act(() => {
-      es.dispatchEvent('transcode_progress', {
+      es.dispatchEvent('conversion_progress', {
         id: 'tc_101',
         progressPercent: 94.2,
         stage: 'muxing',
@@ -107,7 +121,7 @@ describe('useActivityStream Hook', () => {
       });
     });
 
-    const updatedJob = result.current.transcodeJobs.find((j) => j.id === 'tc_101');
+    const updatedJob = result.current.conversionJobs.find((j) => j.id === 'tc_101');
     expect(updatedJob).toBeDefined();
     expect(updatedJob?.progressPercent).toBe(94.2);
     expect(updatedJob?.stage).toBe('muxing');
@@ -118,7 +132,7 @@ describe('useActivityStream Hook', () => {
     const { result } = renderHook(() =>
       useActivityStream({
         url: '/api/events',
-        initialTranscodeJobs: testTranscodeJobs,
+        initialConversionJobs: testConversionJobs,
         initialDownloads: testDownloads,
       })
     );
@@ -143,24 +157,24 @@ describe('useActivityStream Hook', () => {
     expect(updatedDl?.etaSeconds).toBe(1);
   });
 
-  it('handles manual transcode and download updates gracefully', () => {
+  it('handles manual conversion and download updates gracefully', () => {
     const { result } = renderHook(() =>
       useActivityStream({
         url: '/api/events',
-        initialTranscodeJobs: testTranscodeJobs,
+        initialConversionJobs: testConversionJobs,
         initialDownloads: testDownloads,
       })
     );
 
     act(() => {
-      result.current.handleTranscodeUpdate({
+      result.current.handleConversionUpdate({
         id: 'tc_101',
         status: 'completed',
         progressPercent: 100,
       });
     });
 
-    const job = result.current.transcodeJobs.find((j) => j.id === 'tc_101');
+    const job = result.current.conversionJobs.find((j) => j.id === 'tc_101');
     expect(job?.status).toBe('completed');
     expect(job?.progressPercent).toBe(100);
   });

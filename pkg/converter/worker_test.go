@@ -1,4 +1,4 @@
-package transcoder
+package converter
 
 import (
 	"context"
@@ -113,14 +113,14 @@ func TestWorker_EndToEndWithMockRunner(t *testing.T) {
 		t.Fatalf("expected job to be processed, got false")
 	}
 
-	// Verify stage progression: probing -> encoding -> muxing -> tagging -> moving -> completed
+	// Verify stage progression: preparing -> encoding -> muxing -> tagging -> moving -> completed
 	mu.Lock()
 	stages := append([]string(nil), stageHistory...)
 	mu.Unlock()
 
 	expectedStages := []string{
-		StageProbing,
-		StageEncoding,
+		StagePreparing,
+		StageConverting,
 		StageMuxing,
 		StageTagging,
 		StageMoving,
@@ -248,8 +248,8 @@ func TestWorker_EndToEndMultiStage(t *testing.T) {
 	mu.Unlock()
 
 	expectedStages := []string{
-		StageProbing,
-		StageEncoding,
+		StagePreparing,
+		StageConverting,
 		StageMuxing,
 		StageTagging,
 		StageMoving,
@@ -402,7 +402,7 @@ func TestWorker_FixedEncodingAndM4BPassthrough(t *testing.T) {
 				t.Fatalf("expected one tagging/conversion command, got %d", muxCalls)
 			}
 			for _, stage := range stages {
-				if passthrough && stage == StageEncoding {
+				if passthrough && stage == StageConverting {
 					t.Error("M4B entered encoding stage")
 				}
 			}

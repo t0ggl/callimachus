@@ -279,7 +279,7 @@ func TestShouldDownload_Pipeline(t *testing.T) {
 	}
 
 	// 2. Blocklisted release by title
-	_ = bm.Add(ctx, "", "Synthetic Poison Release", "malformed audio transcode")
+	_ = bm.Add(ctx, "", "Synthetic Poison Release", "malformed audio conversion")
 	cand2 := ReleaseCandidate{
 		Title:       "Synthetic Poison Release",
 		Format:      "m4b",

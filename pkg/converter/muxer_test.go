@@ -1,4 +1,4 @@
-package transcoder
+package converter
 
 import (
 	"context"

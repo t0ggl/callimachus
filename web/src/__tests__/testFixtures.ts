@@ -2,7 +2,7 @@ import {
   Author,
   Series,
   Book,
-  TranscodeJob,
+  ConversionJob,
   DownloadItem,
   BookRequest,
   UserProfile,
@@ -74,7 +74,7 @@ export const testBooks: Book[] = [
   },
 ];
 
-export const testTranscodeJobs: TranscodeJob[] = [
+export const testConversionJobs: ConversionJob[] = [
   {
     id: 'tc_101',
     bookId: 'book_1',
@@ -82,7 +82,7 @@ export const testTranscodeJobs: TranscodeJob[] = [
     authorName: 'Alden Thorne',
     sourceFilesCount: 32,
     targetFormat: 'M4B',
-    stage: 'encoding',
+    stage: 'converting',
     status: 'processing',
     progressPercent: 78.4,
     bitrateKbps: 64,

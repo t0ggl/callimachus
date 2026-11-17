@@ -90,7 +90,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
       {/* Top Header & Actions Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-800 pb-4">
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-white">Library & Catalog</h1>
+          <h1 className="text-xl font-bold tracking-tight text-white">Library</h1>
           <p className="text-xs text-zinc-400 mt-0.5">
             Organized book works, editions, series sequences, and media assets
           </p>

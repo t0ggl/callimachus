@@ -19,7 +19,7 @@ interface LayoutProps {
   onOpenPalette: () => void;
   user: UserProfile | null;
   activeDownloadsCount: number;
-  transcodingJobsCount: number;
+  convertingJobsCount: number;
   onLogout: () => void;
   children: React.ReactNode;
 }
@@ -30,11 +30,11 @@ export const Layout: React.FC<LayoutProps> = ({
   onOpenPalette,
   user,
   activeDownloadsCount,
-  transcodingJobsCount,
+  convertingJobsCount,
   onLogout,
   children,
 }) => {
-  const activeAcquisitionsCount = activeDownloadsCount + transcodingJobsCount;
+  const activeAcquisitionsCount = activeDownloadsCount + convertingJobsCount;
 
   const navItems = [
     {
@@ -81,7 +81,6 @@ export const Layout: React.FC<LayoutProps> = ({
                   v0.1
                 </span>
               </div>
-              <div className="text-[11px] text-zinc-400">Audiobooks & eBooks</div>
             </div>
           </div>
 
@@ -123,9 +122,9 @@ export const Layout: React.FC<LayoutProps> = ({
             <div className="flex items-center justify-between text-zinc-400">
               <span className="flex items-center gap-1.5">
                 <Zap className="w-3.5 h-3.5 text-amber-400" />
-                Transcode Queue
+                Converting
               </span>
-              <span className="font-mono text-zinc-300">{transcodingJobsCount} active</span>
+              <span className="font-mono text-zinc-300">{convertingJobsCount} active</span>
             </div>
             <div className="flex items-center justify-between text-zinc-400">
               <span className="flex items-center gap-1.5">
@@ -215,13 +214,7 @@ export const Layout: React.FC<LayoutProps> = ({
               </button>
             </div>
 
-            <div className="h-4 w-px bg-zinc-800" />
 
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-mono px-2 py-0.5 bg-emerald-950/60 text-emerald-400 border border-emerald-800/60 rounded-sm">
-                OPERATE MODE
-              </span>
-            </div>
           </div>
         </header>
 

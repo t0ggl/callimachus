@@ -1,4 +1,4 @@
-package transcoder
+package converter
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 	"github.com/t0ggl/callimachus/pkg/database"
 )
 
-// WorkerConfig holds configuration options for the transcoder worker instance.
+// WorkerConfig holds configuration options for the converter worker instance.
 type WorkerConfig struct {
 	WorkerID      string
 	PollInterval  time.Duration
@@ -24,7 +24,7 @@ type WorkerConfig struct {
 	OnStageChange func(stage string, percent float64)
 }
 
-// Worker executes single-job transcoder processing pipelines.
+// Worker executes single-job converter processing pipelines.
 type Worker struct {
 	queue  *Queue
 	runner CommandRunner
@@ -42,7 +42,7 @@ func NewWorker(queue *Queue, runner CommandRunner, cfg WorkerConfig) *Worker {
 		cfg.PollInterval = 1 * time.Second
 	}
 	if cfg.WorkDir == "" {
-		cfg.WorkDir = filepath.Join(os.TempDir(), "callimachus-transcoder")
+		cfg.WorkDir = filepath.Join(os.TempDir(), "callimachus-converter")
 	}
 
 	prober := NewProber(runner)
@@ -86,7 +86,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-// RunOnce attempts to lease and process strictly one pending transcode job.
+// RunOnce attempts to lease and process strictly one pending conversion job.
 // Returns true if a job was leased and processed, false if no pending jobs were available.
 func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	job, err := w.queue.LeaseJob(ctx, w.cfg.WorkerID)
@@ -118,13 +118,13 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// ProcessJob executes the end-to-end transcode pipeline for a single leased job:
+// ProcessJob executes the end-to-end conversion pipeline for a single leased job:
 // 1. Probing audio files and ordering
 // 2. Compiling FFMETADATA1 chapters
-// 3. Transcoding / muxing to temporary .m4b
+// 3. Converting / muxing to temporary .m4b
 // 4. Tagging
 // 5. Atomic move to canonical destination
-func (w *Worker) ProcessJob(ctx context.Context, job *database.TranscodeQueueItem) error {
+func (w *Worker) ProcessJob(ctx context.Context, job *database.ConversionQueueItem) error {
 	if job == nil {
 		return errors.New("cannot process nil job")
 	}
@@ -133,8 +133,8 @@ func (w *Worker) ProcessJob(ctx context.Context, job *database.TranscodeQueueIte
 		return w.processEbook(ctx, job)
 	}
 
-	// Step 1: Probing & Playlist ordering
-	w.reportStage(ctx, job.ID, StageProbing, 10.0)
+	// Step 1: Preparing & Playlist ordering
+	w.reportStage(ctx, job.ID, StagePreparing, 10.0)
 
 	audioFiles, err := ResolveAudioFiles(job.SourcePath)
 	if err != nil {
@@ -155,11 +155,11 @@ func (w *Worker) ProcessJob(ctx context.Context, job *database.TranscodeQueueIte
 	}
 	totalDurationMs := totalDuration * 1000.0
 
-	w.reportStage(ctx, job.ID, StageProbing, 20.0)
+	w.reportStage(ctx, job.ID, StagePreparing, 20.0)
 
 	// Step 2: Encoding / Chapter preparation
 	if !isM4BPassthrough(audioFiles) {
-		w.reportStage(ctx, job.ID, StageEncoding, 25.0)
+		w.reportStage(ctx, job.ID, StageConverting, 25.0)
 	}
 
 	jobWorkDir := filepath.Join(w.cfg.WorkDir, fmt.Sprintf("job-%s", job.ID))

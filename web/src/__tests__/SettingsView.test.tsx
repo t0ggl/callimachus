@@ -303,3 +303,8 @@ it('saves eBook conversion options and respects environment locks', async () => 
   expect(onSaveSettings.mock.calls.at(-1)?.[0].qualityProfile).not.toHaveProperty('convertEbooks');
   expect(onSaveSettings.mock.calls.at(-1)?.[0].qualityProfile).not.toHaveProperty('ebookTargetFormat');
 });
+
+it('never exposes local admin password indicators', () => {
+  render(<SettingsView indexers={[]} librarySettings={baseLibrary} prowlarrSettings={baseProwlarr} qualityProfile={baseQuality} />);
+  expect(screen.queryByText(/Argon2id|Configured & Encrypted|admin password|local password/i)).not.toBeInTheDocument();
+});

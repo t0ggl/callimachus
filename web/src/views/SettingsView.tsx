@@ -284,7 +284,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div>
           <h1 className="text-xl font-bold tracking-tight text-white">System Settings</h1>
           <p className="text-xs text-zinc-400 mt-0.5">
-            Configure external metadata indexers, library storage, and transcode quality profiles
+            Configure external metadata indexers, library storage, and conversion quality profiles
           </p>
         </div>
 
@@ -628,7 +628,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               Standard Library Quality Profile
             </h3>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Defines codec targets, file size limits, and accepted formats when evaluating and transcoding releases
+              Defines codec targets, file size limits, and accepted formats when evaluating and converting releases
             </p>
           </div>
 

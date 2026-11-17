@@ -3,13 +3,13 @@
 > **Document Version:** 1.0.0  
 > **Status:** Approved Architecture Baseline  
 > **Repository:** `t0ggl/callimachus`  
-> **Target Stack:** Go 1.23+ (Embedded SQLite / WAL), React 18+ / Vite / Tailwind CSS, Decoupled Audio Transcoder (FFmpeg)
+> **Target Stack:** Go 1.23+ (Embedded SQLite / WAL), React 18+ / Vite / Tailwind CSS, Decoupled Audio Converter (FFmpeg)
 
 ---
 
 ## 1. System Overview & Component Topology
 
-**Callimachus** is an automated cataloging, acquisition, curation, and library management daemon for eBooks and Audiobooks. Adopting the declarative management pattern of the `*arr` ecosystem, Callimachus operates as a continuous state machine orchestrating search indexers, torrent/Usenet download clients, metadata providers, file parsers, transcode workers, and media servers.
+**Callimachus** is an automated cataloging, acquisition, curation, and library management daemon for eBooks and Audiobooks. Adopting the declarative management pattern of the `*arr` ecosystem, Callimachus operates as a continuous state machine orchestrating search indexers, torrent/Usenet download clients, metadata providers, file parsers, conversion workers, and media servers.
 
 ```mermaid
 flowchart TD
@@ -26,13 +26,13 @@ flowchart TD
         MetadataEngine["Metadata Pipeline (pkg/metadata)"]
         EPUBEngine["EPUB Engine (pkg/epub)"]
         DownloaderMgr["Download Coordinator (pkg/downloaders)"]
-        QueueMgr["Transcode Queue Coordinator"]
+        QueueMgr["Conversion Queue Coordinator"]
         DB[(Embedded SQLite WAL DB pkg/database)]
     end
 
-    subgraph TranscodeWorker ["Decoupled Transcoder (cmd/callimachus-worker)"]
+    subgraph ConversionWorker ["Decoupled Converter (cmd/callimachus-worker)"]
         WorkerQueue["FIFO Queue Consumer (Single Job)"]
-        FFmpegRunner["FFmpeg AAC Encoder & Muxer (pkg/transcoder)"]
+        FFmpegRunner["FFmpeg AAC Encoder & Muxer (pkg/converter)"]
         ChapterGen["FFMETADATA1 Chapter Generator"]
         TagInject["Cover & Tag Injector"]
         AtomicMover["Atomic Library Publisher"]
@@ -49,7 +49,7 @@ flowchart TD
 
     WebUI -->|HTTP / REST| API
     API --> SSEStream
-    SSEStream -->|Live Queue / Transcode Progress| WebUI
+    SSEStream -->|Live Queue / Conversion Progress| WebUI
     API --> AuthMid
     AuthMid --> OIDC
     API --> CatalogMgr
@@ -72,7 +72,7 @@ flowchart TD
 ```
 
 ### 1.1 Architectural Guarantees
-1. **Decoupled Workloads:** Heavy audio transcoding CPU workloads run in a single-job FIFO worker (`callimachus-worker`), preventing transcode spikes from starving HTTP request serving, indexer polling, or file indexing.
+1. **Decoupled Workloads:** Heavy audio converting CPU workloads run in a single-job FIFO worker (`callimachus-worker`), preventing conversion spikes from starving HTTP request serving, indexer polling, or file indexing.
 2. **Single Database with WAL Mode:** A single embedded SQLite database (`callimachus.db`) with Write-Ahead Logging (`WAL`) provides concurrent read access and safe serialized writes with zero external database server operational overhead.
 3. **Zero-Symlink Storage Contract:** Audiobooks and eBooks reside under identical basenames in canonical author/series hierarchies. Audiobooks are never symlinked or aliased.
 4. **Deterministic Metadata Isolation:** The primary ingestion and match pipeline relies entirely on deterministic scoring (Levenshtein, token overlap, Audnexus ASIN lookup, Hardcover IDs). AI disambiguation is an isolated, opt-in fallback that can be completely disabled without degradation.
@@ -89,7 +89,7 @@ callimachus/
 ├── cmd/
 │   ├── callimachus/                  # Main daemon: HTTP server, background schedulers, embedded worker runner
 │   │   └── main.go
-│   └── callimachus-worker/           # Standalone single-job transcode worker binary (for multi-container/node scale)
+│   └── callimachus-worker/           # Standalone single-job conversion worker binary (for multi-container/node scale)
 │       └── main.go
 ├── pkg/
 │   ├── catalog/                      # Book, author, series, narrator domain aggregates & library scanner
@@ -115,13 +115,13 @@ callimachus/
 │   │   ├── writer.go                 # Safe ZIP repacker (guarantees mimetype first, uncompressed)
 │   │   ├── calibre_cli.go            # Optional fallback driver for host `ebook-meta` CLI
 │   │   └── sidecar.go                # Calibre companion .opf and cover .jpg generator
-│   ├── transcoder/                   # Audio processing, M3U ordering, chapter generator, FFmpeg runner
+│   ├── converter/                   # Audio processing, M3U ordering, chapter generator, FFmpeg runner
 │   │   ├── queue.go                  # SQLite-backed FIFO queue lease and progress reporter
-│   │   ├── worker.go                 # Transcoder worker execution loop
+│   │   ├── worker.go                 # Converter worker execution loop
 │   │   ├── probe.go                  # ffprobe audio analyzer (duration, codecs, sample rate, bitrate)
 │   │   ├── playlist.go               # Multi-part sorting & M3U parsing
 │   │   ├── chapters.go               # FFMETADATA1 chapter file compiler
-│   │   └── muxer.go                  # FFmpeg single-pass / two-pass AAC transcode & M4B muxer
+│   │   └── muxer.go                  # FFmpeg single-pass / two-pass AAC conversion & M4B muxer
 │   ├── indexers/                     # Prowlarr Torznab/Newznab indexer client & search query engine
 │   │   ├── client.go                 # Torznab XML client
 │   │   ├── prowlarr.go               # Prowlarr API integration
@@ -303,15 +303,15 @@ CREATE TABLE media_assets (
 CREATE INDEX idx_media_assets_edition ON media_assets(edition_id);
 CREATE UNIQUE INDEX idx_media_assets_path ON media_assets(file_path);
 
--- 8. Transcode Queue (Decoupled Single-Worker FIFO Pipeline)
-CREATE TABLE transcode_queue (
+-- 8. Conversion Queue (Decoupled Single-Worker FIFO Pipeline)
+CREATE TABLE conversion_queue (
     id TEXT PRIMARY KEY,                       -- UUIDv4 / ULID
     edition_id TEXT NOT NULL REFERENCES book_editions(id) ON DELETE CASCADE,
     source_path TEXT NOT NULL,                 -- Source staging directory or file
     target_path TEXT NOT NULL,                 -- Target canonical .m4b path
     status TEXT NOT NULL DEFAULT 'pending',    -- 'pending', 'processing', 'completed', 'failed', 'cancelled'
     progress_percent REAL NOT NULL DEFAULT 0.0,
-    current_stage TEXT NOT NULL DEFAULT 'queued', -- 'probing', 'encoding', 'muxing', 'tagging', 'moving'
+    current_stage TEXT NOT NULL DEFAULT 'queued', -- 'preparing', 'converting', 'muxing', 'tagging', 'moving'
     error_message TEXT,
     worker_id TEXT,                            -- ID of worker leasing the job
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -322,7 +322,7 @@ CREATE TABLE transcode_queue (
     started_at TIMESTAMP,
     completed_at TIMESTAMP
 );
-CREATE INDEX idx_transcode_status_priority ON transcode_queue(status, priority DESC, created_at ASC);
+CREATE INDEX idx_conversion_status_priority ON conversion_queue(status, priority DESC, created_at ASC);
 
 -- 9. Indexers (Prowlarr Torznab / Newznab sources)
 CREATE TABLE indexers (
@@ -458,16 +458,16 @@ flowchart TD
 
 ---
 
-## 5. Decoupled Audio Transcoder Worker
+## 5. Decoupled Audio Converter Worker
 
 ### 5.1 Worker Architecture & Concurrency Isolation
-Audiobook transcoding (converting multi-part MP3 files with inconsistent bitrates, missing ID3 tags, and dirty chapter headers into a unified `.m4b` file) is compute-heavy.
+Audiobook converting (converting multi-part MP3 files with inconsistent bitrates, missing ID3 tags, and dirty chapter headers into a unified `.m4b` file) is compute-heavy.
 
 ```mermaid
 sequenceDiagram
     participant Main as Callimachus Daemon
-    participant DB as SQLite transcode_queue
-    participant Worker as Transcoder Worker (pkg/transcoder)
+    participant DB as SQLite conversion_queue
+    participant Worker as Converter Worker (pkg/converter)
     participant FFmpeg as FFmpeg / ffprobe Subprocess
     participant Storage as Canonical Library Storage
 
@@ -479,9 +479,9 @@ sequenceDiagram
     Worker->>DB: UPDATE status='processing', worker_id, started_at
     Worker->>Worker: 1. Parse M3U / Sort MP3 Parts Numerically
     Worker->>FFmpeg: 2. ffprobe all parts (verify audio streams, get durations)
-    Worker->>DB: UPDATE progress_percent=15.0, stage='probing'
+    Worker->>DB: UPDATE progress_percent=15.0, stage='preparing'
     Worker->>Worker: 3. Compile FFMETADATA1 chapter definitions
-    Worker->>FFmpeg: 4. Transcode to AAC & Mux to temp .m4b (ffmpeg concat)
+    Worker->>FFmpeg: 4. Conversion to AAC & Mux to temp .m4b (ffmpeg concat)
     FFmpeg-->>Worker: Progress output (frame/time parsed for progress bar)
     Worker->>DB: UPDATE progress_percent=85.0, stage='muxing'
     Worker->>FFmpeg: 5. Inject Cover Art & MP4 metadata tags
@@ -490,11 +490,11 @@ sequenceDiagram
     Worker->>Main: Emit SSE Completion Event
 ```
 
-### 5.2 Transcode Pipeline Stages
+### 5.2 Conversion Pipeline Stages
 1. **Ordering & Playlist Resolution:**
    - Evaluates `.m3u` / `.m3u8` playlists if present in the source folder.
    - If absent, executes natural numerical sorting on filenames (handling `Part 01`, `Disc 1 Track 05`, `01_prologue.mp3`).
-2. **Audio Stream Probing & Duration Mapping:**
+2. **Audio Preparation & Duration Mapping:**
    - Runs `ffprobe -v quiet -print_format json -show_format -show_streams` on each file.
    - Verifies stream integrity, calculates cumulative duration offsets, and creates discrete chapter intervals matching the original tracks if explicit chapter timestamps are missing.
 3. **FFMETADATA1 Chapter Injection:**
@@ -515,12 +515,12 @@ sequenceDiagram
      title=Prologue: To Kill
      ```
 4. **Muxing & Tag Injection:**
-   - Invokes FFmpeg to concatenate and transcode to AAC-LC at the target quality profile (e.g. 64kbps/128kbps mono/stereo):
+   - Invokes FFmpeg to concatenate and conversion to AAC-LC at the target quality profile (e.g. 64kbps/128kbps mono/stereo):
      ```bash
      ffmpeg -y -f concat -safe 0 -i concat_list.txt        -i metadata.txt -i cover.jpg        -map 0:a -map_metadata 1 -map 2:v        -c:a aac -b:a 64k -vn -disposition:v:0 attached_pic        -f mp4 "temp_output.m4b"
      ```
 5. **Atomic Move & Library Contract:**
-   - The transcode output is written to a temporary sibling file (`.m4b.part`) and atomically renamed (`os.Rename`) to `{Title} ({Year}) - {Author}.m4b`.
+   - The conversion output is written to a temporary sibling file (`.m4b.part`) and atomically renamed (`os.Rename`) to `{Title} ({Year}) - {Author}.m4b`.
    - **Contract:** Never symlink audiobooks. The filename strictly matches the eBook basename.
 
 ---
@@ -543,7 +543,7 @@ flowchart TD
     Confidence -- No --> ManualReview["Queue for Manual UI Approval"]
     Confidence -- Yes --> Downloader["Dispatch via Prowlarr<br/>(configured download client)"]
     Downloader --> Staging["Download Client Completes in Shared Staging"]
-    Staging --> ImportEngine["Import Engine: EPUB Parser / Audio Transcoder"]
+    Staging --> ImportEngine["Import Engine: EPUB Parser / Audio Converter"]
 ```
 
 ### 6.1 Prowlarr Torznab Client
@@ -557,7 +557,7 @@ flowchart TD
 
 ### 6.3 Release Blocklist
 - Permanent tracking in the `blocklist` table by normalized 40-character info-hash and title.
-- Any failed transcode, corrupt ZIP/RAR package, or user-rejected release is added to the blocklist to prevent redownload loops.
+- Any failed conversion, corrupt ZIP/RAR package, or user-rejected release is added to the blocklist to prevent redownload loops.
 
 ---
 
@@ -633,7 +633,7 @@ testdata/
    - **Zero live network calls** in `go test ./...`. Any attempted outbound network connection in unit tests immediately panics.
 2. **Sub-5-Second Test Execution:**
    - In-memory SQLite (`:memory:?_pragma=foreign_keys(1)`) for rapid database integration testing.
-   - Micro-audio fixtures (tiny 1-second silent MP3/AAC test vectors) to test FFmpeg probing, chapter parsing, and tagging in milliseconds.
+   - Micro-audio fixtures (tiny 1-second silent MP3/AAC test vectors) to test FFmpeg preparing, chapter parsing, and tagging in milliseconds.
 
 ---
 

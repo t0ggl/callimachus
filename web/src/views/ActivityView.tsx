@@ -1,391 +1,108 @@
 import React, { useState } from 'react';
-import {
-  Zap,
-  DownloadCloud,
-  FileCheck2,
-  Clock,
-  Gauge,
-  Radio,
-  Pause,
-  Play,
-  CheckCircle2,
-  AlertTriangle,
-  XCircle,
-  FileAudio,
-} from 'lucide-react';
-import { TranscodeJob, DownloadItem, ImportLog, TranscodeStage } from '../types';
+import { BookRequest, ConversionJob, DownloadItem, ImportLog } from '../types';
+import { ManualSearch } from '../components/ManualSearch';
 
 interface ActivityViewProps {
-  transcodeJobs: TranscodeJob[];
+  conversionJobs: ConversionJob[];
   downloads: DownloadItem[];
   logs: ImportLog[];
+  requests?: BookRequest[];
   connectionStatus: 'connected' | 'connecting' | 'disconnected';
-  onUpdateJobStatus?: (jobId: string, status: TranscodeJob['status']) => void;
-  onUpdateDownloadStatus?: (downloadId: string, status: DownloadItem['status']) => void;
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+const percent = (value: number) => Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+const duration = (seconds: number) => seconds > 0 ? `${Math.ceil(seconds / 60)} min` : 'Unavailable';
+
+interface ActivityItem {
+  id: string;
+  title: string;
+  format?: string;
+  phase: string;
+  detail?: string;
+  progress?: number;
+  eta?: number;
+  speed?: string;
+  error?: string;
+  requestId?: string;
 }
 
-function formatDuration(seconds: number): string {
-  if (seconds <= 0) return '0s';
-  const hrs = Math.floor(seconds / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  const secs = seconds % 60;
-  if (hrs > 0) return `${hrs}h ${mins}m`;
-  if (mins > 0) return `${mins}m ${secs}s`;
-  return `${secs}s`;
+// IDs, never title guesses, join the same edition across pipeline phases.
+export function activityItems({ conversionJobs, downloads, logs, requests = [] }: ActivityViewProps): ActivityItem[] {
+  const items = new Map<string, ActivityItem>();
+  const representedRequests = new Set(downloads.map(d => d.requestId).filter(Boolean));
+  for (const log of logs) {
+    const key = log.editionId || `log:${log.id}`;
+    if (!items.has(key)) items.set(key, {
+      id: key, title: log.itemName,
+      phase: log.status === 'error' ? 'Failed' : log.status === 'warning' ? 'Needs attention' : 'Completed',
+      detail: log.details, progress: log.status === 'success' ? 100 : undefined,
+      error: log.status === 'error' ? log.details : undefined,
+    });
+  }
+  for (const dl of downloads) {
+    const key = dl.editionId || `download:${dl.id}`;
+    if (items.has(key)) continue;
+    items.set(key, {
+      id: key, title: dl.title, format: dl.category === 'callimachus-ebooks' ? 'eBook' : 'Audiobook',
+      phase: dl.status === 'error' ? 'Failed' : dl.status.charAt(0).toUpperCase() + dl.status.slice(1),
+      detail: dl.status === 'importing' ? 'Organizing / Tagging' : undefined,
+      progress: dl.status === 'completed' ? 100 : dl.status === 'importing' ? 90 : percent(dl.progressPercent) * 0.5,
+      eta: dl.etaSeconds, speed: dl.downloadSpeedBps > 0 ? `${(dl.downloadSpeedBps / 1048576).toFixed(1)} MB/s` : undefined,
+      error: dl.errorMessage, requestId: dl.requestId,
+    });
+  }
+  const seenJobs = new Set<string>();
+  for (const job of conversionJobs) {
+    const key = job.editionId || `conversion:${job.id}`;
+    if (seenJobs.has(key)) continue;
+    seenJobs.add(key);
+    const importing = job.stage === 'moving' || job.stage === 'tagging';
+    const previous = items.get(key);
+    items.set(key, {
+      id: key, title: job.bookTitle || previous?.title || 'Untitled edition', format: job.targetFormat,
+      phase: job.status === 'completed' ? 'Completed' : job.status === 'failed' ? 'Failed' : job.status === 'processing' ? importing ? 'Importing' : 'Converting' : job.status === 'queued' ? 'Queued' : 'Paused',
+      detail: job.stage === 'preparing' ? 'Preparing' : importing ? job.stage === 'moving' ? 'Organizing' : 'Tagging' : job.stage === 'converting' ? 'Converting' : job.stage === 'muxing' ? 'Muxing' : undefined,
+      progress: job.status === 'completed' ? 100 : 50 + percent(job.progressPercent) * 0.5,
+      eta: job.etaSeconds, speed: job.bitrateKbps > 0 ? `${job.bitrateKbps} kbps` : undefined,
+      error: job.errorMessage, requestId: previous?.requestId,
+    });
+  }
+  for (const request of requests) {
+    if (!representedRequests.has(request.id)) items.set(`request:${request.id}`, {
+      id: `request:${request.id}`, title: request.title, format: request.requestType,
+      phase: request.status === 'available' ? 'Completed' : request.status === 'error' ? 'Failed' : request.status === 'searching' ? 'Searching' : 'Downloading',
+      progress: request.status === 'available' ? 100 : undefined, requestId: request.id,
+    });
+  }
+  return [...items.values()].sort((a, b) => Number(a.phase === 'Completed') - Number(b.phase === 'Completed'));
 }
 
-const STAGE_ORDER: TranscodeStage[] = ['probing', 'encoding', 'muxing', 'moving'];
-
-export const ActivityView: React.FC<ActivityViewProps> = ({
-  transcodeJobs,
-  downloads,
-  logs,
-  connectionStatus,
-  onUpdateJobStatus,
-  onUpdateDownloadStatus,
-}) => {
-  const [activeSection, setActiveSection] = useState<'transcode' | 'downloads' | 'history'>('transcode');
-
-  return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-800 pb-4">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight text-white flex items-center gap-2.5">
-            Activity & Queues
-            {/* Real-time SSE indicator */}
-            <span
-              className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-sm text-[11px] font-mono border ${
-                connectionStatus === 'connected'
-                  ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800/60'
-                  : connectionStatus === 'connecting'
-                  ? 'bg-amber-950/60 text-amber-400 border-amber-800/60 animate-pulse'
-                  : 'bg-zinc-800 text-zinc-400 border-zinc-700'
-              }`}
-            >
-              <Radio className="w-3 h-3" />
-              {connectionStatus === 'connected' ? 'SSE Live' : connectionStatus}
-            </span>
-          </h1>
-          <p className="text-xs text-zinc-400 mt-0.5">
-            Live audio and eBook conversion pipelines, active indexer downloads, and file ingestion logs
-          </p>
-        </div>
-
-        {/* Section Navigation Tabs */}
-        <div className="flex bg-zinc-900 border border-zinc-800 rounded-lg p-0.5 text-xs font-medium">
-          <button
-            onClick={() => setActiveSection('transcode')}
-            data-testid="tab-activity-transcode"
-            className={`px-3 py-1.5 rounded-md flex items-center gap-2 transition-colors ${
-              activeSection === 'transcode'
-                ? 'bg-zinc-800 text-white shadow-xs'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <Zap className="w-3.5 h-3.5 text-amber-400" />
-            Transcode Queue ({transcodeJobs.length})
-          </button>
-          <button
-            onClick={() => setActiveSection('downloads')}
-            data-testid="tab-activity-downloads"
-            className={`px-3 py-1.5 rounded-md flex items-center gap-2 transition-colors ${
-              activeSection === 'downloads'
-                ? 'bg-zinc-800 text-white shadow-xs'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <DownloadCloud className="w-3.5 h-3.5 text-cyan-400" />
-            Downloads ({downloads.length})
-          </button>
-          <button
-            onClick={() => setActiveSection('history')}
-            data-testid="tab-activity-history"
-            className={`px-3 py-1.5 rounded-md flex items-center gap-2 transition-colors ${
-              activeSection === 'history'
-                ? 'bg-zinc-800 text-white shadow-xs'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <FileCheck2 className="w-3.5 h-3.5 text-emerald-400" />
-            Import History
-          </button>
-        </div>
-      </div>
-
-      {/* SECTION 1: TRANSCODE QUEUE */}
-      {activeSection === 'transcode' && (
-        <div className="space-y-4">
-          {transcodeJobs.length === 0 ? (
-            <div className="py-16 text-center border border-dashed border-zinc-800 rounded-xl">
-              <Zap className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
-              <div className="text-sm font-medium text-zinc-400">Transcode queue is idle</div>
-              <div className="text-xs text-zinc-500 mt-1">
-                New multi-part audiobook jobs will appear here automatically.
-              </div>
+export const ActivityView: React.FC<ActivityViewProps> = (props) => {
+  const [manual, setManual] = useState<string | null>(null);
+  const items = activityItems(props);
+  return <section aria-label="Activity" className="space-y-4">
+    <h1 className="text-xl font-bold tracking-tight text-white border-b border-zinc-800 pb-4">Activity</h1>
+    {items.length === 0 ? <p className="py-12 text-center text-zinc-300">No activity yet. Books you add will appear here.</p> :
+      <ul aria-label="Book activity" className="divide-y divide-zinc-800">
+        {items.map(item => <li key={item.id} className="py-4 space-y-3" data-testid={`activity-${item.id}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 break-words"><h2 className="text-sm font-semibold text-zinc-100">{item.title}</h2>
+              <p className="text-sm text-zinc-300">{item.format} · {item.phase}{item.detail && ` · ${item.detail}`}</p>
             </div>
-          ) : (
-            transcodeJobs.map((job) => {
-              const stages: TranscodeStage[] = job.targetFormat === 'M4B' ? STAGE_ORDER : ['probing', 'encoding', 'tagging', 'moving'];
-              const currentStageIndex = stages.indexOf(job.stage);
-
-              return (
-                <div
-                  key={job.id}
-                  data-testid={`transcode-job-${job.id}`}
-                  className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4 shadow-xs"
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-                        <FileAudio className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <h3 className="text-sm font-bold text-zinc-100">{job.bookTitle}</h3>
-                          <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-sm bg-zinc-800 border border-zinc-700 text-zinc-300">
-                            {job.targetFormat}
-                          </span>
-                        </div>
-                        <p className="text-xs text-zinc-400 mt-0.5">
-                          {job.authorName} • {job.sourceFilesCount} source audio files
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono text-zinc-400">
-                        Status: <span className="text-zinc-200 capitalize font-semibold">{job.status}</span>
-                      </span>
-                      {onUpdateJobStatus && (
-                        <button
-                          onClick={() =>
-                            onUpdateJobStatus(
-                              job.id,
-                              job.status === 'processing' ? 'paused' : 'processing'
-                            )
-                          }
-                          className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-sm text-zinc-300 transition-colors"
-                          title={job.status === 'processing' ? 'Pause job' : 'Resume job'}
-                        >
-                          {job.status === 'processing' ? (
-                            <Pause className="w-3.5 h-3.5" />
-                          ) : (
-                            <Play className="w-3.5 h-3.5" />
-                          )}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Stage Progress Indicators */}
-                  <div className="grid grid-cols-4 gap-2 pt-1">
-                    {stages.map((stageName, sIdx) => {
-                      const isPast = sIdx < currentStageIndex;
-                      const isCurrent = sIdx === currentStageIndex;
-                      return (
-                        <div
-                          key={job.targetFormat !== 'M4B' && stageName === 'encoding' ? 'converting' : stageName}
-                          className={`text-center py-1.5 px-2 rounded-sm border text-xs font-mono font-medium uppercase tracking-wider transition-colors ${
-                            isPast
-                              ? 'bg-emerald-950/40 text-emerald-400 border-emerald-800/50'
-                              : isCurrent
-                              ? 'bg-amber-950/60 text-amber-300 border-amber-600/70 font-bold'
-                              : 'bg-zinc-950 text-zinc-500 border-zinc-800/80'
-                          }`}
-                        >
-                          {job.targetFormat !== 'M4B' && stageName === 'encoding' ? 'converting' : stageName}
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {job.errorMessage && <p role="alert" className="text-sm text-red-300">{job.errorMessage}</p>}
-                  {/* Progress Bar */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between text-xs font-mono">
-                      <span className="text-zinc-400">
-                        {job.stage.toUpperCase()}: {job.progressPercent.toFixed(1)}%
-                      </span>
-                      <div className="flex items-center gap-4 text-zinc-400">
-                        <span className="flex items-center gap-1">
-                          <Gauge className="w-3.5 h-3.5 text-zinc-500" />
-                          {job.bitrateKbps} kbps
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <Clock className="w-3.5 h-3.5 text-zinc-500" />
-                          ETA: {formatDuration(job.etaSeconds)}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="w-full bg-zinc-950 h-2.5 rounded-full overflow-hidden border border-zinc-800">
-                      <div
-                        data-testid={`transcode-progress-bar-${job.id}`}
-                        className="bg-amber-500 h-full transition-all duration-300 rounded-full"
-                        style={{ width: `${job.progressPercent}%` }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      )}
-
-      {/* SECTION 2: DOWNLOAD QUEUE */}
-      {activeSection === 'downloads' && (
-        <div className="space-y-4">
-          {downloads.length === 0 ? (
-            <div className="py-16 text-center border border-dashed border-zinc-800 rounded-xl">
-              <DownloadCloud className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
-              <div className="text-sm font-medium text-zinc-400">No active downloads</div>
-            </div>
-          ) : (
-            downloads.map((dl) => (
-              <div
-                key={dl.id}
-                data-testid={`download-item-${dl.id}`}
-                className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-3"
-              >
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div>
-                    <h3 className="text-sm font-bold text-zinc-100">{dl.title}</h3>
-                    <div className="flex items-center gap-2 mt-1 text-xs text-zinc-400">
-                      <span className="font-mono text-[10px] px-1.5 py-0.5 rounded-sm bg-zinc-800 border border-zinc-700 text-cyan-300">
-                        {dl.category}
-                      </span>
-                      <span>via {dl.clientType}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <span
-                      className={`text-xs font-mono font-medium px-2 py-0.5 rounded-sm border capitalize ${
-                        dl.status === 'downloading'
-                          ? 'bg-cyan-950/60 text-cyan-400 border-cyan-800/60'
-                          : dl.status === 'paused'
-                          ? 'bg-amber-950/60 text-amber-400 border-amber-800/60'
-                          : 'bg-emerald-950/60 text-emerald-400 border-emerald-800/60'
-                      }`}
-                    >
-                      {dl.status}
-                    </span>
-                    {onUpdateDownloadStatus && dl.status !== 'completed' && (
-                      <button
-                        onClick={() =>
-                          onUpdateDownloadStatus(
-                            dl.id,
-                            dl.status === 'downloading' ? 'paused' : 'downloading'
-                          )
-                        }
-                        className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-sm text-zinc-300 transition-colors"
-                      >
-                        {dl.status === 'downloading' ? (
-                          <Pause className="w-3.5 h-3.5" />
-                        ) : (
-                          <Play className="w-3.5 h-3.5" />
-                        )}
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Progress bar */}
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between text-xs font-mono text-zinc-400">
-                    <span>
-                      {dl.progressPercent.toFixed(1)}% • {formatBytes(dl.downloadedSizeBytes)} / {formatBytes(dl.totalSizeBytes)}
-                    </span>
-                    <div className="flex items-center gap-4">
-                      <span>{formatBytes(dl.downloadSpeedBps)}/s</span>
-                      <span>ETA: {formatDuration(dl.etaSeconds)}</span>
-                    </div>
-                  </div>
-                  <div className="w-full bg-zinc-950 h-2 rounded-full overflow-hidden border border-zinc-800">
-                    <div
-                      className="bg-cyan-500 h-full transition-all duration-300 rounded-full"
-                      style={{ width: `${dl.progressPercent}%` }}
-                    />
-                  </div>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      )}
-
-      {/* SECTION 3: IMPORT HISTORY LOG */}
-      {activeSection === 'history' && (
-        logs.length === 0 ? (
-          <div className="py-20 text-center border border-dashed border-zinc-800 rounded-xl">
-            <FileCheck2 className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
-            <div className="text-sm font-medium text-zinc-400">No import history yet</div>
-            <div className="text-xs text-zinc-500 mt-1">
-              Completed library imports and organizer actions will be logged here.
-            </div>
+            {item.requestId && <button type="button" onClick={() => setManual(item.requestId!)} className="text-sm text-blue-300 hover:underline focus-visible:outline-2 focus-visible:outline-blue-400">Manual Search<span className="sr-only"> for {item.title}</span></button>}
           </div>
-        ) : (
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-          <div className="px-4 py-3 border-b border-zinc-800 bg-zinc-950/50 flex items-center justify-between">
-            <h3 className="text-xs font-bold text-zinc-200 uppercase tracking-wider">
-              Post-Processing & Ingestion Audit Log
-            </h3>
-            <span className="text-[11px] font-mono text-zinc-500">{logs.length} entries</span>
-          </div>
-
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="border-b border-zinc-800 bg-zinc-950/30 text-zinc-400 font-medium">
-                <th className="py-2.5 px-4">Status</th>
-                <th className="py-2.5 px-4">Action</th>
-                <th className="py-2.5 px-4">Target Item</th>
-                <th className="py-2.5 px-4">Details</th>
-                <th className="py-2.5 px-4 text-right">Timestamp</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-800/60 font-mono text-[11px]">
-              {logs.map((log) => (
-                <tr key={log.id} className="hover:bg-zinc-800/40 text-zinc-300">
-                  <td className="py-3 px-4">
-                    {log.status === 'success' && (
-                      <span className="inline-flex items-center gap-1 text-emerald-400">
-                        <CheckCircle2 className="w-3.5 h-3.5" /> OK
-                      </span>
-                    )}
-                    {log.status === 'warning' && (
-                      <span className="inline-flex items-center gap-1 text-amber-400">
-                        <AlertTriangle className="w-3.5 h-3.5" /> WARN
-                      </span>
-                    )}
-                    {log.status === 'error' && (
-                      <span className="inline-flex items-center gap-1 text-rose-400">
-                        <XCircle className="w-3.5 h-3.5" /> ERR
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-3 px-4 uppercase text-zinc-400">{log.action}</td>
-                  <td className="py-3 px-4 font-sans font-medium text-zinc-100">{log.itemName}</td>
-                  <td className="py-3 px-4 text-zinc-400 font-sans">{log.details}</td>
-                  <td className="py-3 px-4 text-right text-zinc-500">
-                    {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        )
-      )}
-    </div>
-  );
+          {item.error && <p role="alert" className="text-sm text-red-300">{item.error}</p>}
+          {item.progress !== undefined && <div className="space-y-1">
+            <div className="flex flex-wrap justify-between gap-2 text-xs text-zinc-300 tabular-nums">
+              <span>{percent(item.progress).toFixed(1)}%</span>
+              {item.phase !== 'Completed' && <span>{item.speed && `${item.speed} · `}ETA: {duration(item.eta || 0)}</span>}
+            </div>
+            <div role="progressbar" aria-label={`${item.title} overall progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent(item.progress)} className="h-2 rounded-full overflow-hidden bg-zinc-800">
+              <div className="h-full bg-blue-400" style={{ width: `${percent(item.progress)}%` }} />
+            </div>
+          </div>}
+        </li>)}
+      </ul>}
+    {manual && <ManualSearch requestId={manual} onClose={() => setManual(null)} />}
+  </section>;
 };

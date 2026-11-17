@@ -13,8 +13,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/t0ggl/callimachus/pkg/config"
+	"github.com/t0ggl/callimachus/pkg/converter"
 	"github.com/t0ggl/callimachus/pkg/database"
-	"github.com/t0ggl/callimachus/pkg/transcoder"
 )
 
 func run(ctx context.Context, args []string) error {
@@ -22,7 +22,7 @@ func run(ctx context.Context, args []string) error {
 	dbFlag := fs.String("db", "", "Path to Callimachus SQLite database (default: $CALLIMACHUS_DATABASE_PATH or ./callimachus.db)")
 	pollFlag := fs.Duration("poll", 100*time.Millisecond, "Queue polling interval (override: $CALLIMACHUS_WORKER_POLL_INTERVAL)")
 	workerIDFlag := fs.String("worker-id", "", "Worker identifier (override: $CALLIMACHUS_WORKER_ID)")
-	workDirFlag := fs.String("workdir", "", "Working directory for temporary transcode files (override: $CALLIMACHUS_WORKER_WORKDIR)")
+	workDirFlag := fs.String("workdir", "", "Working directory for temporary conversion files (override: $CALLIMACHUS_WORKER_WORKDIR)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -54,7 +54,7 @@ func run(ctx context.Context, args []string) error {
 		workDir = envVal
 	}
 	if workDir == "" {
-		workDir = filepath.Join(os.TempDir(), "callimachus-transcoder")
+		workDir = filepath.Join(os.TempDir(), "callimachus-converter")
 	}
 
 	db, err := database.Open(database.Config{Path: boot.DBPath})
@@ -70,9 +70,9 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 
-	queue := transcoder.NewQueue(db)
-	runner := transcoder.NewRealRunner()
-	worker := transcoder.NewWorker(queue, runner, transcoder.WorkerConfig{
+	queue := converter.NewQueue(db)
+	runner := converter.NewRealRunner()
+	worker := converter.NewWorker(queue, runner, converter.WorkerConfig{
 		WorkerID:     workerID,
 		PollInterval: pollInterval,
 		WorkDir:      workDir,

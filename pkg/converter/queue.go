@@ -1,4 +1,4 @@
-package transcoder
+package converter
 
 import (
 	"context"
@@ -12,18 +12,18 @@ import (
 	"github.com/t0ggl/callimachus/pkg/database"
 )
 
-// Pipeline stages for audio transcoding.
+// Pipeline stages for audio converting.
 const (
-	StageQueued    = "queued"
-	StageProbing   = "probing"
-	StageEncoding  = "encoding"
-	StageMuxing    = "muxing"
-	StageTagging   = "tagging"
-	StageMoving    = "moving"
-	StageCompleted = "completed"
+	StageQueued     = "queued"
+	StagePreparing  = "preparing"
+	StageConverting = "converting"
+	StageMuxing     = "muxing"
+	StageTagging    = "tagging"
+	StageMoving     = "moving"
+	StageCompleted  = "completed"
 )
 
-// Job statuses for transcode_queue.
+// Job statuses for conversion_queue.
 const (
 	StatusPending    = "pending"
 	StatusProcessing = "processing"
@@ -35,10 +35,10 @@ const (
 // DefaultMaxAttempts is the standard number of retries before marking a job permanently failed.
 const DefaultMaxAttempts = 3
 
-// ErrJobNotFound indicates the requested transcode job does not exist.
-var ErrJobNotFound = errors.New("transcode job not found")
+// ErrJobNotFound indicates the requested conversion job does not exist.
+var ErrJobNotFound = errors.New("conversion job not found")
 
-// Queue provides SQLite-backed FIFO queue management for audio transcoding jobs.
+// Queue provides SQLite-backed FIFO queue management for audio converting jobs.
 type Queue struct {
 	db *database.DB
 }
@@ -48,12 +48,12 @@ func NewQueue(db *database.DB) *Queue {
 	return &Queue{db: db}
 }
 
-// Enqueue creates and inserts a new transcode job into the queue, returning the created item.
-func (q *Queue) Enqueue(ctx context.Context, editionID, sourcePath, targetPath string, priority int) (*database.TranscodeQueueItem, error) {
+// Enqueue creates and inserts a new conversion job into the queue, returning the created item.
+func (q *Queue) Enqueue(ctx context.Context, editionID, sourcePath, targetPath string, priority int) (*database.ConversionQueueItem, error) {
 	return q.enqueue(ctx, editionID, sourcePath, targetPath, priority, "")
 }
 
-func (q *Queue) enqueue(ctx context.Context, editionID, sourcePath, targetPath string, priority int, ebookContext string) (*database.TranscodeQueueItem, error) {
+func (q *Queue) enqueue(ctx context.Context, editionID, sourcePath, targetPath string, priority int, ebookContext string) (*database.ConversionQueueItem, error) {
 	if strings.TrimSpace(editionID) == "" {
 		return nil, errors.New("editionID cannot be empty")
 	}
@@ -68,7 +68,7 @@ func (q *Queue) enqueue(ctx context.Context, editionID, sourcePath, targetPath s
 	now := time.Now().UTC()
 
 	query := `
-		INSERT INTO transcode_queue (
+		INSERT INTO conversion_queue (
 			id, edition_id, source_path, target_path, status,
 			progress_percent, current_stage, priority, attempts, max_attempts,
 			created_at, updated_at, ebook_context
@@ -86,27 +86,27 @@ func (q *Queue) enqueue(ctx context.Context, editionID, sourcePath, targetPath s
 
 	item, err := scanQueueItem(row)
 	if err != nil {
-		return nil, fmt.Errorf("failed to enqueue transcode job: %w", err)
+		return nil, fmt.Errorf("failed to enqueue conversion job: %w", err)
 	}
 	return item, nil
 }
 
 // LeaseJob atomically leases strictly one pending job for the specified worker instance.
 // Returns (nil, nil) if no pending job is available.
-func (q *Queue) LeaseJob(ctx context.Context, workerID string) (*database.TranscodeQueueItem, error) {
+func (q *Queue) LeaseJob(ctx context.Context, workerID string) (*database.ConversionQueueItem, error) {
 	if strings.TrimSpace(workerID) == "" {
 		return nil, errors.New("workerID cannot be empty")
 	}
 
 	now := time.Now().UTC()
 	query := `
-		UPDATE transcode_queue
+		UPDATE conversion_queue
 		SET status = ?,
 		    worker_id = ?,
 		    started_at = ?,
 		    updated_at = ?
 		WHERE id = (
-			SELECT id FROM transcode_queue
+			SELECT id FROM conversion_queue
 			WHERE status = ?
 			ORDER BY priority DESC, created_at ASC
 			LIMIT 1
@@ -125,7 +125,7 @@ func (q *Queue) LeaseJob(ctx context.Context, workerID string) (*database.Transc
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("lease transcode job failed: %w", err)
+		return nil, fmt.Errorf("lease conversion job failed: %w", err)
 	}
 	return item, nil
 }
@@ -138,7 +138,7 @@ func (q *Queue) UpdateProgress(ctx context.Context, jobID string, stage string, 
 
 	now := time.Now().UTC()
 	query := `
-		UPDATE transcode_queue
+		UPDATE conversion_queue
 		SET current_stage = ?,
 		    progress_percent = ?,
 		    error_message = ?,
@@ -160,7 +160,7 @@ func (q *Queue) UpdateProgress(ctx context.Context, jobID string, stage string, 
 	return nil
 }
 
-// CompleteJob marks the transcode job as completed with 100% progress.
+// CompleteJob marks the conversion job as completed with 100% progress.
 func (q *Queue) CompleteJob(ctx context.Context, jobID string) error {
 	if strings.TrimSpace(jobID) == "" {
 		return errors.New("jobID cannot be empty")
@@ -168,7 +168,7 @@ func (q *Queue) CompleteJob(ctx context.Context, jobID string) error {
 
 	now := time.Now().UTC()
 	query := `
-		UPDATE transcode_queue
+		UPDATE conversion_queue
 		SET status = ?,
 		    progress_percent = 100.0,
 		    current_stage = ?,
@@ -205,7 +205,7 @@ func (q *Queue) FailJob(ctx context.Context, jobID string, jobErr error) error {
 	defer tx.Rollback()
 
 	var attempts, maxAttempts int
-	err = tx.QueryRowContext(ctx, "SELECT attempts, max_attempts FROM transcode_queue WHERE id = ?", jobID).Scan(&attempts, &maxAttempts)
+	err = tx.QueryRowContext(ctx, "SELECT attempts, max_attempts FROM conversion_queue WHERE id = ?", jobID).Scan(&attempts, &maxAttempts)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrJobNotFound
@@ -224,7 +224,7 @@ func (q *Queue) FailJob(ctx context.Context, jobID string, jobErr error) error {
 	if newAttempts >= maxAttempts {
 		// Permanently failed
 		_, err = tx.ExecContext(ctx, `
-			UPDATE transcode_queue
+			UPDATE conversion_queue
 			SET status = ?,
 			    attempts = ?,
 			    error_message = ?,
@@ -235,7 +235,7 @@ func (q *Queue) FailJob(ctx context.Context, jobID string, jobErr error) error {
 	} else {
 		// Retryable: return to pending and clear worker lease
 		_, err = tx.ExecContext(ctx, `
-			UPDATE transcode_queue
+			UPDATE conversion_queue
 			SET status = ?,
 			    worker_id = NULL,
 			    started_at = NULL,
@@ -253,8 +253,8 @@ func (q *Queue) FailJob(ctx context.Context, jobID string, jobErr error) error {
 	return tx.Commit()
 }
 
-// GetJob retrieves a transcode queue item by ID.
-func (q *Queue) GetJob(ctx context.Context, jobID string) (*database.TranscodeQueueItem, error) {
+// GetJob retrieves a conversion queue item by ID.
+func (q *Queue) GetJob(ctx context.Context, jobID string) (*database.ConversionQueueItem, error) {
 	if strings.TrimSpace(jobID) == "" {
 		return nil, errors.New("jobID cannot be empty")
 	}
@@ -263,7 +263,7 @@ func (q *Queue) GetJob(ctx context.Context, jobID string) (*database.TranscodeQu
 		SELECT id, edition_id, source_path, target_path, status, progress_percent,
 		       current_stage, error_message, worker_id, attempts, max_attempts,
 		       priority, created_at, updated_at, started_at, completed_at
-		FROM transcode_queue
+		FROM conversion_queue
 		WHERE id = ?;
 	`
 	row := q.db.QueryRowContext(ctx, query, jobID)
@@ -277,8 +277,8 @@ func (q *Queue) GetJob(ctx context.Context, jobID string) (*database.TranscodeQu
 	return item, nil
 }
 
-func scanQueueItem(scanner interface{ Scan(dest ...any) error }) (*database.TranscodeQueueItem, error) {
-	var item database.TranscodeQueueItem
+func scanQueueItem(scanner interface{ Scan(dest ...any) error }) (*database.ConversionQueueItem, error) {
+	var item database.ConversionQueueItem
 	var errMsg, workerID sql.NullString
 	var createdAtVal, updatedAtVal, startedAtVal, completedAtVal any
 

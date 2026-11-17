@@ -28,8 +28,8 @@ The Callimachus data model is purpose-built to solve the historical structural s
    - Different formats use distinct identifier ecosystems: eBooks rely on ISBN-10/13, audiobooks rely on Audible ASINs, while community metadata relies on Hardcover IDs, OpenLibrary IDs, and Goodreads IDs.
    - All external IDs are indexed and queryable across editions.
 
-5. **Decoupled Transcode Queue:**
-   - Transcoding multi-part audiobooks to `.m4b` is handled via an asynchronous, persistent FIFO queue in SQLite with explicit state machines (`pending`, `processing`, `completed`, `failed`).
+5. **Decoupled Conversion Queue:**
+   - Converting multi-part audiobooks to `.m4b` is handled via an asynchronous, persistent FIFO queue in SQLite with explicit state machines (`pending`, `processing`, `completed`, `failed`).
 
 ---
 
@@ -43,7 +43,7 @@ erDiagram
     BOOK_EDITION ||--o{ EDITION_NARRATOR : narrated_by
     NARRATOR ||--o{ EDITION_NARRATOR : narrates
     BOOK_EDITION ||--o{ MEDIA_ASSET : stored_as
-    BOOK_EDITION ||--o{ TRANSCODE_QUEUE : queued_for
+    BOOK_EDITION ||--o{ CONVERSION_QUEUE : queued_for
     USER ||--o{ USER_REQUEST : requests
     BOOK ||--o{ USER_REQUEST : targeted_by
     INDEXER ||--o{ DOWNLOAD_QUEUE : provides
@@ -122,7 +122,7 @@ erDiagram
         boolean is_verified
     }
 
-    TRANSCODE_QUEUE {
+    CONVERSION_QUEUE {
         string id PK
         string edition_id FK
         string staging_directory
@@ -303,8 +303,8 @@ Physical media file on disk associated with a specific edition.
 
 ---
 
-### 3.8 `transcode_queue`
-FIFO queue tracking single-job audio transcoding tasks.
+### 3.8 `conversion_queue`
+FIFO queue tracking single-job audio converting tasks.
 
 | Column | Type | Constraints | Description |
 |---|---|---|---|
@@ -313,13 +313,13 @@ FIFO queue tracking single-job audio transcoding tasks.
 | `staging_directory`| `TEXT` | `NOT NULL` | Staging folder with unpacked MP3/M3U files |
 | `output_file_path`| `TEXT` | `NOT NULL` | Target `.m4b` destination path |
 | `status` | `TEXT` | `NOT NULL DEFAULT 'pending'` | `pending`, `processing`, `completed`, `failed`, `cancelled` |
-| `progress_percent`| `INTEGER`| `NOT NULL DEFAULT 0` | Transcode completion progress (0-100) |
+| `progress_percent`| `INTEGER`| `NOT NULL DEFAULT 0` | Conversion completion progress (0-100) |
 | `error_message` | `TEXT` | `NULL` | Error details if failed |
 | `retry_count` | `INTEGER`| `NOT NULL DEFAULT 0` | Number of retry attempts |
 | `created_at` | `TEXT` | `NOT NULL` | ISO 8601 UTC timestamp |
 | `updated_at` | `TEXT` | `NOT NULL` | ISO 8601 UTC timestamp |
 
-*Indices:* `CREATE INDEX idx_transcode_status ON transcode_queue(status, created_at);`
+*Indices:* `CREATE INDEX idx_conversion_status ON conversion_queue(status, created_at);`
 
 ---
 
@@ -406,13 +406,13 @@ selects a tombstoned release. Manual downloads can override this exclusion.
    WHERE n.id = ?;
    ```
 
-4. **FIFO Transcoder Queue Worker Polling:**
+4. **FIFO Converter Queue Worker Polling:**
    ```sql
    -- Poll single next job atomically
-   UPDATE transcode_queue
+   UPDATE conversion_queue
    SET status = 'processing', updated_at = CURRENT_TIMESTAMP
    WHERE id = (
-       SELECT id FROM transcode_queue
+       SELECT id FROM conversion_queue
        WHERE status = 'pending'
        ORDER BY created_at ASC
        LIMIT 1

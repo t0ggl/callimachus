@@ -99,8 +99,8 @@ type MediaAsset struct {
 	UpdatedAt       time.Time `json:"updated_at" db:"updated_at"`
 }
 
-// TranscodeQueueItem represents an entry in the decoupled transcode queue.
-type TranscodeQueueItem struct {
+// ConversionQueueItem represents an entry in the decoupled conversion queue.
+type ConversionQueueItem struct {
 	ID              string     `json:"id" db:"id"`
 	EditionID       string     `json:"edition_id" db:"edition_id"`
 	SourcePath      string     `json:"source_path" db:"source_path"`
@@ -119,8 +119,8 @@ type TranscodeQueueItem struct {
 	CompletedAt     *time.Time `json:"completed_at,omitempty" db:"completed_at"`
 }
 
-// TranscodeQueue alias for TranscodeQueueItem.
-type TranscodeQueue = TranscodeQueueItem
+// ConversionQueue alias for ConversionQueueItem.
+type ConversionQueue = ConversionQueueItem
 
 // Indexer represents a Prowlarr Torznab / Newznab metadata & download source.
 type Indexer struct {

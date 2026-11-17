@@ -17,7 +17,7 @@ It adopts the proven management paradigm of the `*arr` stack (Radarr, Sonarr, Li
 - **Canonical Library Organization:** Deterministic file and directory naming aligned with Calibre and Audiobookshelf standards.
 - **Deep Metadata Curation:** Deterministic-first normalization and enrichment, cover embedding, and OPF generation, with an *optional* AI-driven resolution fallback for edge cases.
 - **Multi-User Access & Requests:** OIDC-first authentication with a single-password fallback, user-specific wishlists, and a request management workflow (akin to Overseerr/Jellyseerr).
-- **Decoupled Audio Transcoder Worker:** Standalone queue worker that processes one transcoding job at a time (multi-part MP3 to M4B), architected for future multi-container horizontal extraction.
+- **Decoupled Audio Converter Worker:** Standalone queue worker that processes one converting job at a time (multi-part MP3 to M4B), architected for future multi-container horizontal extraction.
 
 ---
 
@@ -27,11 +27,11 @@ It adopts the proven management paradigm of the `*arr` stack (Radarr, Sonarr, Li
 - **Language:** Go 1.23+
 - **Architecture:** Clean modular architecture:
   - `cmd/callimachus`: Main server entry point (web server + scheduler + daemon).
-  - `cmd/callimachus-worker`: Standalone audio transcode worker (runs embedded by default, can be split into separate container).
+  - `cmd/callimachus-worker`: Standalone audio conversion worker (runs embedded by default, can be split into separate container).
   - `pkg/catalog`: Books, authors, series, editions, narrators, and library scanner.
   - `pkg/metadata`: Providers (Hardcover, Audnexus, OpenLibrary, Google Books), sanitizers, scorers, and optional AI disambiguation.
   - `pkg/epub`: EPUB inspection, metadata injection, and OPF generation with high-reliability parser and optional Calibre `ebook-meta` driver.
-  - `pkg/transcoder`: FFmpeg runner, M4B muxer, chapter generator (`FFMETADATA1`), and metadata tagger.
+  - `pkg/converter`: FFmpeg runner, M4B muxer, chapter generator (`FFMETADATA1`), and metadata tagger.
   - `pkg/indexers`: Prowlarr Torznab/Newznab client, RSS syncer, and search query builder.
   - `pkg/downloaders`: Completed-directory ingestion, quality profiles, and blocklist.
   - `pkg/auth`: OIDC authenticator, session manager, and single-password fallback.
@@ -42,7 +42,7 @@ It adopts the proven management paradigm of the `*arr` stack (Radarr, Sonarr, Li
 ### 2.2 Frontend (React / Vite / Tailwind)
 - Designed and polished adhering strictly to the **`impeccable`** skill in `Operate` mode.
 - Dense, keyboard-navigable (`/` search, `j`/`k` list nav, shortcuts), responsive across desktop and tablet/mobile.
-- Rich book cards, reading order series progress rings, and real-time transcode/download queue progress via WebSockets/SSE.
+- Rich book cards, reading order series progress rings, and real-time conversion/download queue progress via WebSockets/SSE.
 
 ---
 
@@ -122,17 +122,17 @@ It adopts the proven management paradigm of the `*arr` stack (Radarr, Sonarr, Li
 
 ---
 
-## 5. Decoupled Audio Transcoder Worker
+## 5. Decoupled Audio Converter Worker
 
 ### 5.1 Standalone Worker Architecture
-- Transcoding multi-part MP3s into a unified M4B is resource-intensive.
+- Converting multi-part MP3s into a unified M4B is resource-intensive.
 - Callimachus uses a **decoupled queue worker**:
   - Operates as a separate goroutine or standalone process (`callimachus-worker`).
   - Pulls **one job at a time** off a FIFO SQLite-backed persistent queue.
   - Designed for future extraction into separate container instances on worker nodes.
-- **Transcoding Pipeline:**
+- **Converting Pipeline:**
   1. Validates and orders audio parts via M3U playlist or numeric track/filename sorting.
-  2. Multi-core parallel transcode of individual parts to AAC-LC using FFmpeg.
+  2. Multi-core parallel conversion of individual parts to AAC-LC using FFmpeg.
   3. Concatenates into a single `.m4b` container without quality degradation.
   4. Injects `FFMETADATA1` chapter markers with accurate timestamps and chapter titles.
   5. Injects embedded front cover art and metadata tags (`artist`, `album`, `title`, `date`, `composer=Narrator`).

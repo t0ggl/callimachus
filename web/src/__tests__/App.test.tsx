@@ -7,7 +7,7 @@ import {
   testBooks,
   testAuthors,
   testSeries,
-  testTranscodeJobs,
+  testConversionJobs,
   testDownloads,
 } from './testFixtures';
 
@@ -61,7 +61,7 @@ describe('App Integration', () => {
           ok: true,
           json: () =>
             Promise.resolve({
-              transcodeJobs: testTranscodeJobs,
+              conversionJobs: testConversionJobs,
               downloads: testDownloads,
               logs: [],
             }),
@@ -100,7 +100,7 @@ describe('App Integration', () => {
     render(<App />);
 
     expect(screen.getByText('Callimachus')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: /Library & Catalog/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Library/i })).toBeInTheDocument();
 
     await waitFor(() => {
       expect(screen.getByText('The Obsidian Path')).toBeInTheDocument();
@@ -115,14 +115,14 @@ describe('App Integration', () => {
     const activityNav = screen.getByTestId('nav-activity');
     await user.click(activityNav);
 
-    expect(screen.getByRole('heading', { name: /Activity & Queues/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Activity/i })).toBeInTheDocument();
     await waitFor(() => {
-      expect(screen.getByTestId('tab-activity-transcode')).toBeInTheDocument();
+      expect(screen.getByRole('list', { name: 'Book activity' })).toBeInTheDocument();
     });
 
     expect(screen.queryByTestId('nav-requests')).not.toBeInTheDocument();
     expect(screen.queryByText('Request Portal')).not.toBeInTheDocument();
-    expect(await screen.findByRole('heading', { name: 'Acquisitions' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Acquisitions' })).not.toBeInTheDocument();
     expect(await screen.findByRole('button', { name: /Manual Search.*for Iron Sigil/ })).toBeInTheDocument();
 
     // Navigate to Settings view
@@ -144,8 +144,8 @@ describe('App Integration', () => {
             downloads: ['downloading', 'importing', 'queued', 'paused', 'completed', 'error'].map((status, i) => ({
               ...testDownloads[0], id: `download-${i}`, status,
             })),
-            transcodeJobs: ['processing', 'processing', 'queued', 'paused', 'completed', 'failed'].map((status, i) => ({
-              ...testTranscodeJobs[0], id: `job-${i}`, status, stage: i === 1 ? 'moving' : 'encoding',
+            conversionJobs: ['processing', 'processing', 'queued', 'paused', 'completed', 'failed'].map((status, i) => ({
+              ...testConversionJobs[0], id: `job-${i}`, status, stage: i === 1 ? 'moving' : 'converting',
             })),
             logs: [],
           }),
@@ -156,7 +156,7 @@ describe('App Integration', () => {
     render(<App />);
     const metric = await screen.findByRole('button', { name: 'Active Downloads: 4' });
     await user.click(metric);
-    expect(screen.getByRole('heading', { name: /Activity & Queues/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Activity/i })).toBeInTheDocument();
   });
 
   it('opens and closes BookDetailModal when selecting a book', async () => {

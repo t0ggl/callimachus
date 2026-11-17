@@ -31,7 +31,7 @@ it.each(['Frank Herbert', 'Dune', 'Herbert desert planet'])('discovers and queue
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/requests', expect.objectContaining({ method: 'POST', body: JSON.stringify({ title: 'Dune', author: 'Frank Herbert', format: 'epub', year: 1965 }) })));
   expect(await screen.findByRole('button', { name: 'Added Dune' })).toBeDisabled();
   expect(screen.getByRole('dialog', { name: 'Search books and commands' })).toBeInTheDocument();
-  expect(screen.getByRole('heading', { name: /Library & Catalog/ })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: /Library/ })).toBeInTheDocument();
 });
 
 it('opens on focus, traps focus and closes with Escape', async () => {

@@ -100,12 +100,12 @@ inputs fail visibly and are never ingested as successful conversions.
 Environment overrides: `CALLIMACHUS_CONVERT_EBOOKS=true` and
 `CALLIMACHUS_EBOOK_TARGET_FORMAT=EPUB` (or `AZW3`). These lock their Settings controls.
 The optional real Calibre integration check is
-`CALLIMACHUS_REAL_CALIBRE=1 go test ./pkg/transcoder -run TestWorkerEbookRealCalibre -v`;
+`CALLIMACHUS_REAL_CALIBRE=1 go test ./pkg/converter -run TestWorkerEbookRealCalibre -v`;
 standard tests mock every converter subprocess.
 
 ### Log retention and maintenance
 
-The server prunes historical download/import and transcode job records on startup
+The server prunes historical download/import and conversion job records on startup
 and every 24 hours. The default retention is **30 days**. Set
 `CALLIMACHUS_LOG_RETENTION_DAYS` to a positive integer (1–365000) to override it;
 invalid values stop server startup. This is backend, environment-only configuration,
@@ -145,3 +145,16 @@ to upgrade. The download retains the catalog identity through conversion. New
 media and sidecars are published with atomic file renames; superseded files of
 the same kind (eBook or audio) are removed only after successful ingestion. The
 other kind is preserved, so upgrading audio does not remove an eBook.
+
+### Activity
+
+Activity shows one list for acquisition, downloading, converting, importing, and
+completed work. Editions are joined by ID, so audio and eBook editions stay separate.
+Overall progress reserves the first half for downloading and the second half for
+conversion and importing. Unavailable speed or ETA is not presented as a measurement.
+The server refreshes activity over the authenticated event stream every two seconds.
+Existing queue data is preserved when upgrading to the conversion terminology.
+
+Local password login is disabled unless `CALLIMACHUS_ADMIN_PASSWORD` is explicitly
+set. There is no default password. Authentication settings and password status are
+never shown in Settings. Deployment examples do not supply an admin password.

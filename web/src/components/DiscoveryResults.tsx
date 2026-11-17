@@ -80,7 +80,7 @@ export function DiscoveryResults({ query, onSubmitRequest, onOpenBook }: Props) 
             onChange={(e) => setFormat(e.target.value as RequestType)}
             className="block mt-1 p-2 bg-zinc-950 border border-zinc-700 rounded-md"
           >
-            <option value="both">Both formats</option>
+            <option value="both">Both</option>
             <option value="ebook">eBook</option>
             <option value="audiobook">Audiobook</option>
           </select>
