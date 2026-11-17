@@ -23,6 +23,17 @@ describe('book discovery', () => {
     expect(add).toHaveBeenCalledWith('Dune', 'Frank Herbert', 'both', 1965);
     expect(await screen.findByRole('status')).toHaveTextContent('Added Dune');
   });
+  it('opens an existing library book instead of adding a duplicate', async () => {
+    const user = userEvent.setup({ delay: null });
+    const add = vi.fn(); const open = vi.fn();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [{ title: 'Dune', authors: ['Frank Herbert'], year: 1965, library_book_id: 'local-dune' }] }));
+    render(<RequestsView requests={[]} onSubmitRequest={add} onOpenBook={open} />);
+    await user.type(screen.getByLabelText('Book search'), 'Dune');
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+    await user.click(await screen.findByRole('button', { name: /In Library/ }));
+    expect(screen.queryByRole('button', { name: 'Add Dune' })).not.toBeInTheDocument();
+    expect(open).toHaveBeenCalledWith('local-dune'); expect(add).not.toHaveBeenCalled();
+  });
   it('shows source failures and permits recovery', async () => {
     const user = userEvent.setup({ delay: null });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }));

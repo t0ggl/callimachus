@@ -347,3 +347,59 @@ func TestScanLibrary_EbookExtensions(t *testing.T) {
 		})
 	}
 }
+
+func TestScanAndUpgradeNoncanonicalInventory(t *testing.T) {
+	ctx := context.Background()
+	cat := New(testutil.NewTestDB(t))
+	root := t.TempDir()
+	dir := filepath.Join(root, "Author", "Series", "Book (2024)")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(dir, "Book (2024) - Author.mp3")
+	if err := os.WriteFile(old, []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := ScanLibrary(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := cat.ReconcileScanReport(ctx, report)
+	if err != nil || len(results) != 1 {
+		t.Fatalf("scan: %v %v", results, err)
+	}
+	if _, err := cat.ReconcileScanReport(ctx, report); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(t.TempDir(), "upgrade.m4b")
+	if err := os.WriteFile(src, []byte("new audio"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	book := BookDetails{BookID: results[0].Book.ID, Title: "Book", Author: "Author", Series: "Series", Year: 2024}
+	result, err := cat.IngestBook(ctx, root, book, src, []byte("new cover"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatal("superseded mp3 remains")
+	}
+	data, _ := os.ReadFile(result.Organized.MediaPath)
+	if string(data) != "new audio" {
+		t.Fatal("wrong replacement")
+	}
+	editions, err := cat.GetEditionsByBookID(ctx, book.BookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, ed := range editions {
+		assets, err := cat.GetMediaAssetsByEditionID(ctx, ed.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		count += len(assets)
+	}
+	if count != 1 {
+		t.Fatalf("duplicate inventory: %d", count)
+	}
+}

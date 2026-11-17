@@ -235,7 +235,14 @@ func (w *Worker) ProcessJob(ctx context.Context, job *database.TranscodeQueueIte
 		return fmt.Errorf("create target directory: %w", err)
 	}
 
-	if err := catalog.AtomicMove(tempOutputFile, job.TargetPath); err != nil {
+	var cover []byte
+	if coverImage != "" {
+		cover, err = os.ReadFile(coverImage)
+		if err != nil {
+			return err
+		}
+	}
+	if err := catalog.New(w.queue.db).IngestConvertedAudio(ctx, job.EditionID, tempOutputFile, job.TargetPath, cover); err != nil {
 		return fmt.Errorf("atomic move to target path: %w", err)
 	}
 

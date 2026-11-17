@@ -16,6 +16,7 @@ interface CatalogViewProps {
   series: Series[];
   onSelectBook: (book: Book) => void;
   selectedIndex: number;
+  onScanComplete?: () => Promise<void>;
 }
 
 export const CatalogView: React.FC<CatalogViewProps> = ({
@@ -24,7 +25,21 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
   series,
   onSelectBook,
   selectedIndex,
+  onScanComplete,
 }) => {
+  const [scanning, setScanning] = useState(false);
+  const [scanMessage, setScanMessage] = useState('');
+  const scan = async () => {
+    setScanning(true); setScanMessage('');
+    try {
+      const res = await fetch('/api/library/scan', { method: 'POST' });
+      if (!res.ok) throw new Error('Library scan failed. Check the library path and permissions, then retry.');
+      const report = await res.json();
+      await onScanComplete?.();
+      setScanMessage(`Scan complete: ${report.books} books found.`);
+    } catch (e) { setScanMessage((e as Error).message); }
+    finally { setScanning(false); }
+  };
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [activeTab, setActiveTab] = useState<'books' | 'authors' | 'series'>('books');
   const [searchQuery, setSearchQuery] = useState('');
@@ -63,6 +78,10 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
 
   return (
     <div className="space-y-6">
+      <div className="flex flex-wrap items-center gap-3">
+        <button disabled={scanning} onClick={() => void scan()} className="px-3 py-2 bg-zinc-800 text-zinc-100 rounded-md disabled:opacity-50">{scanning ? 'Scanning…' : 'Scan Library'}</button>
+        {scanMessage && <p role="status" className="text-sm text-zinc-300">{scanMessage}</p>}
+      </div>
       {/* Top Header & Actions Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-800 pb-4">
         <div>

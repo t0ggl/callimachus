@@ -83,10 +83,19 @@ func ScanLibrary(libraryRoot string) (*ScanReport, error) {
 		return nil, ErrInvalidLibraryRoot
 	}
 
-	cleanRoot := filepath.Clean(libraryRoot)
+	cleanRoot, err := filepath.Abs(libraryRoot)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkPathNoSymlinks(cleanRoot); err != nil {
+		return nil, err
+	}
 	rootInfo, err := os.Lstat(cleanRoot)
 	if err != nil {
 		return nil, fmt.Errorf("stat library root: %w", err)
+	}
+	if !rootInfo.IsDir() {
+		return nil, fmt.Errorf("library root must be a directory")
 	}
 	if rootInfo.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("%w: library root is a symlink", ErrSymlinkForbidden)
@@ -107,6 +116,9 @@ func ScanLibrary(libraryRoot string) (*ScanReport, error) {
 		}
 
 		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), ".callimachus-") {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 

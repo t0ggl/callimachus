@@ -164,7 +164,7 @@ func (a *Acquisition) dispatch(ctx context.Context, id int64, c Candidate) error
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO download_queue(id,download_client_task_id,title,protocol,size_bytes,status) VALUES(?,?,?,?,?,'dispatching')`, qid, c.Release.GUID, c.Release.Title, c.Release.Protocol, c.Release.Size); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO download_queue(id,download_client_task_id,title,protocol,size_bytes,status,edition_id) VALUES(?,?,?,?,?,'dispatching',(SELECT e.id FROM book_editions e JOIN book_requests r ON r.book_id=e.book_id WHERE r.id=? ORDER BY (e.format=?) DESC LIMIT 1))`, qid, c.Release.GUID, c.Release.Title, c.Release.Protocol, c.Release.Size, id, c.Format); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE acquisition_candidates SET queue_id=? WHERE request_id=? AND release_key=?`, qid, id, c.Key); err != nil {

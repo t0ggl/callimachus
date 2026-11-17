@@ -18,14 +18,14 @@ func TestResolveCanonicalPath(t *testing.T) {
 	indexOne := 1.0
 
 	tests := []struct {
-		name          string
-		libraryRoot   string
-		book          BookDetails
-		ext           string
-		expectMedia   string
-		expectDir     string
-		expectBase    string
-		expectErr     error
+		name        string
+		libraryRoot string
+		book        BookDetails
+		ext         string
+		expectMedia string
+		expectDir   string
+		expectBase  string
+		expectErr   error
 	}{
 		{
 			name:        "Standalone with Year",
@@ -91,9 +91,9 @@ func TestResolveCanonicalPath(t *testing.T) {
 				Author: `Author: Name / Alias`,
 				Year:   2024,
 			},
-			ext:         ".epub",
-			expectDir:   filepath.Join(root, "Author - Name - Alias", "Synthetic - Title - Special Danger Tag - Pipe (2024)"),
-			expectBase:  "Synthetic - Title - Special Danger Tag - Pipe (2024) - Author - Name - Alias",
+			ext:        ".epub",
+			expectDir:  filepath.Join(root, "Author - Name - Alias", "Synthetic - Title - Special Danger Tag - Pipe (2024)"),
+			expectBase: "Synthetic - Title - Special Danger Tag - Pipe (2024) - Author - Name - Alias",
 		},
 		{
 			name:        "Missing Title returns error",
@@ -484,5 +484,35 @@ func createTestEPUBWithCover(t *testing.T, targetPath string, coverBytes []byte)
 
 	if err := os.WriteFile(targetPath, buf.Bytes(), 0644); err != nil {
 		t.Fatalf("write epub file: %v", err)
+	}
+}
+
+func TestAtomicReplacementPreservesOldOnFailure(t *testing.T) {
+	root := t.TempDir()
+	dst := filepath.Join(root, "book.epub")
+	if err := os.WriteFile(dst, []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicMove(filepath.Join(root, "missing"), dst); err == nil {
+		t.Fatal("expected failure")
+	}
+	data, _ := os.ReadFile(dst)
+	if string(data) != "old" {
+		t.Fatal("old file lost")
+	}
+	src := filepath.Join(root, "new.epub")
+	if err := os.WriteFile(src, []byte("new"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyAndAtomicReplace(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(dst)
+	if string(data) != "new" {
+		t.Fatal("replacement not published")
+	}
+	entries, _ := os.ReadDir(root)
+	if len(entries) != 1 {
+		t.Fatalf("temporary files or source leaked: %v", entries)
 	}
 }

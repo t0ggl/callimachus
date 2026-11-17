@@ -31,19 +31,20 @@ var (
 
 // BookDetails contains the domain metadata required for canonical organization.
 type BookDetails struct {
-	Title        string            `json:"title"`
-	Subtitle     string            `json:"subtitle,omitempty"`
-	Author       string            `json:"author"`
-	Series       string            `json:"series,omitempty"`
-	SeriesIndex  *float64          `json:"series_index,omitempty"`
-	Year         int               `json:"year,omitempty"`
-	Publisher    string            `json:"publisher,omitempty"`
-	Description  string            `json:"description,omitempty"`
-	ISBN13       string            `json:"isbn13,omitempty"`
-	ASIN         string            `json:"asin,omitempty"`
-	Language     string            `json:"language,omitempty"`
-	Format       string            `json:"format,omitempty"`
-	Identifiers  map[string]string `json:"identifiers,omitempty"`
+	BookID      string            `json:"book_id,omitempty"`
+	Title       string            `json:"title"`
+	Subtitle    string            `json:"subtitle,omitempty"`
+	Author      string            `json:"author"`
+	Series      string            `json:"series,omitempty"`
+	SeriesIndex *float64          `json:"series_index,omitempty"`
+	Year        int               `json:"year,omitempty"`
+	Publisher   string            `json:"publisher,omitempty"`
+	Description string            `json:"description,omitempty"`
+	ISBN13      string            `json:"isbn13,omitempty"`
+	ASIN        string            `json:"asin,omitempty"`
+	Language    string            `json:"language,omitempty"`
+	Format      string            `json:"format,omitempty"`
+	Identifiers map[string]string `json:"identifiers,omitempty"`
 }
 
 // OrganizedResult contains the destination paths after canonical organization.
@@ -60,10 +61,15 @@ type OrganizedResult struct {
 //   - In series:  {LibraryRoot}/{Author}/{Series}/{Title} ({Year})/{Title} ({Year}) - {Author}.{ext}
 //   - Standalone: {LibraryRoot}/{Author}/{Title} ({Year})/{Title} ({Year}) - {Author}.{ext}
 //   - If Year <= 0: {Title}/{Title} - {Author}.{ext}
+//
 // Audiobooks (.m4b) and eBooks (.epub) within the same title directory share identical basenames.
 func ResolveCanonicalPath(libraryRoot string, book BookDetails, ext string) (mediaPath string, titleDir string, basename string, err error) {
 	if strings.TrimSpace(libraryRoot) == "" {
 		return "", "", "", ErrInvalidLibraryRoot
+	}
+	libraryRoot, err = filepath.Abs(libraryRoot)
+	if err != nil {
+		return "", "", "", err
 	}
 	cleanTitle := metadata.SanitizeFilename(book.Title)
 	if cleanTitle == "" {
@@ -122,14 +128,19 @@ func OrganizeBook(libraryRoot string, book BookDetails, mediaSrcPath string, cov
 		return nil, err
 	}
 
+	if err := checkPathNoSymlinks(titleDir); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(titleDir, 0755); err != nil {
 		return nil, fmt.Errorf("create title directory %s: %w", titleDir, err)
 	}
 
-	// Atomic move media asset into canonical position
-	if err := AtomicMove(mediaSrcPath, mediaPath); err != nil {
-		return nil, fmt.Errorf("atomic move media file: %w", err)
+	// Prepare sidecars before replacing an existing media file.
+	staging, err := os.MkdirTemp(titleDir, ".callimachus-stage-")
+	if err != nil {
+		return nil, err
 	}
+	defer os.RemoveAll(staging)
 
 	// Generate Calibre-compatible companion .opf sidecar
 	opfPath := filepath.Join(titleDir, basename+".opf")
@@ -159,7 +170,7 @@ func OrganizeBook(libraryRoot string, book BookDetails, mediaSrcPath string, cov
 		meta.Identifiers["isbn"] = book.ISBN13
 	}
 
-	if err := epub.WriteSidecarFile(meta, opfPath); err != nil {
+	if err := epub.WriteSidecarFile(meta, filepath.Join(staging, "metadata.opf")); err != nil {
 		return nil, fmt.Errorf("generate companion sidecar %s: %w", opfPath, err)
 	}
 
@@ -167,21 +178,32 @@ func OrganizeBook(libraryRoot string, book BookDetails, mediaSrcPath string, cov
 	coverPath := filepath.Join(titleDir, basename+".jpg")
 	var finalCoverPath string
 	if len(coverData) > 0 {
-		if err := os.WriteFile(coverPath, coverData, 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(staging, "cover.jpg"), coverData, 0644); err != nil {
 			return nil, fmt.Errorf("write cover file %s: %w", coverPath, err)
 		}
 		finalCoverPath = coverPath
 	} else if strings.EqualFold(ext, ".epub") {
 		// Attempt extraction from canonical EPUB file
-		if ep, err := epub.Open(mediaPath); err == nil {
-			if err := ep.ExtractCover(coverPath); err == nil {
-				if fi, err := os.Stat(coverPath); err == nil && fi.Size() > 0 {
+		if ep, err := epub.Open(mediaSrcPath); err == nil {
+			if err := ep.ExtractCover(filepath.Join(staging, "cover.jpg")); err == nil {
+				if fi, err := os.Stat(filepath.Join(staging, "cover.jpg")); err == nil && fi.Size() > 0 {
 					finalCoverPath = coverPath
 				}
 			}
 		}
 	}
 
+	if err := AtomicMove(filepath.Join(staging, "metadata.opf"), opfPath); err != nil {
+		return nil, err
+	}
+	if finalCoverPath != "" {
+		if err := AtomicMove(filepath.Join(staging, "cover.jpg"), coverPath); err != nil {
+			return nil, err
+		}
+	}
+	if err := AtomicMove(mediaSrcPath, mediaPath); err != nil {
+		return nil, fmt.Errorf("atomic move media file: %w", err)
+	}
 	return &OrganizedResult{
 		CanonicalDir: titleDir,
 		MediaPath:    mediaPath,
@@ -202,6 +224,13 @@ func AtomicMove(src, dst string) error {
 
 	if src == dst {
 		return nil
+	}
+
+	if err := checkPathNoSymlinks(src); err != nil {
+		return err
+	}
+	if err := checkPathNoSymlinks(dst); err != nil {
+		return err
 	}
 
 	// Symlink checks: neither source nor destination may be a symlink

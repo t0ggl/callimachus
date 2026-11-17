@@ -37,7 +37,7 @@ func TestWorker_EndToEndWithMockRunner(t *testing.T) {
 		t.Fatalf("write staged track failed: %v", err)
 	}
 
-	targetPath := filepath.Join(targetDir, "synthetic_audiobook.m4b")
+	targetPath := filepath.Join(targetDir, "Synthetic Author One", "Synthetic Book Alpha", "Synthetic Book Alpha - Synthetic Author One.m4b")
 
 	// Setup MockRunner
 	mockRunner := NewMockRunner()
@@ -178,7 +178,7 @@ func TestWorker_EndToEndMultiStage(t *testing.T) {
 		t.Fatalf("write track failed: %v", err)
 	}
 
-	targetPath := filepath.Join(targetDir, "synthetic_real_muxed.m4b")
+	targetPath := filepath.Join(targetDir, "Synthetic Author One", "Synthetic Book Alpha", "Synthetic Book Alpha - Synthetic Author One.m4b")
 
 	var mu sync.Mutex
 	var stageHistory []string
@@ -384,7 +384,7 @@ func TestWorker_FixedEncodingAndM4BPassthrough(t *testing.T) {
 				}
 				return os.WriteFile(opt.Args[len(opt.Args)-1], []byte("published"), 0644)
 			})
-			target := filepath.Join(dir, "Author", "Book (2026)", "Book (2026) - Author.m4b")
+			target := filepath.Join(dir, "Synthetic Author One", "Synthetic Book Alpha", "Synthetic Book Alpha - Synthetic Author One.m4b")
 			var stages []string
 			worker := NewWorker(q, runner, WorkerConfig{
 				WorkerID: "fixed-audio-test", WorkDir: filepath.Join(dir, "work"),

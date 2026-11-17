@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
+import { Check } from 'lucide-react';
 import { BookRequest, RequestType } from '../types';
 import { ManualSearch } from '../components/ManualSearch';
-type Match = { title: string; authors: string[]; year: number };
+type Match = { title: string; authors: string[]; year: number; library_book_id?: string };
 interface Props {
   requests: BookRequest[];
+  onOpenBook?: (id: string) => void;
   onSubmitRequest: (
     title: string,
     author: string,
@@ -11,7 +13,7 @@ interface Props {
     year?: number,
   ) => Promise<void>;
 }
-export function RequestsView({ requests, onSubmitRequest }: Props) {
+export function RequestsView({ requests, onSubmitRequest, onOpenBook }: Props) {
   const [query, setQuery] = useState('');
   const [format, setFormat] = useState<RequestType>('both');
   const [matches, setMatches] = useState<Match[]>([]);
@@ -108,14 +110,17 @@ export function RequestsView({ requests, onSubmitRequest }: Props) {
                 {m.authors.join(', ')} {m.year > 0 && `(${m.year})`}
               </p>
             </div>
-            <button
+            {m.library_book_id ? <button onClick={() => onOpenBook?.(m.library_book_id!)} className="flex items-center gap-2 text-emerald-300">
+              <Check aria-hidden="true" className="w-4 h-4" /> In Library
+              <span className="sr-only">: {m.title}</span>
+            </button> : <button
               disabled={busy}
               onClick={() => void add(m)}
               className="px-4 py-2 bg-blue-600 rounded-md disabled:opacity-50"
               aria-label={`Add ${m.title}`}
             >
               Add
-            </button>
+            </button>}
           </li>
         ))}
       </ul>

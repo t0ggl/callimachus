@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/t0ggl/callimachus/pkg/database"
+	"github.com/t0ggl/callimachus/pkg/epub"
 	"github.com/t0ggl/callimachus/pkg/metadata"
 )
 
@@ -482,6 +483,40 @@ func (c *Catalog) UpsertMediaAsset(ctx context.Context, ma *database.MediaAsset)
 // IngestBook performs canonical file placement and sidecar generation via OrganizeBook,
 // and records the Author, Series, Book, BookEdition, and MediaAsset in the database.
 func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookDetails, mediaSrcPath string, coverData []byte) (*IngestResult, error) {
+	if strings.EqualFold(filepath.Ext(mediaSrcPath), ".epub") {
+		if ep, err := epub.OpenNative(mediaSrcPath); err == nil {
+			meta := ep.Metadata()
+			if meta.Publisher != "" {
+				book.Publisher = meta.Publisher
+			}
+			if meta.ISBN13 != "" {
+				book.ISBN13 = meta.ISBN13
+			}
+			if meta.Language != "" {
+				book.Language = meta.Language
+			}
+			if meta.Description != "" {
+				book.Description = meta.Description
+			}
+		}
+	}
+	// Capture previous inventory before publishing the replacement.
+	var previous []database.MediaAsset
+	if book.BookID != "" {
+		editions, err := c.GetEditionsByBookID(ctx, book.BookID)
+		if err != nil {
+			return nil, err
+		}
+		for _, ed := range editions {
+			if audioFormat(ed.Format) == audioFormat(strings.TrimPrefix(filepath.Ext(mediaSrcPath), ".")) {
+				assets, err := c.GetMediaAssetsByEditionID(ctx, ed.ID)
+				if err != nil {
+					return nil, err
+				}
+				previous = append(previous, assets...)
+			}
+		}
+	}
 	org, err := OrganizeBook(libraryRoot, book, mediaSrcPath, coverData)
 	if err != nil {
 		return nil, fmt.Errorf("organize book: %w", err)
@@ -538,6 +573,12 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 		return nil, fmt.Errorf("persist book: %w", err)
 	}
 
+	if book.BookID != "" {
+		dbBook, err = c.GetBookByID(ctx, book.BookID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	// 4. Edition
 	format := strings.ToLower(strings.TrimPrefix(filepath.Ext(org.MediaPath), "."))
 	var isbn *string
@@ -566,6 +607,25 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 		return nil, fmt.Errorf("persist edition: %w", err)
 	}
 
+	if book.Publisher != "" {
+		edition.Publisher = &book.Publisher
+	}
+	if book.ISBN13 != "" {
+		edition.ISBN13 = &book.ISBN13
+	}
+	if book.ASIN != "" {
+		edition.ASIN = &book.ASIN
+	}
+	if book.Language != "" {
+		edition.Language = book.Language
+	}
+	if releaseDate != nil {
+		edition.PublicationDate = releaseDate
+	}
+	if err := c.UpsertEdition(ctx, edition); err != nil {
+		return nil, err
+	}
+
 	// 5. Media Asset
 	asset := database.MediaAsset{
 		ID:         uuid.New().String(),
@@ -576,6 +636,38 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 	}
 	if err := c.UpsertMediaAsset(ctx, &asset); err != nil {
 		return nil, fmt.Errorf("persist media asset: %w", err)
+	}
+
+	// Only remove superseded files after the new media and inventory are committed.
+	for _, old := range previous {
+		oldAbs, err := filepath.Abs(old.FilePath)
+		if err != nil {
+			return nil, err
+		}
+		if oldAbs == filepath.Clean(org.MediaPath) {
+			continue
+		}
+		root, err := filepath.Abs(libraryRoot)
+		if err != nil {
+			return nil, err
+		}
+		oldPath, err := filepath.Abs(old.FilePath)
+		if err != nil {
+			return nil, err
+		}
+		rel, err := filepath.Rel(root, oldPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("superseded asset outside library")
+		}
+		if err := checkPathNoSymlinks(old.FilePath); err != nil {
+			return nil, err
+		}
+		if err := os.Remove(old.FilePath); err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+		if _, err := c.db.ExecContext(ctx, "DELETE FROM media_assets WHERE id=?", old.ID); err != nil {
+			return nil, err
+		}
 	}
 
 	return &IngestResult{
@@ -782,4 +874,30 @@ func parseDBTime(val any) time.Time {
 		}
 	}
 	return time.Now().UTC()
+}
+
+func audioFormat(format string) bool {
+	return strings.EqualFold(format, "m4b") || strings.EqualFold(format, "mp3")
+}
+
+// IngestConvertedAudio publishes converted audio using the catalog identity, then
+// retires earlier audio assets through the same path as direct imports.
+func (c *Catalog) IngestConvertedAudio(ctx context.Context, editionID, source, target string, cover []byte) error {
+	var b BookDetails
+	var date string
+	err := c.db.QueryRowContext(ctx, `SELECT b.id,b.title,a.name,COALESCE(s.title,''),b.series_index,COALESCE(b.release_date,''),COALESCE(b.synopsis,'') FROM book_editions e JOIN books b ON b.id=e.book_id JOIN authors a ON a.id=b.author_id LEFT JOIN series s ON s.id=b.series_id WHERE e.id=?`, editionID).Scan(&b.BookID, &b.Title, &b.Author, &b.Series, &b.SeriesIndex, &date, &b.Description)
+	if err != nil {
+		return err
+	}
+	fmt.Sscanf(date, "%d", &b.Year)
+	root := filepath.Dir(filepath.Dir(filepath.Dir(target)))
+	if b.Series != "" {
+		root = filepath.Dir(root)
+	}
+	expected, _, _, err := ResolveCanonicalPath(root, b, ".m4b")
+	if err != nil || filepath.Clean(expected) != filepath.Clean(target) {
+		return fmt.Errorf("audio target does not match canonical catalog path")
+	}
+	_, err = c.IngestBook(ctx, root, b, source, cover)
+	return err
 }

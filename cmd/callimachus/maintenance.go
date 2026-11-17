@@ -18,6 +18,9 @@ func (s *Server) maintainLogs(ctx context.Context, ticks <-chan time.Time) {
 		if ctx.Err() != nil {
 			return
 		}
+		if _, err := s.scanLibrary(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("[library] scan failed: %v", err)
+		}
 		if err := s.db.PruneLogs(ctx, s.maintenance.LogRetentionDays); err != nil && ctx.Err() == nil {
 			log.Printf("[maintenance] log retention cleanup failed: %v", err)
 		}

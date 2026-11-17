@@ -89,7 +89,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
       >
         <div className="px-6 pt-4">
           <button disabled={manualBusy} onClick={() => void openManual()} className="text-blue-300 disabled:opacity-50">
-            {manualBusy ? 'Loading…' : 'Manual Search'}
+            {manualBusy ? 'Loading…' : 'Search Download Options'}
           </button>
           {manualError && <p role="alert" className="text-red-300">{manualError}</p>}
         </div>
