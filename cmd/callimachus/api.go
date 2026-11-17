@@ -139,6 +139,7 @@ type APIQualityProfileSettings struct {
 }
 
 type APISettingsResponse struct {
+	Metadata       map[string]bool                `json:"metadata"`
 	Indexers       []APIIndexerConfig             `json:"indexers"`
 	Library        APILibrarySettings             `json:"library"`
 	Prowlarr       APIProwlarrSettings            `json:"prowlarr"`
@@ -147,7 +148,8 @@ type APISettingsResponse struct {
 }
 
 type APISettingsUpdateRequest struct {
-	Library *struct {
+	Metadata map[string]string `json:"metadata"`
+	Library  *struct {
 		CompletedDownloadRoot *string `json:"completedDownloadRoot"`
 		RootPath              *string `json:"rootPath"`
 		StagingPollInterval   *string `json:"stagingPollInterval"`
@@ -170,6 +172,8 @@ type APISettingsUpdateRequest struct {
 }
 
 func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/discover", s.handleDiscover)
+	mux.Handle("POST /api/acquisition/failure", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleAcquisitionFailure)))
 	mux.HandleFunc("GET /api/books", s.handleGetBooks)
 	mux.HandleFunc("GET /api/books/", s.handleGetBooks)
 	mux.HandleFunc("GET /api/authors", s.handleGetAuthors)
@@ -433,6 +437,7 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 		IndexerSyncInterval:   cfg.IndexerSyncInterval.String(),
 	}
 
+	resp.Metadata = map[string]bool{config.KeyGoogleBooksAPIKey: cfg.GoogleBooksAPIKey != "", config.KeyHardcoverAPIKey: cfg.HardcoverAPIKey != ""}
 	// Prowlarr Integration (never expose raw API key)
 	resp.Prowlarr = APIProwlarrSettings{
 		URL:              cfg.ProwlarrURL,
@@ -548,6 +553,11 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updates := make(map[string]string)
+	for key, value := range req.Metadata {
+		if key == config.KeyGoogleBooksAPIKey || key == config.KeyHardcoverAPIKey {
+			updates[key] = value
+		}
+	}
 
 	if req.Library != nil {
 		if req.Library.CompletedDownloadRoot != nil {

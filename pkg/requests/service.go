@@ -15,12 +15,10 @@ import (
 
 // ServiceConfig holds configuration for the Overseerr-style book request workflow.
 type ServiceConfig struct {
-	WeeklyLimit      int
-	MonthlyLimit     int
-	ExemptRoles      map[string]bool
-	AutoApproveRoles map[string]bool
-	AutoApproveUsers map[string]bool
-	SearchTrigger    SearchTrigger
+	WeeklyLimit   int
+	MonthlyLimit  int
+	ExemptRoles   map[string]bool
+	SearchTrigger SearchTrigger
 }
 
 // DefaultServiceConfig returns default request service configuration.
@@ -32,12 +30,7 @@ func DefaultServiceConfig() ServiceConfig {
 			auth.RoleAdmin:   true,
 			auth.RoleCurator: true,
 		},
-		AutoApproveRoles: map[string]bool{
-			auth.RoleAdmin:   true,
-			auth.RoleCurator: true,
-		},
-		AutoApproveUsers: make(map[string]bool),
-		SearchTrigger:    NoopSearchTrigger{},
+		SearchTrigger: NoopSearchTrigger{},
 	}
 }
 
@@ -61,12 +54,6 @@ func NewRequestService(db *database.DB, cfgs ...ServiceConfig) *RequestService {
 		}
 		if c.ExemptRoles != nil {
 			cfg.ExemptRoles = c.ExemptRoles
-		}
-		if c.AutoApproveRoles != nil {
-			cfg.AutoApproveRoles = c.AutoApproveRoles
-		}
-		if c.AutoApproveUsers != nil {
-			cfg.AutoApproveUsers = c.AutoApproveUsers
 		}
 		if c.SearchTrigger != nil {
 			cfg.SearchTrigger = c.SearchTrigger
@@ -98,45 +85,13 @@ func (s *RequestService) SetQuotaLimits(weekly, monthly int) {
 	s.cfg.MonthlyLimit = monthly
 }
 
-// SetAutoApproveRole enables or disables auto-approval for a specific role.
-func (s *RequestService) SetAutoApproveRole(role string, enabled bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.cfg.AutoApproveRoles == nil {
-		s.cfg.AutoApproveRoles = make(map[string]bool)
-	}
-	s.cfg.AutoApproveRoles[role] = enabled
-}
-
-// SetAutoApproveUser enables or disables auto-approval for a specific user ID.
-func (s *RequestService) SetAutoApproveUser(userID string, enabled bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.cfg.AutoApproveUsers == nil {
-		s.cfg.AutoApproveUsers = make(map[string]bool)
-	}
-	s.cfg.AutoApproveUsers[userID] = enabled
-}
-
 func (s *RequestService) isRoleExempt(role string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.cfg.ExemptRoles[role] || auth.HasRole(role, auth.RoleCurator)
 }
 
-func (s *RequestService) shouldAutoApprove(userID, role string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.cfg.AutoApproveUsers[userID] {
-		return true
-	}
-	if s.cfg.AutoApproveRoles[role] {
-		return true
-	}
-	return auth.HasRole(role, auth.RoleCurator)
-}
-
-// SubmitRequest validates, checks quotas, auto-approves if eligible, and persists a new BookRequest.
+// SubmitRequest validates, checks quotas and queues acquisition.
 func (s *RequestService) SubmitRequest(ctx context.Context, input CreateRequestInput) (*BookRequest, error) {
 	if strings.TrimSpace(input.UserID) == "" {
 		return nil, fmt.Errorf("%w: user_id is required", ErrInvalidInput)
@@ -180,8 +135,8 @@ func (s *RequestService) SubmitRequest(ctx context.Context, input CreateRequestI
 		if weeklyLimit > 0 {
 			var weeklyCount int
 			cutoff := now.Add(-7 * 24 * time.Hour)
-			q := "SELECT COUNT(*) FROM book_requests WHERE user_id = ? AND status != ? AND created_at >= ?"
-			if err := s.db.QueryRowContext(ctx, q, input.UserID, StatusRejected, cutoff).Scan(&weeklyCount); err != nil {
+			q := "SELECT COUNT(*) FROM book_requests WHERE user_id = ? AND created_at >= ?"
+			if err := s.db.QueryRowContext(ctx, q, input.UserID, cutoff).Scan(&weeklyCount); err != nil {
 				return nil, fmt.Errorf("failed to check weekly request quota: %w", err)
 			}
 			if weeklyCount >= weeklyLimit {
@@ -192,8 +147,8 @@ func (s *RequestService) SubmitRequest(ctx context.Context, input CreateRequestI
 		if monthlyLimit > 0 {
 			var monthlyCount int
 			cutoff := now.Add(-30 * 24 * time.Hour)
-			q := "SELECT COUNT(*) FROM book_requests WHERE user_id = ? AND status != ? AND created_at >= ?"
-			if err := s.db.QueryRowContext(ctx, q, input.UserID, StatusRejected, cutoff).Scan(&monthlyCount); err != nil {
+			q := "SELECT COUNT(*) FROM book_requests WHERE user_id = ? AND created_at >= ?"
+			if err := s.db.QueryRowContext(ctx, q, input.UserID, cutoff).Scan(&monthlyCount); err != nil {
 				return nil, fmt.Errorf("failed to check monthly request quota: %w", err)
 			}
 			if monthlyCount >= monthlyLimit {
@@ -203,28 +158,17 @@ func (s *RequestService) SubmitRequest(ctx context.Context, input CreateRequestI
 	}
 
 	now := time.Now().UTC()
-	autoApprove := s.shouldAutoApprove(input.UserID, input.UserRole)
-
-	var (
-		status           = StatusPending
-		reviewedByUserID *string
-		reviewedAt       *time.Time
-		monitored        = false
-	)
-
-	if autoApprove {
-		status = StatusApproved
-		reviewedByUserID = &input.UserID
-		reviewedAt = &now
-		monitored = true
+	status := StatusSearching
+	if input.ManualOnly {
+		status = StatusError
 	}
-
+	monitored := true
 	insertQuery := `
 		INSERT INTO book_requests (
 			user_id, book_id, title, author, format, status,
-			rejection_reason, reviewed_by_user_id, reviewed_at, monitored,
-			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			monitored,
+			created_at, updated_at, year
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	monitoredInt := 0
 	if monitored {
@@ -238,12 +182,10 @@ func (s *RequestService) SubmitRequest(ctx context.Context, input CreateRequestI
 		input.Author,
 		input.Format,
 		status,
-		nil,
-		reviewedByUserID,
-		reviewedAt,
 		monitoredInt,
 		now,
 		now,
+		input.Year,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert book request: %w", err)
@@ -259,7 +201,7 @@ func (s *RequestService) SubmitRequest(ctx context.Context, input CreateRequestI
 		return nil, err
 	}
 
-	if autoApprove {
+	if monitored {
 		if input.BookID != nil && *input.BookID != "" {
 			_ = s.markBookMonitored(ctx, *input.BookID, input.Format)
 		}
@@ -274,106 +216,7 @@ func (s *RequestService) SubmitRequest(ctx context.Context, input CreateRequestI
 	return req, nil
 }
 
-// ApproveRequest marks a pending request as approved, sets monitored status on the book,
-// and invokes the search trigger. Reviewer must have curator or admin role.
-func (s *RequestService) ApproveRequest(ctx context.Context, requestID int64, reviewerID string) (*BookRequest, error) {
-	if strings.TrimSpace(reviewerID) == "" {
-		return nil, fmt.Errorf("%w: reviewer_id is required", ErrForbidden)
-	}
-
-	var reviewerRole string
-	err := s.db.QueryRowContext(ctx, "SELECT role FROM users WHERE id = ?", reviewerID).Scan(&reviewerRole)
-	if err != nil {
-		return nil, fmt.Errorf("%w: reviewer not found or unauthorized", ErrForbidden)
-	}
-	if !auth.HasRole(reviewerRole, auth.RoleCurator) {
-		return nil, fmt.Errorf("%w: curator or admin role required to approve request", ErrForbidden)
-	}
-
-	current, err := s.GetRequest(ctx, requestID)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := ValidateTransition(current.Status, StatusApproved); err != nil {
-		return nil, err
-	}
-
-	now := time.Now().UTC()
-	updateQuery := `
-		UPDATE book_requests
-		SET status = ?, reviewed_by_user_id = ?, reviewed_at = ?, monitored = 1, updated_at = ?
-		WHERE id = ?
-	`
-	_, err = s.db.ExecContext(ctx, updateQuery, StatusApproved, reviewerID, now, now, requestID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to update request to approved: %w", err)
-	}
-
-	if current.BookID != nil && *current.BookID != "" {
-		_ = s.markBookMonitored(ctx, *current.BookID, current.Format)
-	}
-
-	updated, err := s.GetRequest(ctx, requestID)
-	if err != nil {
-		return nil, err
-	}
-
-	s.mu.RLock()
-	trigger := s.cfg.SearchTrigger
-	s.mu.RUnlock()
-	if trigger != nil {
-		_ = trigger.TriggerSearch(ctx, updated)
-	}
-
-	return updated, nil
-}
-
-// RejectRequest marks a request as rejected with a reason. Reviewer must have curator or admin role.
-func (s *RequestService) RejectRequest(ctx context.Context, requestID int64, reviewerID string, reason string) (*BookRequest, error) {
-	if strings.TrimSpace(reviewerID) == "" {
-		return nil, fmt.Errorf("%w: reviewer_id is required", ErrForbidden)
-	}
-
-	var reviewerRole string
-	err := s.db.QueryRowContext(ctx, "SELECT role FROM users WHERE id = ?", reviewerID).Scan(&reviewerRole)
-	if err != nil {
-		return nil, fmt.Errorf("%w: reviewer not found or unauthorized", ErrForbidden)
-	}
-	if !auth.HasRole(reviewerRole, auth.RoleCurator) {
-		return nil, fmt.Errorf("%w: curator or admin role required to reject request", ErrForbidden)
-	}
-
-	current, err := s.GetRequest(ctx, requestID)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := ValidateTransition(current.Status, StatusRejected); err != nil {
-		return nil, err
-	}
-
-	now := time.Now().UTC()
-	updateQuery := `
-		UPDATE book_requests
-		SET status = ?, rejection_reason = ?, reviewed_by_user_id = ?, reviewed_at = ?, monitored = 0, updated_at = ?
-		WHERE id = ?
-	`
-	var reasonPtr *string
-	if strings.TrimSpace(reason) != "" {
-		trimmed := strings.TrimSpace(reason)
-		reasonPtr = &trimmed
-	}
-
-	_, err = s.db.ExecContext(ctx, updateQuery, StatusRejected, reasonPtr, reviewerID, now, now, requestID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to reject request: %w", err)
-	}
-
-	return s.GetRequest(ctx, requestID)
-}
-
-// MarkDownloading transitions an approved request to downloading status.
+// MarkDownloading transitions a searching request to downloading status.
 func (s *RequestService) MarkDownloading(ctx context.Context, requestID int64) error {
 	current, err := s.GetRequest(ctx, requestID)
 	if err != nil {
@@ -411,7 +254,7 @@ func (s *RequestService) MarkAvailable(ctx context.Context, requestID int64) err
 func (s *RequestService) GetRequest(ctx context.Context, requestID int64) (*BookRequest, error) {
 	query := `
 		SELECT r.id, r.user_id, COALESCE(u.username, ''), r.book_id, r.title, r.author, r.format, r.status,
-		       r.rejection_reason, r.reviewed_by_user_id, r.reviewed_at, r.monitored, r.created_at, r.updated_at
+		       r.monitored, r.created_at, r.updated_at
 		FROM book_requests r
 		LEFT JOIN users u ON r.user_id = u.id
 		WHERE r.id = ?
@@ -420,9 +263,6 @@ func (s *RequestService) GetRequest(ctx context.Context, requestID int64) (*Book
 	var (
 		req        BookRequest
 		bookID     sql.NullString
-		rejReason  sql.NullString
-		reviewedBy sql.NullString
-		reviewedAt sql.NullTime
 		monitoredI int
 	)
 
@@ -435,9 +275,6 @@ func (s *RequestService) GetRequest(ctx context.Context, requestID int64) (*Book
 		&req.Author,
 		&req.Format,
 		&req.Status,
-		&rejReason,
-		&reviewedBy,
-		&reviewedAt,
 		&monitoredI,
 		&req.CreatedAt,
 		&req.UpdatedAt,
@@ -452,16 +289,6 @@ func (s *RequestService) GetRequest(ctx context.Context, requestID int64) (*Book
 	if bookID.Valid {
 		req.BookID = &bookID.String
 	}
-	if rejReason.Valid {
-		req.RejectionReason = &rejReason.String
-	}
-	if reviewedBy.Valid {
-		req.ReviewedByUserID = &reviewedBy.String
-	}
-	if reviewedAt.Valid {
-		t := reviewedAt.Time.UTC()
-		req.ReviewedAt = &t
-	}
 	req.Monitored = monitoredI == 1
 	req.CreatedAt = req.CreatedAt.UTC()
 	req.UpdatedAt = req.UpdatedAt.UTC()
@@ -473,7 +300,7 @@ func (s *RequestService) GetRequest(ctx context.Context, requestID int64) (*Book
 func (s *RequestService) ListRequests(ctx context.Context, filter RequestFilter) ([]BookRequest, error) {
 	query := `
 		SELECT r.id, r.user_id, COALESCE(u.username, ''), r.book_id, r.title, r.author, r.format, r.status,
-		       r.rejection_reason, r.reviewed_by_user_id, r.reviewed_at, r.monitored, r.created_at, r.updated_at
+		       r.monitored, r.created_at, r.updated_at
 		FROM book_requests r
 		LEFT JOIN users u ON r.user_id = u.id
 		WHERE 1=1
@@ -499,6 +326,9 @@ func (s *RequestService) ListRequests(ctx context.Context, filter RequestFilter)
 		query += " LIMIT ?"
 		args = append(args, filter.Limit)
 	}
+	if filter.Offset > 0 && filter.Limit <= 0 {
+		query += " LIMIT -1"
+	}
 	if filter.Offset > 0 {
 		query += " OFFSET ?"
 		args = append(args, filter.Offset)
@@ -515,9 +345,6 @@ func (s *RequestService) ListRequests(ctx context.Context, filter RequestFilter)
 		var (
 			req        BookRequest
 			bookID     sql.NullString
-			rejReason  sql.NullString
-			reviewedBy sql.NullString
-			reviewedAt sql.NullTime
 			monitoredI int
 		)
 
@@ -530,9 +357,6 @@ func (s *RequestService) ListRequests(ctx context.Context, filter RequestFilter)
 			&req.Author,
 			&req.Format,
 			&req.Status,
-			&rejReason,
-			&reviewedBy,
-			&reviewedAt,
 			&monitoredI,
 			&req.CreatedAt,
 			&req.UpdatedAt,
@@ -543,16 +367,6 @@ func (s *RequestService) ListRequests(ctx context.Context, filter RequestFilter)
 
 		if bookID.Valid {
 			req.BookID = &bookID.String
-		}
-		if rejReason.Valid {
-			req.RejectionReason = &rejReason.String
-		}
-		if reviewedBy.Valid {
-			req.ReviewedByUserID = &reviewedBy.String
-		}
-		if reviewedAt.Valid {
-			t := reviewedAt.Time.UTC()
-			req.ReviewedAt = &t
 		}
 		req.Monitored = monitoredI == 1
 		req.CreatedAt = req.CreatedAt.UTC()

@@ -23,6 +23,7 @@ import {
 } from '../types';
 
 export interface SettingsUpdatePayload {
+ metadata?: Record<string,string>;
   library?: {
     rootPath?: string;
     completedDownloadRoot?: string;
@@ -88,6 +89,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [librarySettings, setLibrarySettings] = useState<LibrarySettings>(initialLibrary);
   const [prowlarrSettings, setProwlarrSettings] = useState<ProwlarrSettings>(initialProwlarr);
   const [prowlarrApiKeyDraft, setProwlarrApiKeyDraft] = useState('');
+ const [metadataKeys,setMetadataKeys]=useState<Record<string,string>>({});
 
   const [qualityProfile, setQualityProfile] = useState<QualityProfile>({
     ...initialQuality,
@@ -176,6 +178,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setSaveError(null);
 
     const payload: SettingsUpdatePayload = {
+ metadata: Object.fromEntries(Object.entries(metadataKeys).filter(([key,value])=>!isOverridden(key)&&value.trim())),
       library: {
         ...(!isOverridden("completed_download_root") ? { completedDownloadRoot: librarySettings.completedDownloadRoot ?? "" } : {}),
         ...(!isOverridden('library_root') ? { rootPath: librarySettings.rootPath } : {}),
@@ -425,6 +428,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <OverrideNote settingKey="prowlarr_api_key" />
               </div>
 
+              {(['google_books_api_key','hardcover_api_key'] as const).map(key=><div key={key}>
+                <label htmlFor={key} className="block text-zinc-300">{key==='google_books_api_key'?'Google Books API key (optional)':'Hardcover API key'}</label>
+                <OverrideBadge settingKey={key}/>
+                <input id={key} type="password" autoComplete="off" value={metadataKeys[key]||''} onChange={e=>setMetadataKeys(prev=>({...prev,[key]:e.target.value}))} disabled={isOverridden(key)} placeholder="Leave blank to keep current key" className={inputClass(isOverridden(key))}/>
+                <OverrideNote settingKey={key}/>
+              </div>)}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label htmlFor="prowlarr-sync-interval" className="block text-zinc-400 font-medium">

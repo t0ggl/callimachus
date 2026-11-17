@@ -19,6 +19,8 @@ import (
 // Every setting's environment variable is automatically derived via
 // EnvVarName(key) -> "CALLIMACHUS_" + strings.ToUpper(key).
 const (
+	KeyGoogleBooksAPIKey      = "google_books_api_key"
+	KeyHardcoverAPIKey        = "hardcover_api_key"
 	KeyCompletedDownloadRoot  = "completed_download_root"
 	KeyLibraryRoot            = "library_root"
 	KeyProwlarrURL            = "prowlarr_url"
@@ -70,6 +72,8 @@ func EnvVarName(settingKey string) string {
 }
 
 var registry = []SettingSpec{
+	{Key: KeyGoogleBooksAPIKey, Kind: KindString, Secret: true},
+	{Key: KeyHardcoverAPIKey, Kind: KindString, Secret: true},
 	{Key: KeyLibraryRoot, Kind: KindString},
 	{Key: KeyCompletedDownloadRoot, Kind: KindString},
 	{Key: KeyProwlarrURL, Kind: KindString},
@@ -116,6 +120,8 @@ type OverrideInfo struct {
 
 // Settings holds the effective resolved application configuration.
 type Settings struct {
+	GoogleBooksAPIKey      string        `json:"-"`
+	HardcoverAPIKey        string        `json:"-"`
 	CompletedDownloadRoot  string        `json:"completedDownloadRoot"`
 	LibraryRoot            string        `json:"libraryRoot"`
 	ProwlarrURL            string        `json:"prowlarrUrl"`
@@ -470,6 +476,8 @@ func callerOverridesMap(c Overrides) map[string]string {
 
 func materializeSettings(vals map[string]string) Settings {
 	return Settings{
+		GoogleBooksAPIKey:      vals[KeyGoogleBooksAPIKey],
+		HardcoverAPIKey:        vals[KeyHardcoverAPIKey],
 		LibraryRoot:            vals[KeyLibraryRoot],
 		CompletedDownloadRoot:  vals[KeyCompletedDownloadRoot],
 		ProwlarrURL:            strings.TrimRight(vals[KeyProwlarrURL], "/"),

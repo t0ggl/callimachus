@@ -109,7 +109,7 @@ export interface ImportLog {
   details: string;
 }
 
-export type RequestStatus = 'pending' | 'approved' | 'downloading' | 'available' | 'rejected';
+export type RequestStatus = 'searching' | 'downloading' | 'available' | 'error';
 export type RequestType = 'ebook' | 'audiobook' | 'both';
 
 export interface BookRequest {
@@ -120,9 +120,6 @@ export interface BookRequest {
   requestType: RequestType;
   status: RequestStatus;
   requestedAt: string;
-  reviewedAt?: string;
-  rejectionReason?: string;
-  notes?: string;
 }
 
 export interface UserProfile {

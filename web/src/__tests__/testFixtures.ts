@@ -113,7 +113,7 @@ export const testRequests: BookRequest[] = [
     author: 'Elena Rostova',
     requestedBy: 'reader_jane',
     requestType: 'both',
-    status: 'pending',
+    status: 'searching',
     requestedAt: '2023-05-01T12:00:00Z',
   },
   {
@@ -122,7 +122,7 @@ export const testRequests: BookRequest[] = [
     author: 'Cyril Vance',
     requestedBy: 'reader_alex',
     requestType: 'ebook',
-    status: 'approved',
+    status: 'searching',
     requestedAt: '2023-05-02T14:30:00Z',
   },
 ];

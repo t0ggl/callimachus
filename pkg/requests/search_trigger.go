@@ -4,7 +4,7 @@ import (
 	"context"
 )
 
-// SearchTrigger defines a callback / hook interface invoked when a book request is approved.
+// SearchTrigger defines a callback / hook interface invoked when a book is added.
 // Implementations can trigger an immediate indexer search for the requested book.
 type SearchTrigger interface {
 	TriggerSearch(ctx context.Context, req *BookRequest) error

@@ -82,7 +82,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         id: 'nav_requests',
         type: 'navigation',
         title: 'Request Portal',
-        subtitle: 'Manage user book requests and approvals',
+        subtitle: 'Find books and manage acquisitions',
         badge: 'View',
         action: () => {
           onNavigate('requests');

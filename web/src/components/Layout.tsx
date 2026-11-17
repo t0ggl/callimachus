@@ -64,9 +64,9 @@ export const Layout: React.FC<LayoutProps> = ({
   ];
 
   return (
-    <div className="flex h-screen bg-zinc-950 text-zinc-100 overflow-hidden">
+    <div className="flex flex-col md:flex-row h-screen bg-zinc-950 text-zinc-100 overflow-hidden">
       {/* Sidebar Navigation */}
-      <aside className="w-64 bg-zinc-900/90 border-r border-zinc-800 flex flex-col justify-between shrink-0">
+      <aside className="w-full md:w-64 bg-zinc-900/90 border-r border-zinc-800 flex flex-col justify-between shrink-0">
         <div>
           {/* Logo & Brand Header */}
           <div className="h-14 flex items-center px-4 border-b border-zinc-800 gap-3">
@@ -91,7 +91,7 @@ export const Layout: React.FC<LayoutProps> = ({
           </div>
 
           {/* Navigation Links */}
-          <nav className="p-3 space-y-1">
+          <nav className="p-2 grid grid-cols-2 gap-1 md:block md:p-3 md:space-y-1">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = currentView === item.id;
@@ -124,7 +124,7 @@ export const Layout: React.FC<LayoutProps> = ({
 
         {/* Sidebar Footer: System Status */}
         <div className="p-3 border-t border-zinc-800 space-y-3 bg-zinc-950/40">
-          <div className="space-y-1.5 text-[11px]">
+          <div className="hidden md:block space-y-1.5 text-[11px]">
             <div className="flex items-center justify-between text-zinc-400">
               <span className="flex items-center gap-1.5">
                 <Zap className="w-3.5 h-3.5 text-amber-400" />
@@ -142,7 +142,7 @@ export const Layout: React.FC<LayoutProps> = ({
           </div>
 
           {/* User info & Logout */}
-          <div className="pt-2 border-t border-zinc-800 flex items-center justify-between">
+          <div className="md:pt-2 md:border-t border-zinc-800 flex items-center justify-between">
             {user ? (
               <>
                 <div className="flex items-center gap-2 min-w-0">
@@ -181,7 +181,7 @@ export const Layout: React.FC<LayoutProps> = ({
       </aside>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
         {/* Top Header Bar */}
         <header className="h-14 bg-zinc-900 border-b border-zinc-800 flex items-center justify-between px-6 shrink-0">
           {/* Global Search / Command Palette Trigger */}
@@ -202,7 +202,7 @@ export const Layout: React.FC<LayoutProps> = ({
           </button>
 
           {/* Quick status bar items */}
-          <div className="flex items-center gap-4">
+          <div className="hidden md:flex items-center gap-4">
             <div className="flex items-center gap-2 text-xs">
               <span
                 onClick={() => onNavigate('activity')}
@@ -233,7 +233,7 @@ export const Layout: React.FC<LayoutProps> = ({
         </header>
 
         {/* View Viewport */}
-        <main className="flex-1 overflow-y-auto bg-zinc-950 p-6">
+        <main className="flex-1 overflow-y-auto bg-zinc-950 p-4 md:p-6">
           {children}
         </main>
       </div>

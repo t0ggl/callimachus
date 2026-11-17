@@ -187,21 +187,6 @@ type User struct {
 	LastLoginAt  *time.Time `json:"last_login_at,omitempty" db:"last_login_at"`
 }
 
-// UserRequest represents an Overseerr-style media acquisition request.
-type UserRequest struct {
-	ID              string     `json:"id" db:"id"`
-	UserID          string     `json:"user_id" db:"user_id"`
-	BookID          *string    `json:"book_id,omitempty" db:"book_id"`
-	RequestedTitle  string     `json:"requested_title" db:"requested_title"`
-	RequestedAuthor string     `json:"requested_author" db:"requested_author"`
-	Format          string     `json:"format" db:"format"` // 'epub', 'm4b', 'both'
-	Status          string     `json:"status" db:"status"` // 'pending', 'approved', 'rejected', 'downloading', 'available'
-	RejectionReason *string    `json:"rejection_reason,omitempty" db:"rejection_reason"`
-	RequestedAt     time.Time  `json:"requested_at" db:"requested_at"`
-	ProcessedAt     *time.Time `json:"processed_at,omitempty" db:"processed_at"`
-	ProcessedBy     *string    `json:"processed_by,omitempty" db:"processed_by"`
-}
-
 // Setting represents a persistent application key-value configuration.
 type Setting struct {
 	Key       string    `json:"key" db:"key"`

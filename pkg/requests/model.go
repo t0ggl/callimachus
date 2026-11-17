@@ -9,11 +9,10 @@ import (
 
 // Request status constants
 const (
-	StatusPending     = "pending"
-	StatusApproved    = "approved"
+	StatusSearching   = "searching"
 	StatusDownloading = "downloading"
 	StatusAvailable   = "available"
-	StatusRejected    = "rejected"
+	StatusError       = "error"
 )
 
 // Request format constants
@@ -25,30 +24,29 @@ const (
 
 // BookRequest represents an Overseerr-style media acquisition request.
 type BookRequest struct {
-	ID               int64      `json:"id" db:"id"`
-	UserID           string     `json:"user_id" db:"user_id"`
-	Username         string     `json:"username" db:"username"`
-	BookID           *string    `json:"book_id,omitempty" db:"book_id"`
-	Title            string     `json:"title" db:"title"`
-	Author           string     `json:"author" db:"author"`
-	Format           string     `json:"format" db:"format"`
-	Status           string     `json:"status" db:"status"`
-	RejectionReason  *string    `json:"rejection_reason,omitempty" db:"rejection_reason"`
-	ReviewedByUserID *string    `json:"reviewed_by_user_id,omitempty" db:"reviewed_by_user_id"`
-	ReviewedAt       *time.Time `json:"reviewed_at,omitempty" db:"reviewed_at"`
-	Monitored        bool       `json:"monitored" db:"monitored"`
-	CreatedAt        time.Time  `json:"created_at" db:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at" db:"updated_at"`
+	ID        int64     `json:"id" db:"id"`
+	UserID    string    `json:"user_id" db:"user_id"`
+	Username  string    `json:"username" db:"username"`
+	BookID    *string   `json:"book_id,omitempty" db:"book_id"`
+	Title     string    `json:"title" db:"title"`
+	Author    string    `json:"author" db:"author"`
+	Format    string    `json:"format" db:"format"`
+	Status    string    `json:"status" db:"status"`
+	Monitored bool      `json:"monitored" db:"monitored"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // CreateRequestInput holds parameters for submitting a book request.
 type CreateRequestInput struct {
-	UserID   string  `json:"user_id"`
-	BookID   *string `json:"book_id,omitempty"`
-	Title    string  `json:"title"`
-	Author   string  `json:"author"`
-	Format   string  `json:"format"`
-	UserRole string  `json:"user_role,omitempty"`
+	ManualOnly bool    `json:"manual_only"`
+	Year       int     `json:"year"`
+	UserID     string  `json:"user_id"`
+	BookID     *string `json:"book_id,omitempty"`
+	Title      string  `json:"title"`
+	Author     string  `json:"author"`
+	Format     string  `json:"format"`
+	UserRole   string  `json:"user_role,omitempty"`
 }
 
 // RequestFilter defines search, filtering, and pagination parameters.
@@ -74,26 +72,16 @@ var (
 
 // validTransitions defines permissible state transitions for book requests.
 var validTransitions = map[string]map[string]bool{
-	StatusPending: {
-		StatusApproved: true,
-		StatusRejected: true,
-	},
-	StatusApproved: {
-		StatusDownloading: true,
-		StatusRejected:    true,
-	},
-	StatusDownloading: {
-		StatusAvailable: true,
-		StatusApproved:  true,
-	},
-	StatusAvailable: {},
-	StatusRejected:  {},
+	StatusSearching:   {StatusDownloading: true, StatusError: true},
+	StatusDownloading: {StatusAvailable: true, StatusSearching: true, StatusError: true},
+	StatusError:       {StatusSearching: true, StatusDownloading: true},
+	StatusAvailable:   {},
 }
 
 // IsValidStatus returns true if the status string is a recognized request status.
 func IsValidStatus(status string) bool {
 	switch strings.ToLower(status) {
-	case StatusPending, StatusApproved, StatusDownloading, StatusAvailable, StatusRejected:
+	case StatusSearching, StatusDownloading, StatusAvailable, StatusError:
 		return true
 	default:
 		return false

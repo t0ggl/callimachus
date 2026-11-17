@@ -199,7 +199,6 @@ func TestMigrationAndTables(t *testing.T) {
 		"download_queue",
 		"blocklist",
 		"users",
-		"user_requests",
 		"book_requests",
 		"settings",
 		"schema_migrations",
@@ -237,8 +236,8 @@ func TestMigrationAndTables(t *testing.T) {
 		"idx_blocklist_hash",
 		"idx_users_username",
 		"idx_users_oidc_sub",
-		"idx_user_requests_status",
-		"idx_user_requests_user",
+		"idx_book_requests_status",
+		"idx_book_requests_user",
 	}
 
 	for _, idx := range expectedIndexes {
@@ -467,8 +466,8 @@ func TestForeignKeyCascades(t *testing.T) {
 	// 4. Test User -> UserRequest cascade
 	_, err = db.ExecContext(ctx, `
 		INSERT INTO users (id, username, email) VALUES ('user-fk', 'jdoe', 'jdoe@example.com');
-		INSERT INTO user_requests (id, user_id, requested_title, requested_author)
-		VALUES ('req-fk', 'user-fk', 'Artemis', 'Andy Weir');
+		INSERT INTO book_requests (id, user_id, title, author)
+		VALUES (999, 'user-fk', 'Artemis', 'Andy Weir');
 	`)
 	if err != nil {
 		t.Fatalf("failed to insert user and request: %v", err)
@@ -479,7 +478,7 @@ func TestForeignKeyCascades(t *testing.T) {
 		t.Fatalf("failed to delete user: %v", err)
 	}
 
-	_ = db.QueryRowContext(ctx, "SELECT count(*) FROM user_requests WHERE id = 'req-fk';").Scan(&count)
+	_ = db.QueryRowContext(ctx, "SELECT count(*) FROM book_requests WHERE id = 999;").Scan(&count)
 	if count != 0 {
 		t.Errorf("user request was not cascade deleted on user deletion")
 	}

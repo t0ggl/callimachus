@@ -195,7 +195,7 @@ All media is saved according to strict canonical rules:
 ### 8.2 Roles & Request Workflow
 - **Roles:** Admin, Curator, Requester/User, Guest/Read-only.
 - **Request Portal:** Users can search and request missing books, audiobooks, or entire series.
-- Admins configure auto-approval rules per user group or manual review queues.
+- Adding a confirmed metadata match starts acquisition immediately. There is no approval queue. Failed releases receive a permanent -100 penalty and are excluded from automatic retries; acquisition tries at most three candidates.
 
 ---
 

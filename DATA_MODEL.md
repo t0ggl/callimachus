@@ -354,17 +354,18 @@ Multi-user system and Overseerr-style book request workflow.
 | `created_at` | `TEXT` | `NOT NULL` | ISO 8601 UTC timestamp |
 | `updated_at` | `TEXT` | `NOT NULL` | ISO 8601 UTC timestamp |
 
-**`user_requests`:**
-| Column | Type | Constraints | Description |
-|---|---|---|---|
-| `id` | `TEXT` | `PRIMARY KEY` | ULID identifier |
-| `user_id` | `TEXT` | `NOT NULL, FK -> users(id)` | Requesting user |
-| `book_id` | `TEXT` | `NOT NULL, FK -> books(id)` | Requested book work |
-| `requested_format`| `TEXT` | `NOT NULL` | `epub`, `m4b`, `any` |
-| `status` | `TEXT` | `NOT NULL DEFAULT 'pending'` | `pending`, `approved`, `declined`, `fulfilled` |
-| `notes` | `TEXT` | `NULL` | User notes or admin decline reason |
-| `created_at` | `TEXT` | `NOT NULL` | ISO 8601 UTC timestamp |
-| `updated_at` | `TEXT` | `NOT NULL` | ISO 8601 UTC timestamp |
+**`book_requests`:** Persists confirmed title, author, requested format, requester,
+optional library book ID and publication year. States: `searching`, `downloading`,
+`available`, `error`. `attempts` and `searched_at` persist the three-candidate ceiling
+and daily recheck schedule; `completed_at` anchors cache retention.
+
+**`acquisition_candidates`:** Keyed by request ID and source release key; stores
+release details, format, score breakdown, base score and active download queue ID.
+Cache entries expire 30 days after successful download.
+
+**`failed_releases`:** Permanent source release tombstones with a -100 penalty.
+These survive candidate refresh and cache eviction; automatic acquisition never
+selects a tombstoned release. Manual downloads can override this exclusion.
 
 ---
 

@@ -1,5 +1,6 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers } from 'lucide-react';
+import { ManualSearch } from './ManualSearch';
 import { Book } from '../types';
 
 interface BookDetailModalProps {
@@ -26,19 +27,55 @@ function formatDuration(seconds?: number): string {
 }
 
 export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose }) => {
+  const [requestId, setRequestId] = useState<string | null>(null);
+  const [manualError, setManualError] = useState('');
+  const [manualBusy, setManualBusy] = useState(false);
+  const openManual = async () => {
+    if (!book) return;
+    setManualBusy(true);
+    setManualError('');
+    try {
+      const res = await fetch('/api/requests');
+      if (!res.ok) throw new Error('Unable to load acquisitions');
+      const list = await res.json();
+      const existing = list.find((r: any) => r.book_id === book.id);
+      if (existing) {
+        setRequestId(String(existing.id));
+        return;
+      }
+      const created = await fetch('/api/requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          book_id: book.id,
+          title: book.title,
+          author: book.authorName,
+          format: 'both',
+          manual_only: true,
+        }),
+      });
+      if (!created.ok) throw new Error('Unable to open manual search');
+      setRequestId(String((await created.json()).id));
+    } catch (e) {
+      setManualError((e as Error).message);
+    } finally {
+      setManualBusy(false);
+    }
+  };
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !requestId) {
         onClose();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  }, [onClose, requestId]);
 
   if (!book) return null;
 
   return (
+    <>
     <div
       role="dialog"
       aria-modal="true"
@@ -50,6 +87,12 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
         className="w-full max-w-3xl max-h-[90vh] bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
+        <div className="px-6 pt-4">
+          <button disabled={manualBusy} onClick={() => void openManual()} className="text-blue-300 disabled:opacity-50">
+            {manualBusy ? 'Loading…' : 'Manual Search'}
+          </button>
+          {manualError && <p role="alert" className="text-red-300">{manualError}</p>}
+        </div>
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-950/40">
           <div className="flex items-center gap-3">
@@ -232,5 +275,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
         </div>
       </div>
     </div>
+    {requestId && <ManualSearch requestId={requestId} onClose={() => setRequestId(null)} />}
+    </>
   );
 };

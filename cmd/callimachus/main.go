@@ -55,6 +55,9 @@ type Config struct {
 
 // Server coordinates the database, background workers, and HTTP services.
 type Server struct {
+	acquisition        *requests.Acquisition
+	acquisitionCancel  context.CancelFunc
+	acquisitionDone    chan struct{}
 	cfg                Config
 	baseOverrides      config.Overrides
 	db                 *database.DB
@@ -168,11 +171,6 @@ func NewServer(cfg Config) (*Server, error) {
 
 	// 3. User Book Requests Workflow
 	reqService := requests.NewRequestService(db)
-	reqHandler := requests.NewHandler(requests.HandlerConfig{
-		Service:        reqService,
-		SessionManager: sessionMgr,
-		DB:             db,
-	})
 
 	// 4. Indexers Syncer & Prowlarr Integration
 	syncer := indexers.NewSyncer(db, indexers.SyncerConfig{
@@ -219,6 +217,9 @@ func NewServer(cfg Config) (*Server, error) {
 		staticFS:      staticFS,
 	}
 
+	srv.acquisition = srv.newAcquisition()
+	reqHandler := requests.NewHandler(requests.HandlerConfig{Service: reqService, SessionManager: sessionMgr, DB: db, Acquisition: srv.acquisition})
+
 	// 8. Register HTTP Endpoints & Router
 	mux := http.NewServeMux()
 
@@ -255,6 +256,25 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	s.listener = ln
 
+	workerCtx, cancel := context.WithCancel(ctx)
+	s.acquisitionCancel = cancel
+	s.acquisitionDone = make(chan struct{})
+	go func() {
+		defer close(s.acquisitionDone)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-ticker.C:
+				if err := s.acquisition.Tick(workerCtx); err != nil {
+					log.Printf("[acquisition] %v", err)
+				}
+			}
+		}
+	}()
+
 	// Start background indexer syncer
 	s.syncer.Start(ctx)
 
@@ -288,6 +308,10 @@ func (s *Server) Addr() string {
 
 // Shutdown gracefully stops the HTTP server and all background services.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.acquisitionCancel != nil {
+		s.acquisitionCancel()
+		<-s.acquisitionDone
+	}
 	var errs []error
 
 	if s.httpServer != nil {

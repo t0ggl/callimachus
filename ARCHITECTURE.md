@@ -398,8 +398,7 @@ CREATE TABLE user_requests (
     requested_title TEXT NOT NULL,
     requested_author TEXT NOT NULL,
     format TEXT NOT NULL DEFAULT 'both',       -- 'epub', 'm4b', 'both'
-    status TEXT NOT NULL DEFAULT 'pending',    -- 'pending', 'approved', 'rejected', 'downloading', 'available'
-    rejection_reason TEXT,
+    status TEXT NOT NULL DEFAULT 'searching', -- searching, downloading, available, error
     requested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     processed_at TIMESTAMP,
     processed_by TEXT REFERENCES users(id) ON DELETE SET NULL
@@ -589,14 +588,11 @@ sequenceDiagram
     end
 
     User->>Requests: POST /api/requests (Book / Series / Format)
-    Requests->>Requests: Check User Role & Auto-Approval Rule
-    alt Auto-Approved
-        Requests->>Requests: Update Status to 'approved' & Trigger Prowlarr Search
-    else Requires Review
-        Requests->>Requests: Update Status to 'pending'
-        Admin->>Requests: POST /api/requests/:id/approve
-        Requests->>Requests: Trigger Prowlarr Search
-    end
+    Requests->>Requests: Check quota and persist searching state
+    Requests->>Requests: Search enabled sources and cache scored candidates
+    Requests->>Requests: Dispatch highest positive candidate
+    Requests->>Requests: On failure, permanently exclude release and try next (maximum 3)
+
 ```
 
 ### 7.1 Role-Based Access Control (RBAC)

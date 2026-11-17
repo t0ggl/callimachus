@@ -291,6 +291,8 @@ func isRelevantCategory(id int) bool {
 
 // ProwlarrRelease identifies a cached search result. Prowlarr chooses the download client.
 type ProwlarrRelease struct {
+	Seeders   int    `json:"seeders"`
+	Verified  bool   `json:"verified"`
 	GUID      string `json:"guid"`
 	IndexerID int    `json:"indexerId"`
 	Title     string `json:"title"`

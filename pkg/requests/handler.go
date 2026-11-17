@@ -18,14 +18,16 @@ type HandlerConfig struct {
 	Service        *RequestService
 	SessionManager *auth.SessionManager
 	DB             *database.DB
+	Acquisition    *Acquisition
 }
 
 // Handler handles HTTP requests for the book request workflow.
 type Handler struct {
-	service    *RequestService
-	sessionMgr *auth.SessionManager
-	db         *database.DB
-	mux        *http.ServeMux
+	acquisition *Acquisition
+	service     *RequestService
+	sessionMgr  *auth.SessionManager
+	db          *database.DB
+	mux         *http.ServeMux
 }
 
 // NewHandler creates a new requests HTTP handler and registers endpoints.
@@ -36,10 +38,11 @@ func NewHandler(cfg HandlerConfig) *Handler {
 	}
 
 	h := &Handler{
-		service:    cfg.Service,
-		sessionMgr: sm,
-		db:         cfg.DB,
-		mux:        http.NewServeMux(),
+		service:     cfg.Service,
+		acquisition: cfg.Acquisition,
+		sessionMgr:  sm,
+		db:          cfg.DB,
+		mux:         http.NewServeMux(),
 	}
 
 	h.registerEndpoints(h.mux, "/api/requests")
@@ -69,8 +72,9 @@ func (h *Handler) registerEndpoints(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc("GET "+prefix, h.handleListRequests)
 	mux.HandleFunc("GET "+prefix+"/", h.handleListRequests)
 	mux.HandleFunc("GET "+prefix+"/{id}", h.handleGetRequest)
-	mux.HandleFunc("POST "+prefix+"/{id}/approve", h.handleApproveRequest)
-	mux.HandleFunc("POST "+prefix+"/{id}/reject", h.handleRejectRequest)
+	mux.HandleFunc("GET "+prefix+"/{id}/candidates", h.handleCandidates)
+	mux.HandleFunc("POST "+prefix+"/{id}/refresh", h.handleCandidates)
+	mux.HandleFunc("POST "+prefix+"/{id}/download", h.handleCandidates)
 }
 
 func (h *Handler) getUser(r *http.Request) *auth.User {
@@ -245,99 +249,6 @@ func (h *Handler) handleGetRequest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, req)
 }
 
-func (h *Handler) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	user := h.getUser(r)
-	if user == nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	if !auth.HasRole(user.Role, auth.RoleCurator) {
-		writeError(w, http.StatusForbidden, "forbidden")
-		return
-	}
-
-	id, err := parseRequestID(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request id")
-		return
-	}
-
-	req, err := h.service.ApproveRequest(r.Context(), id, user.ID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			writeError(w, http.StatusNotFound, "request not found")
-			return
-		}
-		if errors.Is(err, ErrForbidden) {
-			writeError(w, http.StatusForbidden, "forbidden")
-			return
-		}
-		if errors.Is(err, ErrInvalidTransition) {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusOK, req)
-}
-
-func (h *Handler) handleRejectRequest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	user := h.getUser(r)
-	if user == nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	if !auth.HasRole(user.Role, auth.RoleCurator) {
-		writeError(w, http.StatusForbidden, "forbidden")
-		return
-	}
-
-	id, err := parseRequestID(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request id")
-		return
-	}
-
-	var body struct {
-		Reason string `json:"reason"`
-	}
-	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body)
-	}
-
-	req, err := h.service.RejectRequest(r.Context(), id, user.ID, body.Reason)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			writeError(w, http.StatusNotFound, "request not found")
-			return
-		}
-		if errors.Is(err, ErrForbidden) {
-			writeError(w, http.StatusForbidden, "forbidden")
-			return
-		}
-		if errors.Is(err, ErrInvalidTransition) {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusOK, req)
-}
-
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -346,4 +257,53 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func (h *Handler) handleCandidates(w http.ResponseWriter, r *http.Request) {
+	user := h.getUser(r)
+	if user == nil {
+		writeError(w, 401, "unauthorized")
+		return
+	}
+	id, err := parseRequestID(r)
+	if err != nil {
+		writeError(w, 400, "invalid request id")
+		return
+	}
+	req, err := h.service.GetRequest(r.Context(), id)
+	if err != nil {
+		writeError(w, 404, "request not found")
+		return
+	}
+	if req.UserID != user.ID && !auth.HasRole(user.Role, auth.RoleCurator) {
+		writeError(w, 403, "forbidden")
+		return
+	}
+	if h.acquisition == nil {
+		writeError(w, 503, "acquisition unavailable")
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "/refresh") {
+		err = h.acquisition.Refresh(r.Context(), id)
+	}
+	if strings.HasSuffix(r.URL.Path, "/download") {
+		var body struct {
+			Key string `json:"key"`
+		}
+		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body) != nil {
+			writeError(w, 400, "invalid candidate")
+			return
+		}
+		err = h.acquisition.Download(r.Context(), id, body.Key)
+	}
+	if err != nil {
+		writeError(w, 502, err.Error())
+		return
+	}
+	candidates, err := h.acquisition.Candidates(r.Context(), id)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, candidates)
 }

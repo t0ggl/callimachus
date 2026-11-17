@@ -60,3 +60,27 @@ successfully imported paths are recorded to prevent duplicate ingestion.
 Leave the directory setting empty to disable ingestion. Callimachus reports the
 handoff as queued until the completed files arrive; it does not poll client
 progress or remove torrents from the client.
+
+### Book acquisition
+
+Use **Find a book** to search OpenLibrary, Google Books and (with an API key)
+Hardcover, then **Add** a confirmed match. Configure Google Books and Hardcover
+keys under Settings → Indexers, or use `CALLIMACHUS_GOOGLE_BOOKS_API_KEY` and
+`CALLIMACHUS_HARDCOVER_API_KEY`. OpenLibrary requires no key; Google Books and Hardcover are queried when their
+API keys are configured. Environment overrides lock their Settings controls.
+
+Acquisition queries Prowlarr's enabled sources and ranks quality-filtered releases
+by format preference, seeders, verification and publication year. It dispatches the
+highest positive score, tries at most three releases, and rechecks unmatched books
+daily. Failed release identities are permanently excluded from automatic retries
+with a -100 penalty. **Manual Search** on an acquisition or book detail shows cached
+scores and allows refresh and explicit retries. Successful-download caches expire
+after 30 days; failure exclusions remain.
+
+Prowlarr delegates transfers to its configured download clients. Completed files
+are ingested from the completed-download directory as before. A download client
+integration must report terminal transfer failures with authenticated
+`POST /api/acquisition/failure`, body
+`{"queue_id":"<Callimachus activity queue ID>","error":"reason"}` using a Curator
+or Admin session (cookie or Bearer token). This records failure for the background engine to select
+the next candidate. Prowlarr itself does not report downstream transfer status.

@@ -1,0 +1,92 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/t0ggl/callimachus/pkg/config"
+	"github.com/t0ggl/callimachus/pkg/metadata"
+)
+
+func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" || len(query) > 500 {
+		http.Error(w, "Enter a title, author, or keywords", 400)
+		return
+	}
+	cfg, err := config.Load(r.Context(), s.db, s.baseOverrides)
+	if err != nil {
+		http.Error(w, "Unable to load metadata settings", 500)
+		return
+	}
+	client := s.prowlarrHTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 20 * time.Second}
+	}
+	providers := []metadata.Provider{metadata.NewOpenLibraryProvider(metadata.WithOpenLibraryClient(client))}
+	if cfg.Settings.HardcoverAPIKey != "" {
+		providers = append(providers, metadata.NewHardcoverProvider(cfg.Settings.HardcoverAPIKey, metadata.WithHardcoverClient(client)))
+	}
+	books := []metadata.BookMetadata{}
+	success := false
+	for _, p := range providers {
+		found, err := p.Search(r.Context(), query)
+		if err == nil {
+			success = true
+			books = append(books, found...)
+		}
+	}
+	if cfg.Settings.GoogleBooksAPIKey != "" {
+		values := url.Values{"q": {query}, "maxResults": {"20"}}
+		if cfg.Settings.GoogleBooksAPIKey != "" {
+			values.Set("key", cfg.Settings.GoogleBooksAPIKey)
+		}
+		req, _ := http.NewRequestWithContext(r.Context(), "GET", "https://www.googleapis.com/books/v1/volumes?"+values.Encode(), nil)
+		resp, err := client.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == 200 {
+				var result struct {
+					Items []struct {
+						VolumeInfo struct {
+							Title         string
+							Authors       []string
+							PublishedDate string
+							Description   string
+							Language      string
+							ImageLinks    struct{ Thumbnail string }
+						}
+					}
+				}
+				if json.NewDecoder(resp.Body).Decode(&result) == nil {
+					success = true
+					for _, item := range result.Items {
+						v := item.VolumeInfo
+						year := 0
+						fmt.Sscanf(v.PublishedDate, "%d", &year)
+						books = append(books, metadata.BookMetadata{Title: v.Title, Authors: v.Authors, Year: year, Description: v.Description, Language: v.Language, CoverURL: v.ImageLinks.Thumbnail})
+					}
+				}
+			}
+		}
+	}
+	if !success {
+		http.Error(w, "Metadata sources unavailable. Try again shortly.", 502)
+		return
+	}
+	out := []metadata.BookMetadata{}
+	seen := map[string]bool{}
+	for _, b := range books {
+		key := strings.ToLower(b.Title + strings.Join(b.Authors, ","))
+		if b.Title != "" && len(b.Authors) > 0 && !seen[key] {
+			out = append(out, b)
+			seen[key] = true
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}

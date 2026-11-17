@@ -124,8 +124,8 @@ describe('App Integration', () => {
     const requestsNav = screen.getByTestId('nav-requests');
     await user.click(requestsNav);
 
-    expect(screen.getByRole('heading', { name: /Book Request Portal/i })).toBeInTheDocument();
-    expect(screen.getByText('Submit a New Request')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Find a book/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', {name:'Search'})).toBeInTheDocument();
 
     // Navigate to Settings view
     const settingsNav = screen.getByTestId('nav-settings');

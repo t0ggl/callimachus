@@ -139,8 +139,6 @@ export const App: React.FC = () => {
             requestedBy: r.username || 'Anonymous',
             requestType: (r.format === 'epub' ? 'ebook' : r.format === 'm4b' ? 'audiobook' : 'both') as RequestType,
             status: r.status as RequestStatus,
-            notes: r.notes,
-            rejectionReason: r.rejection_reason,
             requestedAt: r.created_at,
           }));
           setRequests(mapped);
@@ -304,51 +302,22 @@ export const App: React.FC = () => {
   }, [isPaletteOpen, selectedBook]);
 
   // Request actions wired to real API
-  const handleApproveRequest = async (id: string) => {
-    try {
-      const res = await fetch(`/api/requests/${id}/approve`, { method: 'POST' });
-      if (res.ok) {
-        await fetchRequests();
-      }
-    } catch (err) {
-      console.error('Failed to approve request', err);
-    }
-  };
-
-  const handleRejectRequest = async (id: string, reason: string) => {
-    try {
-      const res = await fetch(`/api/requests/${id}/reject`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason }),
-      });
-      if (res.ok) {
-        await fetchRequests();
-      }
-    } catch (err) {
-      console.error('Failed to reject request', err);
-    }
-  };
-
   const handleSubmitRequest = async (
     title: string,
     author: string,
     type: RequestType,
-    notes?: string
+    year?: number
   ) => {
     try {
       const format = type === 'ebook' ? 'epub' : type === 'audiobook' ? 'm4b' : 'both';
       const res = await fetch('/api/requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, author, format, notes }),
+        body: JSON.stringify({ title, author, format, year }),
       });
-      if (res.ok) {
-        await fetchRequests();
-      }
-    } catch (err) {
-      console.error('Failed to submit request', err);
-    }
+      if (!res.ok) throw new Error('Unable to add this book. Please try again.');
+      await fetchRequests();
+    } catch (err) { throw err; }
   };
 
   const handleLogout = async () => {
@@ -373,7 +342,6 @@ export const App: React.FC = () => {
 
   const activeDownloadsCount = downloads.filter((d) => d.status === 'downloading').length;
   const transcodingJobsCount = transcodeJobs.filter((j) => j.status === 'processing').length;
-  const isAdminOrCurator = currentUser?.role === 'admin' || currentUser?.role === 'curator';
 
   return (
     <>
@@ -410,10 +378,7 @@ export const App: React.FC = () => {
         {currentView === 'requests' && (
           <RequestsView
             requests={requests}
-            onApproveRequest={handleApproveRequest}
-            onRejectRequest={handleRejectRequest}
             onSubmitRequest={handleSubmitRequest}
-            isAdminOrCurator={isAdminOrCurator}
           />
         )}
 
