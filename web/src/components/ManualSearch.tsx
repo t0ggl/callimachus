@@ -66,7 +66,7 @@ export function ManualSearch({
       <button
         disabled={busy}
         onClick={() => void load('refresh')}
-        className="px-4 py-2 bg-blue-600 rounded disabled:opacity-50"
+        className="px-4 py-2 bg-blue-600 rounded-sm disabled:opacity-50"
       >
         {busy ? 'Working…' : 'Refresh'}
       </button>

@@ -160,7 +160,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const info = overrides[settingKey];
     if (!info?.isOverridden) return null;
     return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-950/60 border border-amber-800/60 text-[10px] font-mono text-amber-300">
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-amber-950/60 border border-amber-800/60 text-[10px] font-mono text-amber-300">
         <Lock className="w-2.5 h-2.5" />
         {info.overriddenBy}
       </span>
@@ -168,7 +168,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const inputClass = (locked: boolean) =>
-    `w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-md text-zinc-200 text-xs focus:outline-none focus:border-blue-500/70 transition-colors ${
+    `w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-md text-zinc-200 text-xs focus:outline-hidden focus:border-blue-500/70 transition-colors ${
       locked ? 'opacity-60 cursor-not-allowed bg-zinc-900/50 text-zinc-400' : ''
     }`;
 
@@ -303,7 +303,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             onClick={handleSave}
             disabled={isSaving}
             data-testid="save-settings-btn"
-            className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 disabled:opacity-70 text-white rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors shadow"
+            className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 disabled:opacity-70 text-white rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors shadow-sm"
           >
             <Save className="w-3.5 h-3.5" />
             {isSaving ? 'Saving...' : 'Save Settings'}
@@ -518,7 +518,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           type="checkbox"
                           checked={idx.enabled}
                           onChange={() => toggleIndexer(idx.id)}
-                          className="rounded bg-zinc-950 border-zinc-700 text-blue-500 focus:ring-0 cursor-pointer"
+                          className="rounded-sm bg-zinc-950 border-zinc-700 text-blue-500 focus:ring-0 cursor-pointer"
                         />
                       </td>
                     </tr>
@@ -723,7 +723,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                             ? prev.allowedFormats.filter((f) => f !== fmt)
                             : [...prev.allowedFormats, fmt],
                         }))}
-                        className="flex-1 text-left text-zinc-200 rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-60"
+                        className="flex-1 text-left text-zinc-200 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-60"
                       >
                         {fmt}<span aria-hidden="true" className="ml-3 text-zinc-400">{isChecked ? 'Enabled' : 'Disabled'}</span>
                       </button>
@@ -731,19 +731,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         <button type="button" aria-label={`Add ${fmt} to priorities`}
                           disabled={isOverridden('ebook_format_preferences')}
                           onClick={() => setQualityProfile((prev) => ({ ...prev, ebookFormatPreferences: [...(prev.ebookFormatPreferences ?? []), fmt] }))}
-                          className="p-2 rounded text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
+                          className="p-2 rounded-sm text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
                           Prioritize
                         </button>
                       )}
                       {ranked && <>
                         <button type="button" aria-label={`Move ${fmt} up`}
                           disabled={isOverridden('ebook_format_preferences') || index === 0}
-                          onClick={() => move(-1)} className="p-2 rounded hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
+                          onClick={() => move(-1)} className="p-2 rounded-sm hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
                           <ArrowUp size={16} aria-hidden="true" />
                         </button>
                         <button type="button" aria-label={`Move ${fmt} down`}
                           disabled={isOverridden('ebook_format_preferences') || index === preferences.length - 1}
-                          onClick={() => move(1)} className="p-2 rounded hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
+                          onClick={() => move(1)} className="p-2 rounded-sm hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
                           <ArrowDown size={16} aria-hidden="true" />
                         </button>
                       </>}
@@ -822,7 +822,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         preferSingleFileM4b: e.target.checked,
                       }))
                     }
-                    className="rounded bg-zinc-950 border-zinc-800 text-blue-500 focus:ring-0 disabled:cursor-not-allowed"
+                    className="rounded-sm bg-zinc-950 border-zinc-800 text-blue-500 focus:ring-0 disabled:cursor-not-allowed"
                   />
                   <span>Automatically convert audiobooks to M4B format</span>
                 </label>

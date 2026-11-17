@@ -80,7 +80,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
       role="dialog"
       aria-modal="true"
       aria-label={`Details for ${book.title}`}
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-150"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150"
       onClick={onClose}
     >
       <div
@@ -101,7 +101,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
               {book.formats.map((fmt) => (
                 <span
                   key={fmt}
-                  className={`text-[11px] font-mono px-2 py-0.5 rounded font-medium ${
+                  className={`text-[11px] font-mono px-2 py-0.5 rounded-sm font-medium ${
                     fmt === 'M4B'
                       ? 'bg-purple-950/80 text-purple-300 border border-purple-800/60'
                       : 'bg-blue-950/80 text-blue-300 border border-blue-800/60'
@@ -214,7 +214,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
                         {edition.format} Edition
                       </span>
                       {edition.language && (
-                        <span className="text-[10px] bg-zinc-800 px-1.5 py-0.5 rounded text-zinc-400">
+                        <span className="text-[10px] bg-zinc-800 px-1.5 py-0.5 rounded-sm text-zinc-400">
                           {edition.language}
                         </span>
                       )}
@@ -240,7 +240,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
                     {edition.assets.map((asset) => (
                       <div
                         key={asset.id}
-                        className="flex flex-col sm:flex-row sm:items-center justify-between p-2 rounded bg-zinc-900/80 border border-zinc-800/60 text-xs gap-2"
+                        className="flex flex-col sm:flex-row sm:items-center justify-between p-2 rounded-sm bg-zinc-900/80 border border-zinc-800/60 text-xs gap-2"
                       >
                         <div className="font-mono text-[11px] text-zinc-300 break-all">
                           {asset.filePath}

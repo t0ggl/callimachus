@@ -63,7 +63,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
             Activity & Queues
             {/* Real-time SSE indicator */}
             <span
-              className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono border ${
+              className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-sm text-[11px] font-mono border ${
                 connectionStatus === 'connected'
                   ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800/60'
                   : connectionStatus === 'connecting'
@@ -87,7 +87,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
             data-testid="tab-activity-transcode"
             className={`px-3 py-1.5 rounded-md flex items-center gap-2 transition-colors ${
               activeSection === 'transcode'
-                ? 'bg-zinc-800 text-white shadow-sm'
+                ? 'bg-zinc-800 text-white shadow-xs'
                 : 'text-zinc-400 hover:text-zinc-200'
             }`}
           >
@@ -99,7 +99,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
             data-testid="tab-activity-downloads"
             className={`px-3 py-1.5 rounded-md flex items-center gap-2 transition-colors ${
               activeSection === 'downloads'
-                ? 'bg-zinc-800 text-white shadow-sm'
+                ? 'bg-zinc-800 text-white shadow-xs'
                 : 'text-zinc-400 hover:text-zinc-200'
             }`}
           >
@@ -111,7 +111,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
             data-testid="tab-activity-history"
             className={`px-3 py-1.5 rounded-md flex items-center gap-2 transition-colors ${
               activeSection === 'history'
-                ? 'bg-zinc-800 text-white shadow-sm'
+                ? 'bg-zinc-800 text-white shadow-xs'
                 : 'text-zinc-400 hover:text-zinc-200'
             }`}
           >
@@ -141,7 +141,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                 <div
                   key={job.id}
                   data-testid={`transcode-job-${job.id}`}
-                  className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4 shadow-sm"
+                  className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4 shadow-xs"
                 >
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <div className="flex items-center gap-3">
@@ -151,7 +151,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                       <div>
                         <div className="flex items-center gap-2">
                           <h3 className="text-sm font-bold text-zinc-100">{job.bookTitle}</h3>
-                          <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-zinc-300">
+                          <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-sm bg-zinc-800 border border-zinc-700 text-zinc-300">
                             {job.targetFormat}
                           </span>
                         </div>
@@ -173,7 +173,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                               job.status === 'processing' ? 'paused' : 'processing'
                             )
                           }
-                          className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-300 transition-colors"
+                          className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-sm text-zinc-300 transition-colors"
                           title={job.status === 'processing' ? 'Pause job' : 'Resume job'}
                         >
                           {job.status === 'processing' ? (
@@ -194,7 +194,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                       return (
                         <div
                           key={job.targetFormat !== 'M4B' && stageName === 'encoding' ? 'converting' : stageName}
-                          className={`text-center py-1.5 px-2 rounded border text-xs font-mono font-medium uppercase tracking-wider transition-colors ${
+                          className={`text-center py-1.5 px-2 rounded-sm border text-xs font-mono font-medium uppercase tracking-wider transition-colors ${
                             isPast
                               ? 'bg-emerald-950/40 text-emerald-400 border-emerald-800/50'
                               : isCurrent
@@ -261,7 +261,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                   <div>
                     <h3 className="text-sm font-bold text-zinc-100">{dl.title}</h3>
                     <div className="flex items-center gap-2 mt-1 text-xs text-zinc-400">
-                      <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-cyan-300">
+                      <span className="font-mono text-[10px] px-1.5 py-0.5 rounded-sm bg-zinc-800 border border-zinc-700 text-cyan-300">
                         {dl.category}
                       </span>
                       <span>via {dl.clientType}</span>
@@ -270,7 +270,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
 
                   <div className="flex items-center gap-3">
                     <span
-                      className={`text-xs font-mono font-medium px-2 py-0.5 rounded border capitalize ${
+                      className={`text-xs font-mono font-medium px-2 py-0.5 rounded-sm border capitalize ${
                         dl.status === 'downloading'
                           ? 'bg-cyan-950/60 text-cyan-400 border-cyan-800/60'
                           : dl.status === 'paused'
@@ -288,7 +288,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                             dl.status === 'downloading' ? 'paused' : 'downloading'
                           )
                         }
-                        className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-300 transition-colors"
+                        className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-sm text-zinc-300 transition-colors"
                       >
                         {dl.status === 'downloading' ? (
                           <Pause className="w-3.5 h-3.5" />
