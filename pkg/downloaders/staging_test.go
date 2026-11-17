@@ -51,6 +51,16 @@ func TestStagingMonitor_EBookIngestionLifecycle(t *testing.T) {
 		Catalog:       cat,
 		LibraryRoot:   libraryRoot,
 		CompletedRoot: completedRoot,
+		QualityProfile: func(context.Context) (downloaders.QualityProfile, error) {
+			var current string
+			if err := db.QueryRowContext(ctx, `SELECT status FROM download_queue WHERE id = 'dq-ebook-1'`).Scan(&current); err != nil {
+				t.Fatal(err)
+			}
+			if current != "importing" {
+				t.Errorf("expected importing during ingestion, got %q", current)
+			}
+			return downloaders.QualityProfile{}, nil
+		},
 	})
 
 	var status string

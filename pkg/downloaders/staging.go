@@ -165,10 +165,13 @@ func (sm *StagingMonitor) PollOnce(ctx context.Context) error {
 		if item.Status == "completed" {
 			continue
 		}
-		if _, err := sm.db.ExecContext(ctx, `UPDATE download_queue SET staging_path = ? WHERE id = ?`, path, item.ID); err != nil {
+		if _, err := sm.db.ExecContext(ctx, `UPDATE download_queue SET staging_path = ?, status = 'importing', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, path, item.ID); err != nil {
 			return err
 		}
 		if err := sm.dispatchPostProcessing(ctx, item, path); err != nil {
+			if _, resetErr := sm.db.ExecContext(ctx, `UPDATE download_queue SET status = 'queued' WHERE id = ?`, item.ID); resetErr != nil {
+				return resetErr
+			}
 			sm.recordError(ctx, item.ID, fmt.Sprintf("post-processing: %v", err))
 			continue // Leave queued so a later pass retries failed ingestion.
 		}

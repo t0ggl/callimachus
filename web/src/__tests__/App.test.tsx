@@ -133,6 +133,32 @@ describe('App Integration', () => {
     expect(screen.getByText('Indexers & Prowlarr')).toBeInTheDocument();
   });
 
+  it('counts downloading, converting and importing items and opens Activity', async () => {
+    const user = userEvent.setup({ delay: null });
+    const originalFetch = vi.mocked(global.fetch).getMockImplementation()!;
+    vi.mocked(global.fetch).mockImplementation((...args) => {
+      if (String(args[0]) === '/api/activity') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            downloads: ['downloading', 'importing', 'queued', 'paused', 'completed', 'error'].map((status, i) => ({
+              ...testDownloads[0], id: `download-${i}`, status,
+            })),
+            transcodeJobs: ['processing', 'processing', 'queued', 'paused', 'completed', 'failed'].map((status, i) => ({
+              ...testTranscodeJobs[0], id: `job-${i}`, status, stage: i === 1 ? 'moving' : 'encoding',
+            })),
+            logs: [],
+          }),
+        } as unknown as Response);
+      }
+      return originalFetch(...args);
+    });
+    render(<App />);
+    const metric = await screen.findByRole('button', { name: 'Active Downloads: 4' });
+    await user.click(metric);
+    expect(screen.getByRole('heading', { name: /Activity & Queues/i })).toBeInTheDocument();
+  });
+
   it('opens and closes BookDetailModal when selecting a book', async () => {
     const user = userEvent.setup({ delay: null });
     render(<App />);

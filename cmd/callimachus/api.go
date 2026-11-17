@@ -401,7 +401,7 @@ func (s *Server) handleGetActivity(w http.ResponseWriter, r *http.Request) {
 	dqQuery := `
 		SELECT id, title, status, progress_percent, size_bytes
 		FROM download_queue
-		WHERE status IN ('queued', 'downloading')
+		WHERE status IN ('queued', 'downloading', 'importing')
 		ORDER BY created_at ASC
 	`
 	if rows, err := s.db.QueryContext(r.Context(), dqQuery); err == nil {
