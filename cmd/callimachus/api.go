@@ -178,6 +178,7 @@ type APISettingsUpdateRequest struct {
 
 func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/discover", s.handleDiscover)
+	mux.Handle("POST /api/library/scan", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleScanLibrary)))
 	mux.Handle("POST /api/acquisition/failure", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleAcquisitionFailure)))
 	mux.HandleFunc("GET /api/books", s.handleGetBooks)
 	mux.HandleFunc("GET /api/books/", s.handleGetBooks)

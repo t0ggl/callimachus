@@ -128,3 +128,20 @@ logrotate, use `daily`, `rotate 30`, `maxage 30`, `missingok`, `notifempty` and
 `copytruncate` (the processes do not reopen log files). Run logrotate daily;
 container logging drivers with size-based rotation bound space but do not enforce
 an exact 30-day age policy, so use an age-aware collector when required.
+
+### Scanning and upgrading the local library
+
+The server scans `CALLIMACHUS_LIBRARY_ROOT` (or the configured library root) at
+startup and every 24 hours. **Scan Library** in the catalog runs the same scan
+on demand for Curators and Admins. Existing supported eBook and audiobook files
+are cataloged in place, using OPF metadata and author/series directory structure;
+scanning never moves the originals. Symlinked libraries are rejected. After a
+successful scan, missing media is removed from inventory while book records remain.
+
+Book search shows **In Library** for matching local titles and authors; select it
+to open the existing book. **Search Download Options** on its detail view opens
+manual release selection. Refresh to fetch current releases and select Download
+to upgrade. The download retains the catalog identity through conversion. New
+media and sidecars are published with atomic file renames; superseded files of
+the same kind (eBook or audio) are removed only after successful ingestion. The
+other kind is preserved, so upgrading audio does not remove an eBook.

@@ -447,6 +447,7 @@ func (sm *StagingMonitor) resolveBookDetails(ctx context.Context, item database.
 		)
 		if err == nil {
 			foundInDB = true
+			_ = sm.db.QueryRowContext(ctx, "SELECT book_id FROM book_editions WHERE id=?", *item.EditionID).Scan(&details.BookID)
 			if y, yErr := strconv.Atoi(yearStr); yErr == nil && y > 0 {
 				details.Year = y
 			}

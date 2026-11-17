@@ -361,6 +361,7 @@ export const App: React.FC = () => {
             series={series}
             onSelectBook={(b) => setSelectedBook(b)}
             selectedIndex={selectedIndex}
+            onScanComplete={fetchCatalog}
           />
         )}
 
@@ -378,6 +379,7 @@ export const App: React.FC = () => {
         {currentView === 'requests' && (
           <RequestsView
             requests={requests}
+            onOpenBook={(id) => setSelectedBook(books.find((b) => b.id === id) ?? null)}
             onSubmitRequest={handleSubmitRequest}
           />
         )}
