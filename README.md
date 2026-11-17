@@ -20,3 +20,16 @@ Named after **Callimachus**, the scholar-librarian of the ancient Library of Ale
 - [ARCHITECTURE.md](ARCHITECTURE.md): Complete technical architecture, package layout, and system topology.
 - [DATA_MODEL.md](DATA_MODEL.md): Complete relational database schema, entity specifications, and ER diagrams.
 - [AGENTS.md](AGENTS.md): Standards, constraints, and instructions for agentic development.
+
+## eBook download size limit
+
+Quality & Profiles includes **Maximum eBook File Size (MB)**, defaulting to 100 MB.
+Oversized eBook candidates are rejected by the download quality filter; audiobooks
+retain the separate general file size limit, which defaults to 1.5 GB (1,536 MB). Sizes use 1 MB = 1,048,576 bytes.
+Unknown release sizes remain eligible. Set the limit to 0 to disable it.
+
+`CALLIMACHUS_MAX_EBOOK_SIZE_MB` accepts a non-negative whole number of MB and takes
+precedence over the saved setting, locking the corresponding UI control. The
+settings API exposes `qualityProfile.maxEbookSizeBytes` in bytes (whole MB values)
+and override metadata under `max_ebook_size_mb`. No unprefixed environment alias
+is supported.

@@ -1,6 +1,7 @@
 package downloaders
 
 import (
+	"context"
 	"regexp"
 	"strings"
 	"testing"
@@ -387,6 +388,62 @@ func TestQualityProfile_EvaluateRelease_MaxFileSizeMB(t *testing.T) {
 	}
 	if accepted, _ := profile.EvaluateRelease(tooBigCandidate); accepted {
 		t.Fatalf("expected 600MB candidate rejected by 500MB limit")
+	}
+}
+
+func TestQualityProfile_EbookSize(t *testing.T) {
+	const mb = 1024 * 1024
+	profile := DefaultQualityProfile()
+	profile.AllowedFormats = nil
+	for _, tc := range []struct {
+		name      string
+		candidate ReleaseCandidate
+		accepted  bool
+	}{
+		{"below", ReleaseCandidate{Format: "epub", Size: 100*mb - 1}, true},
+		{"boundary", ReleaseCandidate{Format: "pdf", Size: 100 * mb}, true},
+		{"oversized", ReleaseCandidate{Format: ".EPUB", Size: 100*mb + 1}, false},
+		{"inferred ebook", ReleaseCandidate{Title: "Book.azw3", Size: 101 * mb}, false},
+		{"unknown format archive", ReleaseCandidate{Title: "Book.zip", Size: 101 * mb}, false},
+		{"unknown size", ReleaseCandidate{Format: "epub"}, true},
+		{"m4b", ReleaseCandidate{Format: "m4b", Size: 500 * mb}, true},
+		{"wma", ReleaseCandidate{Format: "wma", Size: 500 * mb}, true},
+		{"inferred mp3", ReleaseCandidate{Title: "Book.mp3", Size: 500 * mb}, true},
+		{"audio flag", ReleaseCandidate{IsAudio: true, Size: 500 * mb}, true},
+		{"audio category", ReleaseCandidate{Categories: []int{3030}, Size: 500 * mb}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			accepted, reason, err := ShouldDownload(context.Background(), profile, nil, tc.candidate)
+			if err != nil || accepted != tc.accepted {
+				t.Fatalf("accepted=%v reason=%s err=%v", accepted, reason, err)
+			}
+			if ranked := profile.RankReleases([]ReleaseCandidate{tc.candidate}); (len(ranked) == 1) != tc.accepted {
+				t.Fatalf("ranking did not enforce size filter: %+v", ranked)
+			}
+		})
+	}
+	profile.MaxEbookSizeBytes = 200 * mb
+	if ok, _ := profile.EvaluateRelease(ReleaseCandidate{Format: "epub", Size: 150 * mb}); !ok {
+		t.Fatal("custom limit ignored")
+	}
+	profile.MaxEbookSizeBytes = 0
+	if ok, _ := profile.EvaluateRelease(ReleaseCandidate{Format: "epub", Size: 500 * mb}); !ok {
+		t.Fatal("zero should disable ebook limit")
+	}
+	profile.MaxFileSizeMB = 300
+	if ok, _ := profile.EvaluateRelease(ReleaseCandidate{Format: "m4b", Size: 500 * mb}); ok {
+		t.Fatal("audio must retain general size limit")
+	}
+}
+
+func TestQualityProfile_DefaultAudiobookSize(t *testing.T) {
+	profile := DefaultQualityProfile()
+	const limit = int64(1536 * 1024 * 1024)
+	for _, size := range []int64{limit - 1, limit, limit + 1} {
+		accepted, reason := profile.EvaluateRelease(ReleaseCandidate{Format: "m4b", Size: size})
+		if accepted != (size <= limit) {
+			t.Fatalf("size %d: accepted=%v, reason=%s", size, accepted, reason)
+		}
 	}
 }
 

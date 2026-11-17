@@ -145,9 +145,10 @@ type APIQualityProfileSettings struct {
 	Name                   string   `json:"name"`
 	AllowedLanguages       []string `json:"allowedLanguages"`
 	AllowedFormats         []string `json:"allowedFormats"`
-	EbookFormatPreferences []string `json:"ebookFormatPreferences"`
 	PreferSingleFileM4b    bool     `json:"preferSingleFileM4b"`
 	MaxFileSizeMb          int      `json:"maxFileSizeMb"`
+	MaxEbookSizeBytes      int64    `json:"maxEbookSizeBytes"`
+	EbookFormatPreferences []string `json:"ebookFormatPreferences"`
 }
 
 type APISettingsResponse struct {
@@ -174,9 +175,10 @@ type APISettingsUpdateRequest struct {
 		Name                   *string   `json:"name"`
 		AllowedLanguages       *[]string `json:"allowedLanguages"`
 		AllowedFormats         *[]string `json:"allowedFormats"`
-		EbookFormatPreferences *[]string `json:"ebookFormatPreferences"`
 		PreferSingleFileM4b    *bool     `json:"preferSingleFileM4b"`
 		MaxFileSizeMb          *int      `json:"maxFileSizeMb"`
+		MaxEbookSizeBytes      *int64    `json:"maxEbookSizeBytes"`
+		EbookFormatPreferences *[]string `json:"ebookFormatPreferences"`
 	} `json:"qualityProfile"`
 }
 
@@ -455,9 +457,10 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 		Name:                   cfg.QualityProfileName,
 		AllowedLanguages:       cfg.AllowedLanguages,
 		AllowedFormats:         cfg.AllowedFormats,
-		EbookFormatPreferences: cfg.EbookFormatPreferences,
 		PreferSingleFileM4b:    cfg.PreferSingleFileM4B,
 		MaxFileSizeMb:          cfg.MaxFileSizeMB,
+		MaxEbookSizeBytes:      cfg.MaxEbookSizeBytes,
+		EbookFormatPreferences: cfg.EbookFormatPreferences,
 	}
 
 	if s.db != nil {
@@ -610,6 +613,16 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.QualityProfile.PreferSingleFileM4b != nil {
 			updates[config.KeyPreferSingleFileM4B] = strconv.FormatBool(*req.QualityProfile.PreferSingleFileM4b)
+		}
+		if size := req.QualityProfile.MaxEbookSizeBytes; size != nil {
+			if _, _, overridden := config.LookupEnvForSetting(config.KeyMaxEbookSizeMB); !overridden {
+				if *size < 0 || *size%(1024*1024) != 0 {
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(map[string]string{"error": "maxEbookSizeBytes must be a non-negative whole number of MB (1048576 bytes)"})
+					return
+				}
+				updates[config.KeyMaxEbookSizeMB] = strconv.FormatInt(*size/(1024*1024), 10)
+			}
 		}
 		if req.QualityProfile.MaxFileSizeMb != nil {
 			updates[config.KeyMaxFileSizeMB] = strconv.Itoa(*req.QualityProfile.MaxFileSizeMb)

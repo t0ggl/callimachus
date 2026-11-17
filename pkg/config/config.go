@@ -28,9 +28,10 @@ const (
 	KeyQualityProfileName     = "quality_profile_name"
 	KeyAllowedLanguages       = "allowed_languages"
 	KeyAllowedFormats         = "allowed_formats"
-	KeyEbookFormatPreferences = "ebook_format_preferences"
 	KeyPreferSingleFileM4B    = "prefer_single_file_m4b"
 	KeyMaxFileSizeMB          = "max_file_size_mb"
+	KeyMaxEbookSizeMB         = "max_ebook_size_mb"
+	KeyEbookFormatPreferences = "ebook_format_preferences"
 )
 
 // Bootstrap setting keys (resolved before opening SQLite).
@@ -79,7 +80,8 @@ var registry = []SettingSpec{
 	{Key: KeyAllowedFormats, Kind: KindStringList, Default: "EPUB,M4B"},
 	{Key: KeyEbookFormatPreferences, Kind: KindStringList, Default: "EPUB,AZW3,MOBI,PDF,CBR,CBZ"},
 	{Key: KeyPreferSingleFileM4B, Kind: KindBool, Default: "true"},
-	{Key: KeyMaxFileSizeMB, Kind: KindInt, Default: "2048"},
+	{Key: KeyMaxFileSizeMB, Kind: KindInt, Default: "1536"},
+	{Key: KeyMaxEbookSizeMB, Kind: KindInt, Default: "100"},
 }
 
 var specByKey = func() map[string]SettingSpec {
@@ -121,9 +123,10 @@ type Settings struct {
 	QualityProfileName     string        `json:"qualityProfileName"`
 	AllowedLanguages       []string      `json:"allowedLanguages"`
 	AllowedFormats         []string      `json:"allowedFormats"`
-	EbookFormatPreferences []string      `json:"ebookFormatPreferences"`
 	PreferSingleFileM4B    bool          `json:"preferSingleFileM4b"`
 	MaxFileSizeMB          int           `json:"maxFileSizeMb"`
+	MaxEbookSizeBytes      int64         `json:"maxEbookSizeBytes"`
+	EbookFormatPreferences []string      `json:"ebookFormatPreferences"`
 }
 
 // ToQualityProfile builds a downloaders.QualityProfile from the resolved settings.
@@ -140,9 +143,10 @@ func (s Settings) ToQualityProfile() downloaders.QualityProfile {
 	return downloaders.QualityProfile{
 		AllowedLanguages:       langs,
 		AllowedFormats:         fmts,
-		EbookFormatPreferences: s.EbookFormatPreferences,
 		PreferSingleM4B:        s.PreferSingleFileM4B,
 		MaxFileSizeMB:          s.MaxFileSizeMB,
+		MaxEbookSizeBytes:      s.MaxEbookSizeBytes,
+		EbookFormatPreferences: s.EbookFormatPreferences,
 	}
 }
 
@@ -295,6 +299,9 @@ func Load(ctx context.Context, db *database.DB, caller Overrides) (*ResolvedSett
 		overrideMap[spec.Key] = info
 	}
 
+	if _, err := validateAndNormalize(specByKey[KeyMaxEbookSizeMB], resolvedValues[KeyMaxEbookSizeMB]); err != nil {
+		return nil, fmt.Errorf("invalid max_ebook_size_mb: %w", err)
+	}
 	settings := materializeSettings(resolvedValues)
 	return &ResolvedSettings{
 		Settings:  settings,
@@ -366,6 +373,9 @@ func validateAndNormalize(spec SettingSpec, raw string) (string, error) {
 		v, err := strconv.Atoi(trimmed)
 		if err != nil {
 			return "", fmt.Errorf("expected integer, got %q", raw)
+		}
+		if spec.Key == KeyMaxEbookSizeMB && int64(v) > (1<<63-1)/(1024*1024) {
+			return "", fmt.Errorf("size exceeds supported byte range")
 		}
 		if v < 0 {
 			return "", fmt.Errorf("expected non-negative integer, got %d", v)
@@ -466,9 +476,10 @@ func materializeSettings(vals map[string]string) Settings {
 		QualityProfileName:     orDefault(vals[KeyQualityProfileName], "Standard Audiobook"),
 		AllowedLanguages:       parseLowerList(vals[KeyAllowedLanguages], []string{"en"}),
 		AllowedFormats:         parseUpperList(vals[KeyAllowedFormats], []string{"EPUB", "M4B"}),
-		EbookFormatPreferences: parseList(strings.ToUpper(vals[KeyEbookFormatPreferences])),
 		PreferSingleFileM4B:    parseBoolOr(vals[KeyPreferSingleFileM4B], true),
-		MaxFileSizeMB:          parseNonNegIntOr(vals[KeyMaxFileSizeMB], 2048),
+		MaxFileSizeMB:          parseNonNegIntOr(vals[KeyMaxFileSizeMB], 1536),
+		MaxEbookSizeBytes:      int64(parseNonNegIntOr(vals[KeyMaxEbookSizeMB], 100)) * 1024 * 1024,
+		EbookFormatPreferences: parseList(strings.ToUpper(vals[KeyEbookFormatPreferences])),
 	}
 }
 

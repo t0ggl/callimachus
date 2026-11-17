@@ -218,6 +218,47 @@ func TestResolveBootstrap_EnvOverridesFlags(t *testing.T) {
 	}
 }
 
+func TestEbookSizeConfiguration(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	resolved, err := Load(ctx, db, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Settings.ToQualityProfile().MaxFileSizeMB != 1536 {
+		t.Fatal("expected 1.5 GB general file size default")
+	}
+	if resolved.Settings.ToQualityProfile().MaxEbookSizeBytes != 100*1024*1024 {
+		t.Fatal("missing default")
+	}
+	resolved, err = SaveNonOverridden(ctx, db, map[string]string{KeyMaxEbookSizeMB: "150"}, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Settings.MaxEbookSizeBytes != 150*1024*1024 {
+		t.Fatal("not persisted")
+	}
+	t.Setenv("CALLIMACHUS_MAX_EBOOK_SIZE_MB", "200")
+	resolved, err = SaveNonOverridden(ctx, db, map[string]string{KeyMaxEbookSizeMB: "10"}, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Settings.ToQualityProfile().MaxEbookSizeBytes != 200*1024*1024 || !resolved.Overrides[KeyMaxEbookSizeMB].IsOverridden {
+		t.Fatal("override lost")
+	}
+	t.Setenv("CALLIMACHUS_MAX_EBOOK_SIZE_MB", "")
+	resolved, err = Load(ctx, db, Overrides{})
+	if err != nil || resolved.Settings.MaxEbookSizeBytes != 150*1024*1024 {
+		t.Fatal("override mutated DB", err)
+	}
+	for _, invalid := range []string{"-1", "1.5", "8796093022208", "bad"} {
+		t.Setenv("CALLIMACHUS_MAX_EBOOK_SIZE_MB", invalid)
+		if _, err := Load(ctx, db, Overrides{}); err == nil {
+			t.Fatalf("accepted invalid env %q", invalid)
+		}
+	}
+}
+
 func TestEbookPreferencesPersistenceAndOverrides(t *testing.T) {
 	ctx := context.Background()
 	db := testutil.NewTestDB(t)

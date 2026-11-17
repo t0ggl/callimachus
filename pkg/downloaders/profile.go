@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/t0ggl/callimachus/pkg/metadata"
+	"github.com/t0ggl/callimachus/pkg/transcoder"
 )
 
 // Standard Torznab category constants for audiobooks and books.
@@ -29,10 +30,11 @@ var DefaultAllowedFormats = []string{"epub", "azw3", "pdf", "m4b", "mp3"}
 type QualityProfile struct {
 	AllowedLanguages       []string
 	AllowedFormats         []string
-	EbookFormatPreferences []string
 	PreferSingleM4B        bool
 	MaxFileSizeMB          int
+	MaxEbookSizeBytes      int64 `json:"maxEbookSizeBytes"`
 	RejectPatterns         []*regexp.Regexp
+	EbookFormatPreferences []string
 }
 
 // ReleaseCandidate represents a candidate release evaluated for acquisition.
@@ -52,8 +54,10 @@ func DefaultQualityProfile() QualityProfile {
 	return QualityProfile{
 		AllowedLanguages:       DefaultAllowedLanguages,
 		AllowedFormats:         DefaultAllowedFormats,
-		EbookFormatPreferences: []string{"epub", "azw3", "mobi", "pdf", "cbr", "cbz"},
 		PreferSingleM4B:        true,
+		MaxEbookSizeBytes:      100 * 1024 * 1024,
+		MaxFileSizeMB:          1536,
+		EbookFormatPreferences: []string{"epub", "azw3", "mobi", "pdf", "cbr", "cbz"},
 	}
 }
 
@@ -221,6 +225,17 @@ func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string)
 		if !allowed {
 			return false, fmt.Sprintf("format %q not allowed by quality profile", format)
 		}
+	}
+
+	// Audio can be identified by format, an explicit flag, or a Torznab audio category.
+	isAudio := release.IsAudio || transcoder.IsAudioFile("release."+format)
+	for _, category := range release.Categories {
+		if category >= CategoryAudioRoot && category < CategoryAudioRoot+1000 {
+			isAudio = true
+		}
+	}
+	if !isAudio && p.MaxEbookSizeBytes > 0 && release.Size > p.MaxEbookSizeBytes {
+		return false, fmt.Sprintf("eBook release size %d bytes exceeds maximum %d bytes", release.Size, p.MaxEbookSizeBytes)
 	}
 
 	// 4. Evaluate Max File Size

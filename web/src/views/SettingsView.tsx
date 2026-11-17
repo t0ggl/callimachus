@@ -42,6 +42,7 @@ export interface SettingsUpdatePayload {
     ebookFormatPreferences?: FormatType[];
     preferSingleFileM4b?: boolean;
     maxFileSizeMb?: number;
+    maxEbookSizeBytes?: number;
   };
 }
 
@@ -96,8 +97,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     ...initialQuality,
     allowedLanguages: initialQuality.allowedLanguages ?? ['en'],
     allowedFormats: initialQuality.allowedFormats ?? ['EPUB', 'M4B'],
+    maxFileSizeMb: initialQuality.maxFileSizeMb ?? 1536,
+    maxEbookSizeBytes: initialQuality.maxEbookSizeBytes ?? 100 * 1024 * 1024,
     ebookFormatPreferences: initialQuality.ebookFormatPreferences ?? DEFAULT_EBOOK_PREFERENCES,
-    maxFileSizeMb: initialQuality.maxFileSizeMb ?? 2048,
   });
   const [languagesInput, setLanguagesInput] = useState(
     (initialQuality.allowedLanguages ?? ['en']).join(', ')
@@ -127,8 +129,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       ...initialQuality,
       allowedLanguages: langs,
       allowedFormats: initialQuality.allowedFormats ?? ['EPUB', 'M4B'],
+      maxFileSizeMb: initialQuality.maxFileSizeMb ?? 1536,
+      maxEbookSizeBytes: initialQuality.maxEbookSizeBytes ?? 100 * 1024 * 1024,
       ebookFormatPreferences: initialQuality.ebookFormatPreferences ?? DEFAULT_EBOOK_PREFERENCES,
-      maxFileSizeMb: initialQuality.maxFileSizeMb ?? 2048,
     });
     setLanguagesInput(langs.join(', '));
   }, [initialQuality]);
@@ -212,6 +215,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           : {}),
         ...(!isOverridden('prefer_single_file_m4b')
           ? { preferSingleFileM4b: qualityProfile.preferSingleFileM4b }
+          : {}),
+        ...(!isOverridden('max_ebook_size_mb')
+          ? { maxEbookSizeBytes: qualityProfile.maxEbookSizeBytes }
           : {}),
         ...(!isOverridden('max_file_size_mb')
           ? { maxFileSizeMb: qualityProfile.maxFileSizeMb }
@@ -820,6 +826,33 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 />
                 <OverrideNote settingKey="max_file_size_mb" />
               </div>
+            </div>
+
+            <div className="max-w-sm">
+              <div className="flex items-center justify-between mb-1">
+                <label htmlFor="max-ebook-size-mb" className="block text-zinc-400 font-medium">
+                  Maximum eBook File Size (MB)
+                </label>
+                <OverrideBadge settingKey="max_ebook_size_mb" />
+              </div>
+              <input
+                id="max-ebook-size-mb"
+                type="number"
+                min={0}
+                step={1}
+                value={qualityProfile.maxEbookSizeBytes / (1024 * 1024)}
+                disabled={isOverridden('max_ebook_size_mb')}
+                aria-describedby="max-ebook-size-help"
+                onChange={(e) => setQualityProfile((prev) => ({
+                  ...prev,
+                  maxEbookSizeBytes: Number(e.target.value) * 1024 * 1024,
+                }))}
+                className={inputClass(isOverridden('max_ebook_size_mb'))}
+              />
+              <p id="max-ebook-size-help" className="mt-1.5 text-xs text-zinc-400">
+                Reject oversized eBook downloads such as large scans and omnibus archives. Audiobooks use the general file size limit above. 0 disables the eBook limit; 1 MB = 1,048,576 bytes.
+              </p>
+              <OverrideNote settingKey="max_ebook_size_mb" />
             </div>
 
             <div className="pt-2">

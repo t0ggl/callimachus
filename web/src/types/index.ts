@@ -184,5 +184,6 @@ export interface QualityProfile {
   ebookFormatPreferences?: FormatType[];
   preferSingleFileM4b: boolean;
   maxFileSizeMb: number;
+  maxEbookSizeBytes: number;
 }
 

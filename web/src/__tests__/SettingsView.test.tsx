@@ -28,6 +28,7 @@ const baseQuality: QualityProfile = {
   allowedFormats: ['EPUB', 'M4B'],
   preferSingleFileM4b: true,
   maxFileSizeMb: 4096,
+  maxEbookSizeBytes: 100 * 1024 * 1024,
 };
 
 const baseOverrides: SettingsOverridesMap = {
@@ -45,6 +46,11 @@ const baseOverrides: SettingsOverridesMap = {
     isOverridden: true,
     overriddenBy: 'CALLIMACHUS_MAX_FILE_SIZE_MB',
     envVar: 'CALLIMACHUS_MAX_FILE_SIZE_MB',
+  },
+  max_ebook_size_mb: {
+    isOverridden: true,
+    overriddenBy: "CALLIMACHUS_MAX_EBOOK_SIZE_MB",
+    envVar: "CALLIMACHUS_MAX_EBOOK_SIZE_MB",
   },
   allowed_formats: {
     isOverridden: true,
@@ -73,7 +79,7 @@ describe('SettingsView Environment Overrides', () => {
     expect(screen.queryByText(/Authentication & OIDC/i)).not.toBeInTheDocument();
 
     // Summary badge reflects active overrides
-    expect(screen.getByTestId('env-override-summary')).toHaveTextContent('4 env overrides active');
+    expect(screen.getByTestId('env-override-summary')).toHaveTextContent('5 env overrides active');
 
     // Tab 1: Prowlarr URL is disabled with exact note, Prowlarr Sync Interval remains editable
     const prowlarrUrlInput = screen.getByLabelText('Prowlarr URL') as HTMLInputElement;
@@ -97,6 +103,8 @@ describe('SettingsView Environment Overrides', () => {
     // Tab 4: Quality & Profiles
     await user.click(screen.getByTestId('tab-settings-quality'));
     expect(screen.getByLabelText('Max File Size (MB)')).toBeDisabled();
+    expect(screen.getByLabelText('Maximum eBook File Size (MB)')).toBeDisabled();
+    expect(screen.getByTestId('override-note-max_ebook_size_mb')).toHaveTextContent('CALLIMACHUS_MAX_EBOOK_SIZE_MB');
     expect(screen.getByTestId('override-note-max_file_size_mb')).toHaveTextContent(
       'Managed via environment variable CALLIMACHUS_MAX_FILE_SIZE_MB and cannot be modified here.'
     );
@@ -154,6 +162,7 @@ describe('SettingsView Environment Overrides', () => {
     expect(payload.qualityProfile).not.toHaveProperty('audioMinBitrateKbps');
     expect(payload.qualityProfile).not.toHaveProperty('audioTargetBitrateKbps');
     expect(payload.qualityProfile.maxFileSizeMb).toBeUndefined();
+    expect(payload.qualityProfile.maxEbookSizeBytes).toBeUndefined();
     expect(payload.qualityProfile.allowedFormats).toBeUndefined();
 
     expect('authSettings' in payload).toBe(false);
@@ -195,6 +204,21 @@ it('offers common ebook formats and saves selections with the exact audiobook co
       allowedFormats: ['EPUB', 'M4B', ...formats],
       preferSingleFileM4b: false,
     }),
+  }));
+});
+
+it('edits and saves the ebook ceiling in bytes while displaying MB', async () => {
+  const user = userEvent.setup({ delay: null });
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<SettingsView indexers={[]} downloadClients={[]} qualityProfile={baseQuality} onSaveSettings={save} />);
+  await user.click(screen.getByTestId('tab-settings-quality'));
+  const input = screen.getByLabelText('Maximum eBook File Size (MB)');
+  expect(input).toHaveValue(100);
+  await user.clear(input);
+  await user.type(input, '150');
+  await user.click(screen.getByTestId('save-settings-btn'));
+  expect(save).toHaveBeenCalledWith(expect.objectContaining({
+    qualityProfile: expect.objectContaining({ maxEbookSizeBytes: 150 * 1024 * 1024 }),
   }));
 });
 

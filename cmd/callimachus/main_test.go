@@ -864,6 +864,58 @@ func TestRun_RejectsRemovedAuthCLIFlags(t *testing.T) {
 	}
 }
 
+func TestSettingsEbookSizeRoundTrip(t *testing.T) {
+	srv := &Server{db: testutil.NewTestDB(t)}
+	get := func() APISettingsResponse {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		srv.handleGetSettings(rec, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+		var result APISettingsResponse
+		if rec.Code != http.StatusOK {
+			t.Fatal(rec.Body.String())
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	put := func(value string, status int) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		srv.handleUpdateSettings(rec, httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(`{"qualityProfile":{"maxEbookSizeBytes":`+value+`}}`)))
+		if rec.Code != status {
+			t.Fatalf("PUT %s: %d %s", value, rec.Code, rec.Body.String())
+		}
+	}
+	if get().QualityProfile.MaxEbookSizeBytes != 100*1024*1024 {
+		t.Fatal("missing default")
+	}
+	put("157286400", http.StatusOK)
+	if get().QualityProfile.MaxEbookSizeBytes != 150*1024*1024 {
+		t.Fatal("save lost")
+	}
+	for _, value := range []string{"-1", "1", "1.5", `"100"`} {
+		put(value, http.StatusBadRequest)
+	}
+	if get().QualityProfile.MaxEbookSizeBytes != 150*1024*1024 {
+		t.Fatal("invalid update mutated setting")
+	}
+	t.Setenv("CALLIMACHUS_MAX_EBOOK_SIZE_MB", "200")
+	put("10485760", http.StatusOK)
+	got := get()
+	if got.QualityProfile.MaxEbookSizeBytes != 200*1024*1024 || !got.Overrides["max_ebook_size_mb"].IsOverridden {
+		t.Fatal("override lost")
+	}
+	t.Setenv("CALLIMACHUS_MAX_EBOOK_SIZE_MB", "")
+	if get().QualityProfile.MaxEbookSizeBytes != 150*1024*1024 {
+		t.Fatal("override changed DB")
+	}
+	put("0", http.StatusOK)
+	if get().QualityProfile.MaxEbookSizeBytes != 0 {
+		t.Fatal("cannot disable")
+	}
+}
+
 func TestSettingsEbookFormatPreferences(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "test.db")
