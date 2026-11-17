@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/t0ggl/callimachus/internal/uuid"
 	"github.com/t0ggl/callimachus/pkg/database"
 )
 

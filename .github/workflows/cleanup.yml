@@ -41,21 +41,10 @@ jobs:
           older-than: 1 hour
           dry-run: ${{ inputs.dry_run || false }}
 
-      - name: Dry-run prune old releases
-        if: ${{ inputs.dry_run }}
+      - name: Prune old releases
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           KEEP_RELEASES: ${{ inputs.keep_releases || 20 }}
-        run: |
-          echo "Simulating release pruning (keeping latest $KEEP_RELEASES releases)..."
-          gh release list --limit 100 --json tagName,createdAt | jq -r --argjson keep "$KEEP_RELEASES" '.[$keep:] | .[] | "Would delete release: \(.tagName) (created at \(.createdAt))"'
-
-      - name: Prune old releases
-        if: ${{ !inputs.dry_run }}
-        uses: dev-drprasad/delete-older-releases@dfbe6be2a006e9475dfcbe5b8d201f1824c2a9fe # v0.3.4
-        with:
-          keep_latest: ${{ inputs.keep_releases || 20 }}
-          delete_tags: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        run: bash scripts/prune-releases.sh "$KEEP_RELEASES" "$DRY_RUN"

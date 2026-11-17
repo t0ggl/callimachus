@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/t0ggl/callimachus/internal/uuid"
 	"github.com/t0ggl/callimachus/pkg/database"
 	"github.com/t0ggl/callimachus/pkg/epub"
 	"github.com/t0ggl/callimachus/pkg/metadata"
@@ -87,7 +87,7 @@ func (c *Catalog) GetOrCreateAuthor(ctx context.Context, name string) (*database
 	}
 
 	newAuthor := &database.Author{
-		ID:        uuid.New().String(),
+		ID:        uuid.NewString(),
 		Name:      norm,
 		SortName:  AuthorSortName(norm),
 		Aliases:   "[]",
@@ -111,7 +111,7 @@ func (c *Catalog) GetOrCreateAuthor(ctx context.Context, name string) (*database
 // UpsertAuthor creates or updates an author.
 func (c *Catalog) UpsertAuthor(ctx context.Context, a *database.Author) error {
 	if a.ID == "" {
-		a.ID = uuid.New().String()
+		a.ID = uuid.NewString()
 	}
 	if a.SortName == "" {
 		a.SortName = AuthorSortName(a.Name)
@@ -164,7 +164,7 @@ func (c *Catalog) GetOrCreateSeries(ctx context.Context, title string) (*databas
 	}
 
 	newSeries := &database.Series{
-		ID:        uuid.New().String(),
+		ID:        uuid.NewString(),
 		Title:     clean,
 		Status:    "ongoing",
 		CreatedAt: time.Now().UTC(),
@@ -186,7 +186,7 @@ func (c *Catalog) GetOrCreateSeries(ctx context.Context, title string) (*databas
 // UpsertSeries creates or updates a series record.
 func (c *Catalog) UpsertSeries(ctx context.Context, s *database.Series) error {
 	if s.ID == "" {
-		s.ID = uuid.New().String()
+		s.ID = uuid.NewString()
 	}
 	if s.Status == "" {
 		s.Status = "ongoing"
@@ -251,7 +251,7 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 	}
 
 	if book.ID == "" {
-		book.ID = uuid.New().String()
+		book.ID = uuid.NewString()
 	}
 	book.Title = cleanTitle
 	if book.Genres == "" {
@@ -280,7 +280,7 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 // UpsertBook inserts or updates a book record.
 func (c *Catalog) UpsertBook(ctx context.Context, b *database.Book) error {
 	if b.ID == "" {
-		b.ID = uuid.New().String()
+		b.ID = uuid.NewString()
 	}
 	if b.Genres == "" {
 		b.Genres = "[]"
@@ -354,7 +354,7 @@ func (c *Catalog) GetOrCreateEdition(ctx context.Context, ed *database.BookEditi
 	}
 
 	if ed.ID == "" {
-		ed.ID = uuid.New().String()
+		ed.ID = uuid.NewString()
 	}
 	ed.Format = cleanFormat
 	if ed.Language == "" {
@@ -383,7 +383,7 @@ func (c *Catalog) GetOrCreateEdition(ctx context.Context, ed *database.BookEditi
 // UpsertEdition inserts or updates a book edition.
 func (c *Catalog) UpsertEdition(ctx context.Context, ed *database.BookEdition) error {
 	if ed.ID == "" {
-		ed.ID = uuid.New().String()
+		ed.ID = uuid.NewString()
 	}
 	ed.Format = strings.ToLower(ed.Format)
 	if ed.Language == "" {
@@ -449,7 +449,7 @@ func (c *Catalog) GetMediaAssetsByEditionID(ctx context.Context, editionID strin
 // UpsertMediaAsset inserts or updates a media asset record.
 func (c *Catalog) UpsertMediaAsset(ctx context.Context, ma *database.MediaAsset) error {
 	if ma.ID == "" {
-		ma.ID = uuid.New().String()
+		ma.ID = uuid.NewString()
 	}
 	ma.FilePath = filepath.Clean(ma.FilePath)
 	if ma.Chapters == "" {
@@ -628,7 +628,7 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 
 	// 5. Media Asset
 	asset := database.MediaAsset{
-		ID:         uuid.New().String(),
+		ID:         uuid.NewString(),
 		EditionID:  edition.ID,
 		FilePath:   org.MediaPath,
 		FileSize:   fi.Size(),
@@ -746,7 +746,7 @@ func (c *Catalog) ReconcileScannedBook(ctx context.Context, sb *ScannedBook) (*I
 		}
 
 		asset := database.MediaAsset{
-			ID:         uuid.New().String(),
+			ID:         uuid.NewString(),
 			EditionID:  ed.ID,
 			FilePath:   m.Path,
 			FileSize:   m.FileSize,

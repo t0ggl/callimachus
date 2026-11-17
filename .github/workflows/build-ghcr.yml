@@ -124,9 +124,7 @@ jobs:
           older-than: 1 hour
 
       - name: Prune old releases
-        uses: dev-drprasad/delete-older-releases@dfbe6be2a006e9475dfcbe5b8d201f1824c2a9fe # v0.3.4
-        with:
-          keep_latest: 20
-          delete_tags: false
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/prune-releases.sh 20

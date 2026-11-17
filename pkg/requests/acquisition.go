@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/t0ggl/callimachus/internal/uuid"
 	"github.com/t0ggl/callimachus/pkg/database"
 	"github.com/t0ggl/callimachus/pkg/indexers"
 )

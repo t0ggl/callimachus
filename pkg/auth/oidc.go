@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/t0ggl/callimachus/internal/uuid"
 	"github.com/t0ggl/callimachus/pkg/database"
 )
 
@@ -244,8 +244,8 @@ type OIDCClient struct {
 	tokenURL string
 	jwksURL  string
 
-	mu        sync.RWMutex
-	jwksCache map[string]crypto.PublicKey
+	mu            sync.RWMutex
+	jwksCache     map[string]crypto.PublicKey
 	jwksFetchedAt time.Time
 }
 
