@@ -18,6 +18,7 @@ import {
   QualityProfile,
   SettingsOverridesMap,
   FormatType,
+  FORMAT_TYPES,
 } from '../types';
 
 export interface SettingsUpdatePayload {
@@ -728,7 +729,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <OverrideBadge settingKey="allowed_formats" />
               </div>
               <div className="flex flex-wrap gap-2">
-                {(['EPUB', 'M4B', 'PDF', 'MP3'] as FormatType[]).map((fmt) => {
+                {FORMAT_TYPES.map((fmt) => {
                   const isChecked = (qualityProfile.allowedFormats ?? []).includes(fmt);
                   const locked = isOverridden('allowed_formats');
                   return (
@@ -736,6 +737,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       key={fmt}
                       type="button"
                       disabled={locked}
+                      aria-pressed={isChecked}
                       onClick={() => {
                         setQualityProfile((prev) => ({
                           ...prev,
@@ -800,7 +802,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     }
                     className="rounded bg-zinc-950 border-zinc-800 text-blue-500 focus:ring-0 disabled:cursor-not-allowed"
                   />
-                  <span>Automatically mux multi-part MP3/FLAC into a single chaptered .m4b</span>
+                  <span>Automatically convert audiobooks to M4B format</span>
                 </label>
                 <OverrideBadge settingKey="prefer_single_file_m4b" />
               </div>

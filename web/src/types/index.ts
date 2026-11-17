@@ -1,4 +1,5 @@
-export type FormatType = 'EPUB' | 'M4B' | 'PDF' | 'MP3';
+export const FORMAT_TYPES = ['EPUB', 'M4B', 'PDF', 'MP3', 'AZW3', 'MOBI', 'CBR', 'CBZ'] as const;
+export type FormatType = typeof FORMAT_TYPES[number];
 
 export interface Author {
   id: string;

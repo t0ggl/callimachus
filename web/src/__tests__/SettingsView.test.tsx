@@ -100,7 +100,9 @@ describe('SettingsView Environment Overrides', () => {
     expect(screen.getByTestId('override-note-max_file_size_mb')).toHaveTextContent(
       'Managed via environment variable CALLIMACHUS_MAX_FILE_SIZE_MB and cannot be modified here.'
     );
-    expect(screen.getByRole('button', { name: 'EPUB' })).toBeDisabled();
+    for (const format of ['EPUB', 'AZW3', 'MOBI', 'CBR', 'CBZ']) {
+      expect(screen.getByRole('button', { name: format })).toBeDisabled();
+    }
     expect(screen.queryByLabelText('Audio Min Bitrate (kbps)')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Audio Target Bitrate (kbps)')).not.toBeInTheDocument();
   });
@@ -159,4 +161,39 @@ describe('SettingsView Environment Overrides', () => {
       'Settings saved successfully.'
     );
   });
+});
+
+it('offers common ebook formats and saves selections with the exact audiobook conversion label', async () => {
+  const user = userEvent.setup({ delay: null });
+  const onSaveSettings = vi.fn().mockResolvedValue(undefined);
+  render(
+    <SettingsView
+      indexers={[]}
+      downloadClients={[]}
+      librarySettings={baseLibrary}
+      prowlarrSettings={baseProwlarr}
+      qualityProfile={baseQuality}
+      onSaveSettings={onSaveSettings}
+    />
+  );
+  await user.click(screen.getByTestId('tab-settings-quality'));
+  const formats = ['AZW3', 'MOBI', 'CBR', 'CBZ'];
+  for (const format of formats) {
+    const button = screen.getByRole('button', { name: format });
+    expect(button).toBeEnabled();
+    await user.click(button);
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+  }
+  const conversion = screen.getByRole('checkbox', {
+    name: 'Automatically convert audiobooks to M4B format',
+  });
+  expect(conversion).toBeChecked();
+  await user.click(conversion);
+  await user.click(screen.getByTestId('save-settings-btn'));
+  expect(onSaveSettings).toHaveBeenCalledWith(expect.objectContaining({
+    qualityProfile: expect.objectContaining({
+      allowedFormats: ['EPUB', 'M4B', ...formats],
+      preferSingleFileM4b: false,
+    }),
+  }));
 });

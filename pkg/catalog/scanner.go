@@ -17,12 +17,16 @@ import (
 var (
 	reYearInString = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
 
+	// Use explicit MIME types so recognition does not depend on the host MIME database.
 	supportedMediaExtensions = map[string]string{
-		".epub": "epub",
-		".m4b":  "m4b",
-		".mp3":  "mp3",
-		".pdf":  "pdf",
-		".azw3": "azw3",
+		".epub": "application/epub+zip",
+		".m4b":  "audio/mp4",
+		".mp3":  "audio/mpeg",
+		".pdf":  "application/pdf",
+		".azw3": "application/vnd.amazon.mobi8-ebook",
+		".mobi": "application/x-mobipocket-ebook",
+		".cbr":  "application/vnd.comicbook-rar",
+		".cbz":  "application/vnd.comicbook+zip",
 	}
 
 	supportedCoverExtensions = map[string]bool{
@@ -37,6 +41,7 @@ type ScannedMediaFile struct {
 	Path     string `json:"path"`
 	Format   string `json:"format"` // e.g. "epub", "m4b", "mp3", "pdf", "azw3"
 	FileSize int64  `json:"file_size"`
+	MIMEType string `json:"mime_type"`
 }
 
 // ScannedBook represents a reconciled book with its media assets and companion sidecars.
@@ -121,7 +126,7 @@ func ScanLibrary(libraryRoot string) (*ScanReport, error) {
 			groups[dir] = group
 		}
 
-		if format, isMedia := supportedMediaExtensions[ext]; isMedia {
+		if mimeType, isMedia := supportedMediaExtensions[ext]; isMedia {
 			info, err := d.Info()
 			var size int64
 			if err == nil {
@@ -129,7 +134,8 @@ func ScanLibrary(libraryRoot string) (*ScanReport, error) {
 			}
 			group.mediaFiles[baseWithoutExt] = append(group.mediaFiles[baseWithoutExt], ScannedMediaFile{
 				Path:     path,
-				Format:   format,
+				Format:   strings.TrimPrefix(ext, "."),
+				MIMEType: mimeType,
 				FileSize: size,
 			})
 			mediaCount++

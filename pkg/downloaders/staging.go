@@ -261,7 +261,7 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 
 	bookDetails := sm.resolveBookDetails(ctx, item)
 
-	// 1. Process eBooks (.epub, .pdf, .azw3, .mobi)
+	// 1. Process recognized eBooks
 	if len(ebookFiles) > 0 {
 		primaryEbook := ebookFiles[0]
 		if bookDetails.Format == "" {
@@ -542,7 +542,7 @@ func findMediaFiles(stagingPath string) (ebooks []string, audios []string, err e
 
 func isEbookExt(ext string) bool {
 	switch ext {
-	case ".epub", ".azw3", ".pdf", ".mobi":
+	case ".epub", ".azw3", ".pdf", ".mobi", ".cbr", ".cbz":
 		return true
 	default:
 		return false

@@ -8,7 +8,7 @@ import {
   Layers,
   Filter,
 } from 'lucide-react';
-import { Book, Author, Series } from '../types';
+import { Book, Author, Series, FormatType, FORMAT_TYPES } from '../types';
 
 interface CatalogViewProps {
   books: Book[];
@@ -28,7 +28,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [activeTab, setActiveTab] = useState<'books' | 'authors' | 'series'>('books');
   const [searchQuery, setSearchQuery] = useState('');
-  const [formatFilter, setFormatFilter] = useState<'ALL' | 'EPUB' | 'M4B'>('ALL');
+  const [formatFilter, setFormatFilter] = useState<'ALL' | FormatType>('ALL');
 
   // Filtered books
   const filteredBooks = useMemo(() => {
@@ -157,12 +157,12 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
         </div>
 
         {activeTab === 'books' && (
-          <div className="flex items-center gap-2 self-start sm:self-auto text-xs">
+          <div className="flex items-center gap-2 flex-wrap self-start sm:self-auto text-xs">
             <span className="text-zinc-500 flex items-center gap-1">
               <Filter className="w-3.5 h-3.5" /> Format:
             </span>
-            <div className="flex bg-zinc-900 border border-zinc-800 rounded-md p-0.5 text-xs font-mono">
-              {(['ALL', 'EPUB', 'M4B'] as const).map((fmt) => (
+            <div className="flex flex-wrap bg-zinc-900 border border-zinc-800 rounded-md p-0.5 text-xs font-mono">
+              {(['ALL', ...FORMAT_TYPES] as const).map((fmt) => (
                 <button
                   key={fmt}
                   onClick={() => setFormatFilter(fmt)}

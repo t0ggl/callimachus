@@ -565,3 +565,15 @@ func BenchmarkParseRelease(b *testing.B) {
 func floatPtr(f float64) *float64 {
 	return &f
 }
+
+func TestParseRelease_EbookFormats(t *testing.T) {
+	t.Parallel()
+	for _, format := range []string{"AZW3", "MOBI", "CBR", "CBZ"} {
+		for _, token := range []string{format, strings.ToLower(format)} {
+			parsed := ParseRelease("Synthetic Author - Synthetic Book (2024) " + token)
+			if parsed.Format != strings.ToLower(format) || parsed.Title != "Synthetic Book" || parsed.Group != "" {
+				t.Errorf("format %s: unexpected release: %+v", token, parsed)
+			}
+		}
+	}
+}

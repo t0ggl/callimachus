@@ -315,3 +315,35 @@ func getBookTitles(books []*ScannedBook) []string {
 	}
 	return titles
 }
+
+func TestScanLibrary_EbookExtensions(t *testing.T) {
+	t.Parallel()
+	formats := map[string]string{
+		"azw3": "application/vnd.amazon.mobi8-ebook",
+		"mobi": "application/x-mobipocket-ebook",
+		"cbr":  "application/vnd.comicbook-rar",
+		"cbz":  "application/vnd.comicbook+zip",
+	}
+	for format, mimeType := range formats {
+		t.Run(format, func(t *testing.T) {
+			for _, ext := range []string{format, strings.ToUpper(format)} {
+				root := t.TempDir()
+				path := filepath.Join(root, "Synthetic Author - Synthetic Book (2024)."+ext)
+				if err := os.WriteFile(path, []byte("synthetic ebook"), 0644); err != nil {
+					t.Fatal(err)
+				}
+				report, err := ScanLibrary(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if report.MediaCount != 1 || len(report.Books) != 1 || len(report.Books[0].MediaFiles) != 1 {
+					t.Fatalf("extension %s: unexpected scan: %+v", ext, report)
+				}
+				media := report.Books[0].MediaFiles[0]
+				if media.Format != format || media.MIMEType != mimeType || media.Path != path || media.FileSize != 15 {
+					t.Errorf("extension %s: unexpected media: %+v", ext, media)
+				}
+			}
+		})
+	}
+}
