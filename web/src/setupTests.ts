@@ -1,4 +1,4 @@
-import '@testing-library/jest-dom';
+import '@testing-library/jest-dom/vitest';
 
 // Default global fetch mock for tests using jsdom
 if (!globalThis.fetch || typeof globalThis.fetch !== 'function') {

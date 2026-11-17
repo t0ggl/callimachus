@@ -197,7 +197,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label="Command Palette"
-      className="fixed inset-0 z-50 flex items-start justify-center pt-20 bg-black/70 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+      className="fixed inset-0 z-50 flex items-start justify-center pt-20 bg-black/70 backdrop-blur-xs p-4 animate-in fade-in duration-150"
       onClick={onClose}
     >
       <div
@@ -215,18 +215,18 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             placeholder="Search books, authors, series, or navigate (Ctrl+K, /)..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="w-full bg-transparent text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-0"
+            className="w-full bg-transparent text-sm text-zinc-100 placeholder-zinc-500 focus:outline-hidden focus:ring-0"
           />
           {query && (
             <button
               onClick={() => setQuery('')}
-              className="text-zinc-500 hover:text-zinc-300 p-1 rounded"
+              className="text-zinc-500 hover:text-zinc-300 p-1 rounded-sm"
               title="Clear search"
             >
               <X className="w-4 h-4" />
             </button>
           )}
-          <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono font-medium text-zinc-400 bg-zinc-800 border border-zinc-700 rounded">
+          <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono font-medium text-zinc-400 bg-zinc-800 border border-zinc-700 rounded-sm">
             ESC
           </kbd>
         </div>
@@ -272,7 +272,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
                   <div className="flex items-center gap-2 shrink-0 ml-3">
                     {item.badge && (
-                      <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-zinc-800 border border-zinc-700/80 text-zinc-300">
+                      <span className="text-[11px] font-mono px-2 py-0.5 rounded-sm bg-zinc-800 border border-zinc-700/80 text-zinc-300">
                         {item.badge}
                       </span>
                     )}
@@ -290,11 +290,11 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         <div className="px-4 py-2 border-t border-zinc-800 bg-zinc-950/60 flex items-center justify-between text-xs text-zinc-500">
           <div className="flex items-center gap-3">
             <span>
-              <kbd className="px-1 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-[10px]">↑</kbd>
-              <kbd className="ml-1 px-1 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-[10px]">↓</kbd> navigate
+              <kbd className="px-1 py-0.5 bg-zinc-800 border border-zinc-700 rounded-sm text-[10px]">↑</kbd>
+              <kbd className="ml-1 px-1 py-0.5 bg-zinc-800 border border-zinc-700 rounded-sm text-[10px]">↓</kbd> navigate
             </span>
             <span>
-              <kbd className="px-1 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-[10px]">↵</kbd> select
+              <kbd className="px-1 py-0.5 bg-zinc-800 border border-zinc-700 rounded-sm text-[10px]">↵</kbd> select
             </span>
           </div>
           <span>Callimachus Fast Palette</span>

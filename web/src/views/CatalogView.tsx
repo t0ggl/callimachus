@@ -105,7 +105,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
               data-testid="tab-books"
               className={`px-3 py-1.5 rounded-md transition-colors ${
                 activeTab === 'books'
-                  ? 'bg-zinc-800 text-white shadow-sm'
+                  ? 'bg-zinc-800 text-white shadow-xs'
                   : 'text-zinc-400 hover:text-zinc-200'
               }`}
             >
@@ -116,7 +116,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
               data-testid="tab-authors"
               className={`px-3 py-1.5 rounded-md transition-colors ${
                 activeTab === 'authors'
-                  ? 'bg-zinc-800 text-white shadow-sm'
+                  ? 'bg-zinc-800 text-white shadow-xs'
                   : 'text-zinc-400 hover:text-zinc-200'
               }`}
             >
@@ -127,7 +127,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
               data-testid="tab-series"
               className={`px-3 py-1.5 rounded-md transition-colors ${
                 activeTab === 'series'
-                  ? 'bg-zinc-800 text-white shadow-sm'
+                  ? 'bg-zinc-800 text-white shadow-xs'
                   : 'text-zinc-400 hover:text-zinc-200'
               }`}
             >
@@ -176,7 +176,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
             placeholder={`Filter ${activeTab}...`}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-md text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-700"
+            className="w-full pl-9 pr-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-md text-xs text-zinc-100 placeholder-zinc-500 focus:outline-hidden focus:border-zinc-700"
           />
         </div>
 
@@ -191,7 +191,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                   key={fmt}
                   onClick={() => setFormatFilter(fmt)}
                   data-testid={`filter-format-${fmt.toLowerCase()}`}
-                  className={`px-2.5 py-1 rounded transition-colors ${
+                  className={`px-2.5 py-1 rounded-sm transition-colors ${
                     formatFilter === fmt
                       ? 'bg-zinc-800 text-white font-semibold'
                       : 'text-zinc-400 hover:text-zinc-200'
@@ -202,7 +202,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
               ))}
             </div>
             <span className="text-[11px] text-zinc-500 ml-2">
-              (Use <kbd className="px-1 py-0.5 bg-zinc-900 border border-zinc-800 rounded">j</kbd>/<kbd className="px-1 py-0.5 bg-zinc-900 border border-zinc-800 rounded">k</kbd> + <kbd className="px-1 py-0.5 bg-zinc-900 border border-zinc-800 rounded">↵</kbd>)
+              (Use <kbd className="px-1 py-0.5 bg-zinc-900 border border-zinc-800 rounded-sm">j</kbd>/<kbd className="px-1 py-0.5 bg-zinc-900 border border-zinc-800 rounded-sm">k</kbd> + <kbd className="px-1 py-0.5 bg-zinc-900 border border-zinc-800 rounded-sm">↵</kbd>)
             </span>
           </div>
         )}
@@ -253,7 +253,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                         {book.formats.map((fmt) => (
                           <span
                             key={fmt}
-                            className={`text-[9px] font-mono px-1.5 py-0.5 rounded shadow font-semibold ${
+                            className={`text-[9px] font-mono px-1.5 py-0.5 rounded-sm shadow-sm font-semibold ${
                               fmt === 'M4B'
                                 ? 'bg-purple-900/90 text-purple-200 border border-purple-700/60'
                                 : 'bg-blue-900/90 text-blue-200 border border-blue-700/60'
@@ -266,7 +266,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
 
                       {/* Series Index Badge */}
                       {book.seriesIndexDisplay && (
-                        <div className="absolute bottom-2 left-2 bg-zinc-950/80 backdrop-blur-sm border border-zinc-800 px-1.5 py-0.5 rounded text-[10px] font-mono text-zinc-300 font-medium">
+                        <div className="absolute bottom-2 left-2 bg-zinc-950/80 backdrop-blur-xs border border-zinc-800 px-1.5 py-0.5 rounded-sm text-[10px] font-mono text-zinc-300 font-medium">
                           {book.seriesIndexDisplay}
                         </div>
                       )}
@@ -333,7 +333,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                             {book.formats.map((fmt) => (
                               <span
                                 key={fmt}
-                                className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+                                className={`text-[10px] font-mono px-1.5 py-0.5 rounded-sm ${
                                   fmt === 'M4B'
                                     ? 'bg-purple-950 text-purple-300 border border-purple-800/60'
                                     : 'bg-blue-950 text-blue-300 border border-blue-800/60'
@@ -407,7 +407,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                   <div className="flex items-center gap-2">
                     <Layers className="w-4 h-4 text-purple-400" />
                     <h3 className="text-sm font-bold text-zinc-100"><button onClick={() => setSelectedSeries(s.title)} className="text-purple-300 underline underline-offset-2">{s.title}</button></h3>
-                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-sm bg-zinc-800 text-zinc-400 border border-zinc-700">
                       {s.status}
                     </span>
                   </div>
@@ -426,7 +426,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                     <div
                       key={book.id}
                       onClick={() => onSelectBook(book)}
-                      className="cursor-pointer bg-zinc-950 p-2.5 rounded border border-zinc-800 hover:border-purple-600/60 transition-colors flex items-center justify-between gap-2"
+                      className="cursor-pointer bg-zinc-950 p-2.5 rounded-sm border border-zinc-800 hover:border-purple-600/60 transition-colors flex items-center justify-between gap-2"
                     >
                       <div className="truncate">
                         <div className="text-xs font-medium text-zinc-200 truncate">
@@ -436,7 +436,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                           {book.authorName}
                         </div>
                       </div>
-                      <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800 shrink-0">
+                      <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-sm bg-purple-950 text-purple-300 border border-purple-800 shrink-0">
                         {book.seriesIndexDisplay || `#${book.seriesIndex}`}
                       </span>
                     </div>

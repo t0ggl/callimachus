@@ -82,7 +82,7 @@ export const Layout: React.FC<LayoutProps> = ({
             <div>
               <div className="text-sm font-bold tracking-tight text-white flex items-center gap-1.5">
                 Callimachus
-                <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">
+                <span className="text-[10px] font-mono px-1 py-0.2 rounded-sm bg-zinc-800 text-zinc-400 border border-zinc-700">
                   v0.1
                 </span>
               </div>
@@ -161,7 +161,7 @@ export const Layout: React.FC<LayoutProps> = ({
                 <button
                   onClick={onLogout}
                   data-testid="logout-button"
-                  className="p-1.5 text-zinc-400 hover:text-red-400 hover:bg-zinc-800/80 rounded transition-colors"
+                  className="p-1.5 text-zinc-400 hover:text-red-400 hover:bg-zinc-800/80 rounded-sm transition-colors"
                   title="Sign Out"
                 >
                   <LogOut className="w-4 h-4" />
@@ -195,9 +195,9 @@ export const Layout: React.FC<LayoutProps> = ({
               <span>Search catalog or commands...</span>
             </div>
             <div className="flex items-center gap-1 font-mono text-[10px] text-zinc-500">
-              <kbd className="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded">Ctrl+K</kbd>
+              <kbd className="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded-sm">Ctrl+K</kbd>
               <span className="text-zinc-600">or</span>
-              <kbd className="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded">/</kbd>
+              <kbd className="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded-sm">/</kbd>
             </div>
           </button>
 
@@ -206,7 +206,7 @@ export const Layout: React.FC<LayoutProps> = ({
             <div className="flex items-center gap-2 text-xs">
               <span
                 onClick={() => onNavigate('activity')}
-                className="cursor-pointer flex items-center gap-1.5 px-2.5 py-1 rounded bg-zinc-800/60 hover:bg-zinc-800 text-zinc-300 border border-zinc-700/60"
+                className="cursor-pointer flex items-center gap-1.5 px-2.5 py-1 rounded-sm bg-zinc-800/60 hover:bg-zinc-800 text-zinc-300 border border-zinc-700/60"
                 title="Active Transcodes"
               >
                 <Zap className="w-3.5 h-3.5 text-amber-400" />
@@ -214,7 +214,7 @@ export const Layout: React.FC<LayoutProps> = ({
               </span>
               <span
                 onClick={() => onNavigate('activity')}
-                className="cursor-pointer flex items-center gap-1.5 px-2.5 py-1 rounded bg-zinc-800/60 hover:bg-zinc-800 text-zinc-300 border border-zinc-700/60"
+                className="cursor-pointer flex items-center gap-1.5 px-2.5 py-1 rounded-sm bg-zinc-800/60 hover:bg-zinc-800 text-zinc-300 border border-zinc-700/60"
                 title="Active Downloads"
               >
                 <DownloadCloud className="w-3.5 h-3.5 text-cyan-400" />
@@ -225,7 +225,7 @@ export const Layout: React.FC<LayoutProps> = ({
             <div className="h-4 w-px bg-zinc-800" />
 
             <div className="flex items-center gap-2">
-              <span className="text-xs font-mono px-2 py-0.5 bg-emerald-950/60 text-emerald-400 border border-emerald-800/60 rounded">
+              <span className="text-xs font-mono px-2 py-0.5 bg-emerald-950/60 text-emerald-400 border border-emerald-800/60 rounded-sm">
                 OPERATE MODE
               </span>
             </div>
