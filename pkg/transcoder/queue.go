@@ -50,6 +50,10 @@ func NewQueue(db *database.DB) *Queue {
 
 // Enqueue creates and inserts a new transcode job into the queue, returning the created item.
 func (q *Queue) Enqueue(ctx context.Context, editionID, sourcePath, targetPath string, priority int) (*database.TranscodeQueueItem, error) {
+	return q.enqueue(ctx, editionID, sourcePath, targetPath, priority, "")
+}
+
+func (q *Queue) enqueue(ctx context.Context, editionID, sourcePath, targetPath string, priority int, ebookContext string) (*database.TranscodeQueueItem, error) {
 	if strings.TrimSpace(editionID) == "" {
 		return nil, errors.New("editionID cannot be empty")
 	}
@@ -67,8 +71,8 @@ func (q *Queue) Enqueue(ctx context.Context, editionID, sourcePath, targetPath s
 		INSERT INTO transcode_queue (
 			id, edition_id, source_path, target_path, status,
 			progress_percent, current_stage, priority, attempts, max_attempts,
-			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			created_at, updated_at, ebook_context
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING id, edition_id, source_path, target_path, status, progress_percent,
 		          current_stage, error_message, worker_id, attempts, max_attempts,
 		          priority, created_at, updated_at, started_at, completed_at;
@@ -77,7 +81,7 @@ func (q *Queue) Enqueue(ctx context.Context, editionID, sourcePath, targetPath s
 	row := q.db.QueryRowContext(ctx, query,
 		id, editionID, sourcePath, targetPath, StatusPending,
 		0.0, StageQueued, priority, 0, DefaultMaxAttempts,
-		now, now,
+		now, now, ebookContext,
 	)
 
 	item, err := scanQueueItem(row)

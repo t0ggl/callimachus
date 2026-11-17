@@ -62,6 +62,9 @@ func TestAllRegisteredSettings_AutoEnvOverridePrecedence(t *testing.T) {
 		case KindStringList:
 			envVal = "ENV1,ENV2"
 		}
+		if spec.Key == KeyEbookTargetFormat {
+			envVal = "AZW3"
+		}
 		t.Setenv(envName, envVal)
 	}
 
@@ -295,5 +298,25 @@ func TestEbookPreferencesPersistenceAndOverrides(t *testing.T) {
 	resolved, err = Load(ctx, db, Overrides{})
 	if err != nil || !reflect.DeepEqual(resolved.Settings.EbookFormatPreferences, want) {
 		t.Fatalf("override mutated DB: %+v, %v", resolved, err)
+	}
+}
+
+func TestEbookConversionSettings(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	got, err := SaveNonOverridden(ctx, db, map[string]string{KeyConvertEbooks: "true", KeyEbookTargetFormat: "azw3"}, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Settings.ToQualityProfile().ConvertEbooks || got.Settings.EbookTargetFormat != "AZW3" {
+		t.Fatalf("settings: %+v", got.Settings)
+	}
+	if _, err := SaveNonOverridden(ctx, db, map[string]string{KeyEbookTargetFormat: "pdf"}, Overrides{}); err == nil {
+		t.Fatal("accepted unsupported target")
+	}
+	t.Setenv(EnvVarName(KeyEbookTargetFormat), "EPUB")
+	got, err = SaveNonOverridden(ctx, db, map[string]string{KeyEbookTargetFormat: "AZW3"}, Overrides{})
+	if err != nil || got.Settings.EbookTargetFormat != "EPUB" || !got.Overrides[KeyEbookTargetFormat].IsOverridden {
+		t.Fatalf("override: %+v %v", got, err)
 	}
 }

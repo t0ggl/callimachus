@@ -23,22 +23,24 @@ import (
 
 // StagingConfig defines configuration options for StagingMonitor.
 type StagingConfig struct {
-	DB            *database.DB
-	Catalog       *catalog.Catalog
-	Transcoder    *transcoder.Queue
-	LibraryRoot   string
-	PollInterval  time.Duration
-	CompletedRoot string
+	QualityProfile func(context.Context) (QualityProfile, error)
+	DB             *database.DB
+	Catalog        *catalog.Catalog
+	Transcoder     *transcoder.Queue
+	LibraryRoot    string
+	PollInterval   time.Duration
+	CompletedRoot  string
 }
 
 // StagingMonitor sends completed downloads to the post-processing pipeline.
 type StagingMonitor struct {
-	db            *database.DB
-	catalog       *catalog.Catalog
-	transcoder    *transcoder.Queue
-	libraryRoot   string
-	pollInterval  time.Duration
-	completedRoot string
+	qualityProfile func(context.Context) (QualityProfile, error)
+	db             *database.DB
+	catalog        *catalog.Catalog
+	transcoder     *transcoder.Queue
+	libraryRoot    string
+	pollInterval   time.Duration
+	completedRoot  string
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -54,12 +56,13 @@ func NewStagingMonitor(cfg StagingConfig) *StagingMonitor {
 	}
 
 	return &StagingMonitor{
-		db:            cfg.DB,
-		catalog:       cfg.Catalog,
-		transcoder:    cfg.Transcoder,
-		libraryRoot:   cfg.LibraryRoot,
-		pollInterval:  pollInterval,
-		completedRoot: cfg.CompletedRoot,
+		qualityProfile: cfg.QualityProfile,
+		db:             cfg.DB,
+		catalog:        cfg.Catalog,
+		transcoder:     cfg.Transcoder,
+		libraryRoot:    cfg.LibraryRoot,
+		pollInterval:   pollInterval,
+		completedRoot:  cfg.CompletedRoot,
 	}
 }
 
@@ -197,9 +200,68 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 	// 1. Process recognized eBooks
 	if len(ebookFiles) > 0 {
 		primaryEbook := ebookFiles[0]
-		if bookDetails.Format == "" {
-			bookDetails.Format = strings.ToLower(strings.TrimPrefix(filepath.Ext(primaryEbook), "."))
+		if sm.qualityProfile != nil {
+			profile, err := sm.qualityProfile(ctx)
+			if err != nil {
+				return err
+			}
+			if profile.ConvertEbooks {
+				target := strings.ToLower(profile.EbookTargetFormat)
+				if target == "" {
+					target = "epub"
+				}
+				if target != "epub" && target != "azw3" {
+					return errors.New("unsupported ebook target format")
+				}
+				for _, file := range ebookFiles {
+					if strings.EqualFold(filepath.Ext(file), "."+target) {
+						primaryEbook = file
+						break
+					}
+				}
+				if !strings.EqualFold(filepath.Ext(primaryEbook), "."+target) {
+					if sm.transcoder == nil || sm.catalog == nil {
+						return errors.New("ebook conversion requires catalog and worker queue")
+					}
+					bookDetails.Format = target
+					author, err := sm.catalog.GetOrCreateAuthor(ctx, bookDetails.Author)
+					if err != nil {
+						return err
+					}
+					var seriesID *string
+					if bookDetails.Series != "" {
+						series, err := sm.catalog.GetOrCreateSeries(ctx, bookDetails.Series)
+						if err != nil {
+							return err
+						}
+						seriesID = &series.ID
+					}
+					var date *string
+					if bookDetails.Year > 0 {
+						value := fmt.Sprintf("%04d-01-01", bookDetails.Year)
+						date = &value
+					}
+					book, err := sm.catalog.GetOrCreateBook(ctx, &database.Book{AuthorID: author.ID, Title: bookDetails.Title, SeriesID: seriesID, SeriesIndex: bookDetails.SeriesIndex, ReleaseDate: date, Synopsis: &bookDetails.Description})
+					if err != nil {
+						return err
+					}
+					if item.EditionID != nil {
+						var bookID string
+						if err := sm.db.QueryRowContext(ctx, "SELECT book_id FROM book_editions WHERE id = ?", *item.EditionID).Scan(&bookID); err != nil {
+							return err
+						}
+						book.ID = bookID
+					}
+					edition, err := sm.catalog.GetOrCreateEdition(ctx, &database.BookEdition{BookID: book.ID, Format: target})
+					if err != nil {
+						return err
+					}
+					_, err = sm.transcoder.EnqueueEbook(ctx, edition.ID, primaryEbook, sm.libraryRoot, bookDetails)
+					return err
+				}
+			}
 		}
+		bookDetails.Format = strings.ToLower(strings.TrimPrefix(filepath.Ext(primaryEbook), "."))
 		if sm.catalog != nil {
 			res, err := sm.catalog.IngestBook(ctx, sm.libraryRoot, bookDetails, primaryEbook, nil)
 			if err != nil {
@@ -481,7 +543,7 @@ func findMediaFiles(stagingPath string) (ebooks []string, audios []string, err e
 
 func isEbookExt(ext string) bool {
 	switch ext {
-	case ".epub", ".azw3", ".pdf", ".mobi", ".cbr", ".cbz":
+	case ".azw", ".fb2", ".epub", ".azw3", ".pdf", ".mobi", ".cbr", ".cbz":
 		return true
 	default:
 		return false

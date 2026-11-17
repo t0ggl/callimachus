@@ -2,8 +2,10 @@ package downloaders_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -295,5 +297,120 @@ func TestStagingMonitor_RetryAndIdempotency(t *testing.T) {
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM media_assets`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("idempotency: %d %v", count, err)
+	}
+}
+
+// Every converter call is mocked, including AZW3 decoding for validation.
+func TestStagingEbookConversion(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, target   string
+		enabled, fail, invalid bool
+	}{
+		{name: "mobi to epub", source: "mobi", target: "epub", enabled: true},
+		{name: "fb2 to azw3", source: "fb2", target: "azw3", enabled: true},
+		{name: "pdf conversion failure", source: "pdf", target: "epub", enabled: true, fail: true},
+		{name: "invalid output", source: "azw", target: "epub", enabled: true, invalid: true},
+		{name: "disabled", source: "mobi", target: "epub"},
+		{name: "target passthrough", source: "epub", target: "epub", enabled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			db := setupTestDB(t)
+			root := t.TempDir()
+			library := t.TempDir()
+			source := filepath.Join(root, "Author - Book."+tc.source)
+			if err := os.WriteFile(source, []byte("source"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			q := transcoder.NewQueue(db)
+			sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{DB: db, Catalog: catalog.New(db), Transcoder: q, CompletedRoot: root, LibraryRoot: library,
+				QualityProfile: func(context.Context) (downloaders.QualityProfile, error) {
+					return downloaders.QualityProfile{ConvertEbooks: tc.enabled, EbookTargetFormat: tc.target}, nil
+				},
+			})
+			if err := sm.PollOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := sm.PollOnce(ctx); err != nil {
+				t.Fatal(err)
+			} // Must not enqueue twice.
+			var count int
+			if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM transcode_queue").Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.enabled || tc.source == tc.target {
+				if count != 0 {
+					t.Fatal("unexpected conversion")
+				}
+				return
+			}
+			if count != 1 {
+				t.Fatalf("jobs: %d", count)
+			}
+			var id string
+			if err := db.QueryRowContext(ctx, "SELECT id FROM transcode_queue").Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			job, err := q.GetJob(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(job.TargetPath); !os.IsNotExist(err) {
+				t.Fatal("output organized before conversion")
+			}
+			fixture, err := os.ReadFile("../../testdata/epubs/epub_with_cover.epub")
+			if err != nil {
+				t.Fatal(err)
+			}
+			runner := transcoder.NewMockRunner()
+			runner.SetDefaultHandler(func(context.Context, transcoder.RunOptions) error { t.Fatal("unexpected command"); return nil })
+			runner.RegisterHandler("ebook-convert", func(_ context.Context, opt transcoder.RunOptions) error {
+				if tc.fail {
+					return fmt.Errorf("mock converter: DRM encrypted input")
+				}
+				data := fixture
+				if tc.invalid {
+					data = []byte("broken")
+				}
+				return os.WriteFile(opt.Args[1], data, 0644)
+			})
+			worker := transcoder.NewWorker(q, runner, transcoder.WorkerConfig{WorkerID: "ebook-test", WorkDir: t.TempDir()})
+			processed, err := worker.RunOnce(ctx)
+			if !processed {
+				t.Fatal("not processed")
+			}
+			if tc.fail || tc.invalid {
+				if err == nil {
+					t.Fatal("expected conversion error")
+				}
+				job, _ = q.GetJob(ctx, id)
+				if job.ErrorMessage == nil || *job.ErrorMessage == "" {
+					t.Fatal("missing activity error")
+				}
+				if _, err := os.Stat(source); err != nil {
+					t.Fatal("source lost")
+				}
+				if _, err := os.Stat(job.TargetPath); !os.IsNotExist(err) {
+					t.Fatal("invalid output published")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			job, _ = q.GetJob(ctx, id)
+			if job.Status != transcoder.StatusCompleted || job.ProgressPercent != 100 {
+				t.Fatalf("incomplete: %+v", job)
+			}
+			for _, ext := range []string{"." + tc.target, ".opf", ".jpg"} {
+				p := strings.TrimSuffix(job.TargetPath, filepath.Ext(job.TargetPath)) + ext
+				if _, err := os.Stat(p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM media_assets WHERE file_path = ?", job.TargetPath).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("asset count %d: %v", count, err)
+			}
+		})
 	}
 }

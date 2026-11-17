@@ -55,8 +55,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     fi
 
 # Stage 3: Runtime
-FROM alpine:3.20 AS runner
-RUN apk add --no-cache ca-certificates tzdata ffmpeg curl
+FROM debian:bookworm-slim AS runner
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata ffmpeg curl calibre \
+    && rm -rf /var/lib/apt/lists/*
+ENV QT_QPA_PLATFORM=offscreen
 
 WORKDIR /app
 COPY --from=go-builder /bin/callimachus /usr/local/bin/callimachus

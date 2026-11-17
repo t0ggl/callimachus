@@ -966,3 +966,48 @@ func TestSettingsEbookFormatPreferences(t *testing.T) {
 		t.Fatalf("missing env lock: %s", rec.Body.String())
 	}
 }
+
+func TestSettingsEbookConversionAPI(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	testutil.PrepareTestDBFile(t, dbPath)
+	srv, err := NewServer(Config{ConfigDir: dir, DBPath: dbPath, Host: "127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Shutdown(context.Background())
+	cookie := createTestSessionCookie(t, srv, "convert-admin", "convertadmin", auth.RoleAdmin)
+	call := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+		r.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(w, r)
+		return w
+	}
+	rec := call(`{"qualityProfile":{"convertEbooks":true,"ebookTargetFormat":"AZW3"}}`)
+	var got APISettingsResponse
+	if rec.Code != 200 {
+		t.Fatal(rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.QualityProfile.ConvertEbooks || got.QualityProfile.EbookTargetFormat != "AZW3" {
+		t.Fatal(rec.Body.String())
+	}
+	if rec := call(`{"qualityProfile":{"ebookTargetFormat":"PDF"}}`); rec.Code != 400 {
+		t.Fatalf("invalid target accepted: %d", rec.Code)
+	}
+	t.Setenv("CALLIMACHUS_CONVERT_EBOOKS", "false")
+	t.Setenv("CALLIMACHUS_EBOOK_TARGET_FORMAT", "EPUB")
+	rec = call(`{"qualityProfile":{"convertEbooks":true,"ebookTargetFormat":"AZW3"}}`)
+	if rec.Code != 200 {
+		t.Fatal(rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.QualityProfile.ConvertEbooks || got.QualityProfile.EbookTargetFormat != "EPUB" || !got.Overrides[config.KeyConvertEbooks].IsOverridden {
+		t.Fatal(rec.Body.String())
+	}
+}

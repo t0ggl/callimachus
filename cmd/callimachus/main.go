@@ -179,6 +179,13 @@ func NewServer(cfg Config) (*Server, error) {
 
 	// 5. Download Staging Monitor
 	stagingMon := downloaders.NewStagingMonitor(downloaders.StagingConfig{
+		QualityProfile: func(ctx context.Context) (downloaders.QualityProfile, error) {
+			resolved, err := config.Load(ctx, db, config.Overrides{})
+			if err != nil {
+				return downloaders.QualityProfile{}, err
+			}
+			return resolved.Settings.ToQualityProfile(), nil
+		},
 		DB:            db,
 		Catalog:       catalog.New(db),
 		Transcoder:    transcoder.NewQueue(db),

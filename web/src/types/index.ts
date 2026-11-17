@@ -66,7 +66,7 @@ export interface Book {
   editions: BookEdition[];
 }
 
-export type TranscodeStage = 'probing' | 'encoding' | 'muxing' | 'moving';
+export type TranscodeStage = 'queued' | 'probing' | 'encoding' | 'muxing' | 'tagging' | 'moving' | 'completed';
 export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'paused';
 
 export interface TranscodeJob {
@@ -75,7 +75,7 @@ export interface TranscodeJob {
   bookTitle: string;
   authorName: string;
   sourceFilesCount: number;
-  targetFormat: 'M4B';
+  targetFormat: 'M4B' | 'EPUB' | 'AZW3';
   stage: TranscodeStage;
   status: JobStatus;
   progressPercent: number;
@@ -162,6 +162,8 @@ export interface ProwlarrSettings {
 }
 
 export interface QualityProfile {
+  convertEbooks?: boolean;
+  ebookTargetFormat?: 'EPUB' | 'AZW3';
   id: string;
   name: string;
   allowedLanguages: string[];

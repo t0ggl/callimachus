@@ -84,3 +84,21 @@ integration must report terminal transfer failures with authenticated
 `{"queue_id":"<Callimachus activity queue ID>","error":"reason"}` using a Curator
 or Admin session (cookie or Bearer token). This records failure for the background engine to select
 the next candidate. Prowlarr itself does not report downstream transfer status.
+
+### Automatic eBook conversion
+
+In Settings → Quality Profile, enable “Automatically convert eBooks to target format”
+and choose EPUB (default) or AZW3. Enable the source formats you want to acquire in
+Allowed File Formats. Conversion runs in the worker before library ingestion, with
+progress and errors in Activity. Original downloads are retained for retries.
+
+The container includes Calibre. Native installations need `ebook-convert` on the
+worker's PATH. EPUB output is checked for container, metadata, and manifest resources;
+AZW3 is decoded back to EPUB and checked before publishing. DRM-protected or corrupt
+inputs fail visibly and are never ingested as successful conversions.
+
+Environment overrides: `CALLIMACHUS_CONVERT_EBOOKS=true` and
+`CALLIMACHUS_EBOOK_TARGET_FORMAT=EPUB` (or `AZW3`). These lock their Settings controls.
+The optional real Calibre integration check is
+`CALLIMACHUS_REAL_CALIBRE=1 go test ./pkg/transcoder -run TestWorkerEbookRealCalibre -v`;
+standard tests mock every converter subprocess.

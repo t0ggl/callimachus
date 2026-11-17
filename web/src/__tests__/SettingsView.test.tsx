@@ -283,3 +283,23 @@ it('delegates clients to Prowlarr and locks the completed download directory ove
   await user.click(screen.getByTestId('save-settings-btn'));
   expect(save.mock.calls[0][0].library).not.toHaveProperty('completedDownloadRoot');
 });
+
+it('saves eBook conversion options and respects environment locks', async () => {
+  const user = userEvent.setup({ delay: null });
+  const onSaveSettings = vi.fn().mockResolvedValue(undefined);
+  const props = {indexers: [], librarySettings: baseLibrary, prowlarrSettings: baseProwlarr, qualityProfile: baseQuality, onSaveSettings};
+  const {rerender} = render(<SettingsView {...props} />);
+  await user.click(screen.getByTestId('tab-settings-quality'));
+  const toggle = screen.getByRole('checkbox', {name: 'Automatically convert eBooks to target format'});
+  expect(screen.getByLabelText('Target eBook format')).toBeDisabled();
+  await user.click(toggle);
+  await user.selectOptions(screen.getByLabelText('Target eBook format'), 'AZW3');
+  await user.click(screen.getByTestId('save-settings-btn'));
+  expect(onSaveSettings).toHaveBeenLastCalledWith(expect.objectContaining({qualityProfile: expect.objectContaining({convertEbooks: true, ebookTargetFormat: 'AZW3'})}));
+  rerender(<SettingsView {...props} overrides={Object.fromEntries(['convert_ebooks', 'ebook_target_format'].map(key => [key, {isOverridden: true, overriddenBy: `CALLIMACHUS_${key.toUpperCase()}`, envVar: `CALLIMACHUS_${key.toUpperCase()}`}]))} />);
+  expect(toggle).toBeDisabled();
+  expect(screen.getByLabelText('Target eBook format')).toBeDisabled();
+  await user.click(screen.getByTestId('save-settings-btn'));
+  expect(onSaveSettings.mock.calls.at(-1)?.[0].qualityProfile).not.toHaveProperty('convertEbooks');
+  expect(onSaveSettings.mock.calls.at(-1)?.[0].qualityProfile).not.toHaveProperty('ebookTargetFormat');
+});

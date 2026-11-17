@@ -129,6 +129,10 @@ func (w *Worker) ProcessJob(ctx context.Context, job *database.TranscodeQueueIte
 		return errors.New("cannot process nil job")
 	}
 
+	if ext := strings.ToLower(filepath.Ext(job.TargetPath)); ext == ".epub" || ext == ".azw3" {
+		return w.processEbook(ctx, job)
+	}
+
 	// Step 1: Probing & Playlist ordering
 	w.reportStage(ctx, job.ID, StageProbing, 10.0)
 
