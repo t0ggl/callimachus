@@ -76,7 +76,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
             </span>
           </h1>
           <p className="text-xs text-zinc-400 mt-0.5">
-            Live audio transcoding pipelines, active indexer downloads, and file ingestion logs
+            Live audio and eBook conversion pipelines, active indexer downloads, and file ingestion logs
           </p>
         </div>
 
@@ -134,7 +134,8 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
             </div>
           ) : (
             transcodeJobs.map((job) => {
-              const currentStageIndex = STAGE_ORDER.indexOf(job.stage);
+              const stages: TranscodeStage[] = job.targetFormat === 'M4B' ? STAGE_ORDER : ['probing', 'encoding', 'tagging', 'moving'];
+              const currentStageIndex = stages.indexOf(job.stage);
 
               return (
                 <div
@@ -187,12 +188,12 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
 
                   {/* Stage Progress Indicators */}
                   <div className="grid grid-cols-4 gap-2 pt-1">
-                    {STAGE_ORDER.map((stageName, sIdx) => {
+                    {stages.map((stageName, sIdx) => {
                       const isPast = sIdx < currentStageIndex;
                       const isCurrent = sIdx === currentStageIndex;
                       return (
                         <div
-                          key={stageName}
+                          key={job.targetFormat !== 'M4B' && stageName === 'encoding' ? 'converting' : stageName}
                           className={`text-center py-1.5 px-2 rounded border text-xs font-mono font-medium uppercase tracking-wider transition-colors ${
                             isPast
                               ? 'bg-emerald-950/40 text-emerald-400 border-emerald-800/50'
@@ -201,12 +202,13 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                               : 'bg-zinc-950 text-zinc-500 border-zinc-800/80'
                           }`}
                         >
-                          {stageName}
+                          {job.targetFormat !== 'M4B' && stageName === 'encoding' ? 'converting' : stageName}
                         </div>
                       );
                     })}
                   </div>
 
+                  {job.errorMessage && <p role="alert" className="text-sm text-red-300">{job.errorMessage}</p>}
                   {/* Progress Bar */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between text-xs font-mono">

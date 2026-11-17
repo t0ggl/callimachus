@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -128,6 +129,8 @@ type APIProwlarrSettings struct {
 }
 
 type APIQualityProfileSettings struct {
+	ConvertEbooks          bool     `json:"convertEbooks"`
+	EbookTargetFormat      string   `json:"ebookTargetFormat"`
 	ID                     string   `json:"id"`
 	Name                   string   `json:"name"`
 	AllowedLanguages       []string `json:"allowedLanguages"`
@@ -161,6 +164,8 @@ type APISettingsUpdateRequest struct {
 		SyncInterval *string `json:"syncInterval"`
 	} `json:"prowlarr"`
 	QualityProfile *struct {
+		ConvertEbooks          *bool     `json:"convertEbooks"`
+		EbookTargetFormat      *string   `json:"ebookTargetFormat"`
 		Name                   *string   `json:"name"`
 		AllowedLanguages       *[]string `json:"allowedLanguages"`
 		AllowedFormats         *[]string `json:"allowedFormats"`
@@ -367,23 +372,24 @@ func (s *Server) handleGetActivity(w http.ResponseWriter, r *http.Request) {
 	// Query transcode queue
 	tqQuery := `
 		SELECT t.id, t.edition_id, COALESCE(b.title, ''), COALESCE(a.name, ''),
-		       t.status, t.progress_percent, t.current_stage, COALESCE(t.error_message, '')
+		       t.status, t.progress_percent, t.current_stage, COALESCE(t.error_message, ''), t.target_path
 		FROM transcode_queue t
 		LEFT JOIN book_editions be ON t.edition_id = be.id
 		LEFT JOIN books b ON be.book_id = b.id
 		LEFT JOIN authors a ON b.author_id = a.id
-		WHERE t.status IN ('pending', 'processing')
+		WHERE t.status IN ('pending', 'processing', 'failed')
 		ORDER BY t.created_at ASC
 	`
 	if rows, err := s.db.QueryContext(r.Context(), tqQuery); err == nil {
 		defer rows.Close()
 		for rows.Next() {
 			var job APITranscodeJob
-			job.TargetFormat = "M4B"
+			var targetPath string
 			if err := rows.Scan(
 				&job.ID, &job.BookID, &job.BookTitle, &job.AuthorName,
-				&job.Status, &job.ProgressPercent, &job.Stage, &job.ErrorMessage,
+				&job.Status, &job.ProgressPercent, &job.Stage, &job.ErrorMessage, &targetPath,
 			); err == nil {
+				job.TargetFormat = strings.ToUpper(strings.TrimPrefix(filepath.Ext(targetPath), "."))
 				resp.TranscodeJobs = append(resp.TranscodeJobs, job)
 			}
 		}
@@ -447,7 +453,8 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 
 	// Quality Profile
 	resp.QualityProfile = APIQualityProfileSettings{
-		ID:                     "default",
+		ID:            "default",
+		ConvertEbooks: cfg.ConvertEbooks, EbookTargetFormat: cfg.EbookTargetFormat,
 		Name:                   cfg.QualityProfileName,
 		AllowedLanguages:       cfg.AllowedLanguages,
 		AllowedFormats:         cfg.AllowedFormats,
@@ -587,6 +594,12 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.QualityProfile != nil {
+		if v := req.QualityProfile.ConvertEbooks; v != nil {
+			updates[config.KeyConvertEbooks] = strconv.FormatBool(*v)
+		}
+		if v := req.QualityProfile.EbookTargetFormat; v != nil {
+			updates[config.KeyEbookTargetFormat] = *v
+		}
 		if req.QualityProfile.Name != nil {
 			updates[config.KeyQualityProfileName] = *req.QualityProfile.Name
 		}

@@ -3,6 +3,7 @@ package transcoder
 import (
 	"context"
 	"fmt"
+	"github.com/t0ggl/callimachus/pkg/catalog"
 	"io"
 	"os"
 	"path/filepath"
@@ -416,6 +417,33 @@ func TestWorker_FixedEncodingAndM4BPassthrough(t *testing.T) {
 			entries, err := os.ReadDir(sourceDir)
 			if err != nil || len(entries) != parts {
 				t.Fatalf("source files were changed: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkerEbookRealCalibre(t *testing.T) {
+	if testing.Short() || os.Getenv("CALLIMACHUS_REAL_CALIBRE") != "1" {
+		t.Skip("opt in with CALLIMACHUS_REAL_CALIBRE=1")
+	}
+	for _, format := range []string{"epub", "azw3"} {
+		t.Run(format, func(t *testing.T) {
+			q, _ := setupTestQueueDB(t)
+			dir := t.TempDir()
+			source := filepath.Join(dir, "input.fb2")
+			if err := os.WriteFile(source, []byte(`<?xml version="1.0" encoding="UTF-8"?><FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"><description><title-info><genre>sf</genre><author><first-name>Test</first-name><last-name>Author</last-name></author><book-title>Test Book</book-title><lang>en</lang></title-info></description><body><section><title><p>Chapter One</p></title><p>A book for conversion testing.</p></section></body></FictionBook>`), 0644); err != nil {
+				t.Fatal(err)
+			}
+			job, err := q.EnqueueEbook(context.Background(), "synth-ed-1", source, filepath.Join(dir, "library"), catalog.BookDetails{Title: "Test Book", Author: "Test Author", Format: format})
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := NewWorker(q, nil, WorkerConfig{WorkerID: "real-calibre-test", WorkDir: filepath.Join(dir, "work")})
+			if _, err := w.RunOnce(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(job.TargetPath); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

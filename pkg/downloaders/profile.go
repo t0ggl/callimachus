@@ -28,6 +28,8 @@ var DefaultAllowedFormats = []string{"epub", "azw3", "pdf", "m4b", "mp3"}
 
 // QualityProfile defines rules for filtering discovered media releases.
 type QualityProfile struct {
+	ConvertEbooks          bool
+	EbookTargetFormat      string
 	AllowedLanguages       []string
 	AllowedFormats         []string
 	PreferSingleM4B        bool

@@ -34,6 +34,8 @@ const (
 	KeyPreferSingleFileM4B    = "prefer_single_file_m4b"
 	KeyMaxFileSizeMB          = "max_file_size_mb"
 	KeyMaxEbookSizeMB         = "max_ebook_size_mb"
+	KeyConvertEbooks          = "convert_ebooks"
+	KeyEbookTargetFormat      = "ebook_target_format"
 	KeyEbookFormatPreferences = "ebook_format_preferences"
 )
 
@@ -72,6 +74,8 @@ func EnvVarName(settingKey string) string {
 }
 
 var registry = []SettingSpec{
+	{Key: KeyConvertEbooks, Kind: KindBool, Default: "false"},
+	{Key: KeyEbookTargetFormat, Kind: KindString, Default: "EPUB"},
 	{Key: KeyGoogleBooksAPIKey, Kind: KindString, Secret: true},
 	{Key: KeyHardcoverAPIKey, Kind: KindString, Secret: true},
 	{Key: KeyLibraryRoot, Kind: KindString},
@@ -120,6 +124,8 @@ type OverrideInfo struct {
 
 // Settings holds the effective resolved application configuration.
 type Settings struct {
+	ConvertEbooks          bool          `json:"convertEbooks"`
+	EbookTargetFormat      string        `json:"ebookTargetFormat"`
 	GoogleBooksAPIKey      string        `json:"-"`
 	HardcoverAPIKey        string        `json:"-"`
 	CompletedDownloadRoot  string        `json:"completedDownloadRoot"`
@@ -150,6 +156,7 @@ func (s Settings) ToQualityProfile() downloaders.QualityProfile {
 		fmts[i] = strings.ToLower(strings.TrimSpace(f))
 	}
 	return downloaders.QualityProfile{
+		ConvertEbooks: s.ConvertEbooks, EbookTargetFormat: s.EbookTargetFormat,
 		AllowedLanguages:       langs,
 		AllowedFormats:         fmts,
 		PreferSingleM4B:        s.PreferSingleFileM4B,
@@ -311,6 +318,9 @@ func Load(ctx context.Context, db *database.DB, caller Overrides) (*ResolvedSett
 	if _, err := validateAndNormalize(specByKey[KeyMaxEbookSizeMB], resolvedValues[KeyMaxEbookSizeMB]); err != nil {
 		return nil, fmt.Errorf("invalid max_ebook_size_mb: %w", err)
 	}
+	if _, err := validateAndNormalize(specByKey[KeyEbookTargetFormat], resolvedValues[KeyEbookTargetFormat]); err != nil {
+		return nil, err
+	}
 	settings := materializeSettings(resolvedValues)
 	return &ResolvedSettings{
 		Settings:  settings,
@@ -372,6 +382,13 @@ func SaveNonOverridden(ctx context.Context, db *database.DB, updates map[string]
 
 func validateAndNormalize(spec SettingSpec, raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
+	if spec.Key == KeyEbookTargetFormat {
+		target := strings.ToUpper(strings.TrimSpace(raw))
+		if target != "EPUB" && target != "AZW3" {
+			return "", fmt.Errorf("ebook target must be EPUB or AZW3")
+		}
+		return target, nil
+	}
 	switch spec.Kind {
 	case KindString:
 		return trimmed, nil
@@ -485,6 +502,8 @@ func materializeSettings(vals map[string]string) Settings {
 		ProwlarrSyncInterval:   parseDurationOr(vals[KeyProwlarrSyncInterval], time.Hour),
 		IndexerSyncInterval:    parseDurationOr(vals[KeyIndexerSyncInterval], 15*time.Minute),
 		StagingPollInterval:    parseDurationOr(vals[KeyStagingPollInterval], 5*time.Second),
+		ConvertEbooks:          parseBoolOr(vals[KeyConvertEbooks], false),
+		EbookTargetFormat:      strings.ToUpper(orDefault(vals[KeyEbookTargetFormat], "EPUB")),
 		QualityProfileName:     orDefault(vals[KeyQualityProfileName], "Standard Audiobook"),
 		AllowedLanguages:       parseLowerList(vals[KeyAllowedLanguages], []string{"en"}),
 		AllowedFormats:         parseUpperList(vals[KeyAllowedFormats], []string{"EPUB", "M4B"}),

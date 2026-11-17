@@ -40,6 +40,8 @@ export interface SettingsUpdatePayload {
     allowedLanguages?: string[];
     allowedFormats?: FormatType[];
     ebookFormatPreferences?: FormatType[];
+    convertEbooks?: boolean;
+    ebookTargetFormat?: 'EPUB' | 'AZW3';
     preferSingleFileM4b?: boolean;
     maxFileSizeMb?: number;
     maxEbookSizeBytes?: number;
@@ -98,6 +100,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     maxFileSizeMb: initialQuality.maxFileSizeMb ?? 1536,
     maxEbookSizeBytes: initialQuality.maxEbookSizeBytes ?? 100 * 1024 * 1024,
     ebookFormatPreferences: initialQuality.ebookFormatPreferences ?? DEFAULT_EBOOK_PREFERENCES,
+    convertEbooks: initialQuality.convertEbooks ?? false,
+    ebookTargetFormat: initialQuality.ebookTargetFormat ?? 'EPUB',
   });
   const [languagesInput, setLanguagesInput] = useState(
     (initialQuality.allowedLanguages ?? ['en']).join(', ')
@@ -126,6 +130,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       maxFileSizeMb: initialQuality.maxFileSizeMb ?? 1536,
       maxEbookSizeBytes: initialQuality.maxEbookSizeBytes ?? 100 * 1024 * 1024,
       ebookFormatPreferences: initialQuality.ebookFormatPreferences ?? DEFAULT_EBOOK_PREFERENCES,
+      convertEbooks: initialQuality.convertEbooks ?? false,
+      ebookTargetFormat: initialQuality.ebookTargetFormat ?? 'EPUB',
     });
     setLanguagesInput(langs.join(', '));
   }, [initialQuality]);
@@ -199,6 +205,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           : {}),
       },
       qualityProfile: {
+        ...(!isOverridden('convert_ebooks') ? { convertEbooks: qualityProfile.convertEbooks } : {}),
+        ...(!isOverridden('ebook_target_format') ? { ebookTargetFormat: qualityProfile.ebookTargetFormat } : {}),
         ...(!isOverridden('quality_profile_name') ? { name: qualityProfile.name } : {}),
         ...(!isOverridden('allowed_languages')
           ? { allowedLanguages: splitList(languagesInput) }
@@ -665,6 +673,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
             </div>
 
+            <div className="space-y-3">
+              <label className="flex items-center gap-3 text-zinc-300">
+                <input type="checkbox" checked={qualityProfile.convertEbooks ?? false}
+                  disabled={isOverridden('convert_ebooks')}
+                  onChange={(e) => setQualityProfile((prev) => ({ ...prev, convertEbooks: e.target.checked }))} />
+                Automatically convert eBooks to target format
+              </label>
+              <OverrideNote settingKey="convert_ebooks" />
+              <label htmlFor="ebook-target-format" className="block text-zinc-400 font-medium">Target eBook format</label>
+              <select id="ebook-target-format" value={qualityProfile.ebookTargetFormat ?? 'EPUB'}
+                disabled={!qualityProfile.convertEbooks || isOverridden('ebook_target_format')}
+                className={inputClass(!qualityProfile.convertEbooks || isOverridden('ebook_target_format'))}
+                onChange={(e) => setQualityProfile((prev) => ({ ...prev, ebookTargetFormat: e.target.value as 'EPUB' | 'AZW3' }))}>
+                <option value="EPUB">EPUB</option><option value="AZW3">AZW3</option>
+              </select>
+              <OverrideNote settingKey="ebook_target_format" />
+              <p className="text-zinc-400">Convert after downloading, before adding to the library.</p>
+            </div>
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <span className="block text-zinc-400 font-medium">Allowed File Formats</span>

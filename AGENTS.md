@@ -69,3 +69,8 @@ Welcome to the **Callimachus** project codebase. These guidelines govern all sub
    - **API Metadata:** `GET /api/settings` must expose override metadata (`isOverridden: boolean`, `overriddenBy: string`) for every configurable setting (excluding env-only auth/OIDC settings, which are never exposed or mutable over HTTP).
    - **UI Enforcement:** In `SettingsView.tsx`, any setting with `isOverridden: true` must disable/grey out the corresponding input, toggle, or selector and display an explanatory lock badge or note (e.g., *"Managed via environment variable {overriddenBy} and cannot be modified here."*).
    - **Write Protection:** `PUT /api/settings` must ignore/refuse database mutations for any setting currently overridden by an environment variable, and `PUT`/`POST /api/settings` must reject any auth/OIDC payload.
+
+9. **Release Rules:**
+   - Tag a new version on the merge commit after every merged PR.
+   - Increment the minor version for new features and the patch version for bug fixes.
+   - The release preceding issue #21 is `v0.6.0`; this feature releases as `v0.7.0`.
