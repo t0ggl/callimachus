@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/t0ggl/callimachus/pkg/converter"
 	"github.com/t0ggl/callimachus/pkg/metadata"
-	"github.com/t0ggl/callimachus/pkg/transcoder"
 )
 
 // Standard Torznab category constants for audiobooks and books.
@@ -230,7 +230,7 @@ func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string)
 	}
 
 	// Audio can be identified by format, an explicit flag, or a Torznab audio category.
-	isAudio := release.IsAudio || transcoder.IsAudioFile("release."+format)
+	isAudio := release.IsAudio || converter.IsAudioFile("release."+format)
 	for _, category := range release.Categories {
 		if category >= CategoryAudioRoot && category < CategoryAudioRoot+1000 {
 			isAudio = true

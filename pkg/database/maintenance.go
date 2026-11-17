@@ -17,7 +17,7 @@ func (db *DB) PruneLogs(ctx context.Context, retentionDays int) error {
 	if err := db.QueryRowContext(ctx, `SELECT datetime('now', ?)`, fmt.Sprintf("-%d days", retentionDays)).Scan(&cutoff); err != nil {
 		return fmt.Errorf("retention cutoff: %w", err)
 	}
-	for _, table := range []string{"transcode_queue", "download_queue"} {
+	for _, table := range []string{"conversion_queue", "download_queue"} {
 		for {
 			if err := ctx.Err(); err != nil {
 				return err

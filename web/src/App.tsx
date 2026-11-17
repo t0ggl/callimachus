@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Layout, NavView } from './components/Layout';
 import { CatalogView } from './views/CatalogView';
 import { ActivityView } from './views/ActivityView';
-import { Acquisitions } from './components/Acquisitions';
 import { SettingsView } from './views/SettingsView';
 import { CommandPalette } from './components/CommandPalette';
 import { BookDetailModal } from './components/BookDetailModal';
@@ -13,7 +12,6 @@ import {
   Author,
   Series,
   BookRequest,
-  ImportLog,
   IndexerConfig,
   LibrarySettings,
   ProwlarrSettings,
@@ -35,7 +33,6 @@ export const App: React.FC = () => {
   const [authors, setAuthors] = useState<Author[]>([]);
   const [series, setSeries] = useState<Series[]>([]);
   const [requests, setRequests] = useState<BookRequest[]>([]);
-  const [logs, setLogs] = useState<ImportLog[]>([]);
   const [indexers, setIndexers] = useState<IndexerConfig[]>([]);
   const [librarySettings, setLibrarySettings] = useState<LibrarySettings>({
     rootPath: './books',
@@ -60,13 +57,14 @@ export const App: React.FC = () => {
 
   // Real-time activity stream for live pipeline updates
   const {
-    transcodeJobs,
-    setTranscodeJobs,
+    logs, setLogs,
+    conversionJobs,
+    setConversionJobs,
     downloads,
     setDownloads,
     connectionStatus,
   } = useActivityStream({
-    initialTranscodeJobs: [],
+    initialConversionJobs: [],
     initialDownloads: [],
   });
 
@@ -158,14 +156,14 @@ export const App: React.FC = () => {
       }
       if (res.ok) {
         const data = await res.json();
-        if (data.transcodeJobs) setTranscodeJobs(data.transcodeJobs);
+        if (data.conversionJobs) setConversionJobs(data.conversionJobs);
         if (data.downloads) setDownloads(data.downloads);
         if (data.logs) setLogs(data.logs);
       }
     } catch (err) {
       console.error('Failed to load activity', err);
     }
-  }, [setTranscodeJobs, setDownloads, redirectToOIDC]);
+  }, [setConversionJobs, setDownloads, setLogs, redirectToOIDC]);
 
   const applySettingsResponse = useCallback((data: any) => {
     if (!data || typeof data !== 'object') return;
@@ -327,20 +325,8 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleUpdateJobStatus = (jobId: string, status: any) => {
-    setTranscodeJobs((prev) =>
-      prev.map((j) => (j.id === jobId ? { ...j, status } : j))
-    );
-  };
-
-  const handleUpdateDownloadStatus = (dlId: string, status: any) => {
-    setDownloads((prev) =>
-      prev.map((d) => (d.id === dlId ? { ...d, status } : d))
-    );
-  };
-
   const activeDownloadsCount = downloads.filter((d) => d.status === 'downloading' || d.status === 'importing').length;
-  const transcodingJobsCount = transcodeJobs.filter((j) => j.status === 'processing').length;
+  const convertingJobsCount = conversionJobs.filter((j) => j.status === 'processing').length;
 
   return (
     <>
@@ -350,7 +336,7 @@ export const App: React.FC = () => {
         onOpenPalette={() => setIsPaletteOpen(true)}
         user={currentUser}
         activeDownloadsCount={activeDownloadsCount}
-        transcodingJobsCount={transcodingJobsCount}
+        convertingJobsCount={convertingJobsCount}
         onLogout={handleLogout}
       >
         {currentView === 'catalog' && (
@@ -366,14 +352,12 @@ export const App: React.FC = () => {
 
         {currentView === 'activity' && (
           <div className="space-y-6">
-          <Acquisitions requests={requests} />
           <ActivityView
-            transcodeJobs={transcodeJobs}
+            requests={requests}
+            conversionJobs={conversionJobs}
             downloads={downloads}
             logs={logs}
             connectionStatus={connectionStatus}
-            onUpdateJobStatus={handleUpdateJobStatus}
-            onUpdateDownloadStatus={handleUpdateDownloadStatus}
           />
           </div>
         )}

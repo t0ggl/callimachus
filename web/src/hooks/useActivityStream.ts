@@ -1,29 +1,30 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { TranscodeJob, DownloadItem } from '../types';
+import { ConversionJob, DownloadItem, ImportLog } from '../types';
 
 export interface ActivityStreamEvent {
-  type: 'transcode_progress' | 'download_progress' | 'job_status_change';
+  type: 'conversion_progress' | 'download_progress' | 'job_status_change';
   payload: any;
 }
 
 interface ActivityStreamOptions {
   url?: string;
-  initialTranscodeJobs?: TranscodeJob[];
+  initialConversionJobs?: ConversionJob[];
   initialDownloads?: DownloadItem[];
 }
 
 export function useActivityStream({
   url = '/api/events',
-  initialTranscodeJobs = [],
+  initialConversionJobs = [],
   initialDownloads = [],
 }: ActivityStreamOptions = {}) {
-  const [transcodeJobs, setTranscodeJobs] = useState<TranscodeJob[]>(initialTranscodeJobs);
+  const [conversionJobs, setConversionJobs] = useState<ConversionJob[]>(initialConversionJobs);
+  const [logs, setLogs] = useState<ImportLog[]>([]);
   const [downloads, setDownloads] = useState<DownloadItem[]>(initialDownloads);
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'connecting' | 'disconnected'>('connecting');
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  const handleTranscodeUpdate = useCallback((payload: Partial<TranscodeJob> & { id: string }) => {
-    setTranscodeJobs((prev) =>
+  const handleConversionUpdate = useCallback((payload: Partial<ConversionJob> & { id: string }) => {
+    setConversionJobs((prev) =>
       prev.map((job) => (job.id === payload.id ? { ...job, ...payload } : job))
     );
   }, []);
@@ -52,12 +53,21 @@ export function useActivityStream({
           setConnectionStatus('connected');
         };
 
-        es.addEventListener('transcode_progress', (e: MessageEvent) => {
+        es.addEventListener('activity_snapshot', (e: MessageEvent) => {
           try {
             const data = JSON.parse(e.data);
-            handleTranscodeUpdate(data);
+            setConversionJobs(data.conversionJobs || []);
+            setDownloads(data.downloads || []);
+            setLogs(data.logs || []);
+          } catch (err) { console.error('Failed to read activity update', err); }
+        });
+
+        es.addEventListener('conversion_progress', (e: MessageEvent) => {
+          try {
+            const data = JSON.parse(e.data);
+            handleConversionUpdate(data);
           } catch (err) {
-            console.error('Failed to parse activity stream transcode progress event', err);
+            console.error('Failed to parse activity stream conversion progress event', err);
           }
         });
 
@@ -91,15 +101,16 @@ export function useActivityStream({
         clearTimeout(retryTimeout);
       }
     };
-  }, [url, handleTranscodeUpdate, handleDownloadUpdate]);
+  }, [url, handleConversionUpdate, handleDownloadUpdate]);
 
   return {
-    transcodeJobs,
-    setTranscodeJobs,
+    logs, setLogs,
+    conversionJobs,
+    setConversionJobs,
     downloads,
     setDownloads,
     connectionStatus,
-    handleTranscodeUpdate,
+    handleConversionUpdate,
     handleDownloadUpdate,
   };
 }

@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/t0ggl/callimachus/pkg/catalog"
+	"github.com/t0ggl/callimachus/pkg/converter"
 	"github.com/t0ggl/callimachus/pkg/database"
 	"github.com/t0ggl/callimachus/pkg/metadata"
-	"github.com/t0ggl/callimachus/pkg/transcoder"
 )
 
 // StagingConfig defines configuration options for StagingMonitor.
@@ -26,7 +26,7 @@ type StagingConfig struct {
 	QualityProfile func(context.Context) (QualityProfile, error)
 	DB             *database.DB
 	Catalog        *catalog.Catalog
-	Transcoder     *transcoder.Queue
+	Converter      *converter.Queue
 	LibraryRoot    string
 	PollInterval   time.Duration
 	CompletedRoot  string
@@ -37,7 +37,7 @@ type StagingMonitor struct {
 	qualityProfile func(context.Context) (QualityProfile, error)
 	db             *database.DB
 	catalog        *catalog.Catalog
-	transcoder     *transcoder.Queue
+	converter      *converter.Queue
 	libraryRoot    string
 	pollInterval   time.Duration
 	completedRoot  string
@@ -59,7 +59,7 @@ func NewStagingMonitor(cfg StagingConfig) *StagingMonitor {
 		qualityProfile: cfg.QualityProfile,
 		db:             cfg.DB,
 		catalog:        cfg.Catalog,
-		transcoder:     cfg.Transcoder,
+		converter:      cfg.Converter,
 		libraryRoot:    cfg.LibraryRoot,
 		pollInterval:   pollInterval,
 		completedRoot:  cfg.CompletedRoot,
@@ -223,7 +223,7 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 					}
 				}
 				if !strings.EqualFold(filepath.Ext(primaryEbook), "."+target) {
-					if sm.transcoder == nil || sm.catalog == nil {
+					if sm.converter == nil || sm.catalog == nil {
 						return errors.New("ebook conversion requires catalog and worker queue")
 					}
 					bookDetails.Format = target
@@ -259,7 +259,7 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 					if err != nil {
 						return err
 					}
-					_, err = sm.transcoder.EnqueueEbook(ctx, edition.ID, primaryEbook, sm.libraryRoot, bookDetails)
+					_, err = sm.converter.EnqueueEbook(ctx, edition.ID, primaryEbook, sm.libraryRoot, bookDetails)
 					return err
 				}
 			}
@@ -316,10 +316,10 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 			return nil
 		}
 
-		// Case B: Multi-part MP3 -> enqueues into transcode_queue via Queue.Enqueue
+		// Case B: Multi-part MP3 -> enqueues into conversion_queue via Queue.Enqueue
 		if len(mp3Files) > 1 {
-			if sm.transcoder == nil {
-				return errors.New("transcoder queue not configured for multi-part mp3")
+			if sm.converter == nil {
+				return errors.New("converter queue not configured for multi-part mp3")
 			}
 
 			editionID := ""
@@ -348,7 +348,7 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 			}
 
 			if editionID == "" {
-				return errors.New("cannot enqueue transcode: missing edition_id")
+				return errors.New("cannot enqueue conversion: missing edition_id")
 			}
 
 			targetM4BPath, _, _, err := catalog.ResolveCanonicalPath(sm.libraryRoot, bookDetails, ".m4b")
@@ -361,9 +361,9 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 				sourceDir = filepath.Dir(stagingPath)
 			}
 
-			_, err = sm.transcoder.Enqueue(ctx, editionID, sourceDir, targetM4BPath, 0)
+			_, err = sm.converter.Enqueue(ctx, editionID, sourceDir, targetM4BPath, 0)
 			if err != nil {
-				return fmt.Errorf("enqueue transcode: %w", err)
+				return fmt.Errorf("enqueue conversion: %w", err)
 			}
 			return nil
 		}
@@ -371,7 +371,7 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 		// Case C: Single MP3
 		if len(mp3Files) == 1 {
 			singleMP3 := mp3Files[0]
-			if sm.transcoder != nil {
+			if sm.converter != nil {
 				editionID := ""
 				if item.EditionID != nil {
 					editionID = *item.EditionID
@@ -398,7 +398,7 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 				if editionID != "" {
 					targetM4BPath, _, _, err := catalog.ResolveCanonicalPath(sm.libraryRoot, bookDetails, ".m4b")
 					if err == nil {
-						_, err = sm.transcoder.Enqueue(ctx, editionID, singleMP3, targetM4BPath, 0)
+						_, err = sm.converter.Enqueue(ctx, editionID, singleMP3, targetM4BPath, 0)
 						if err == nil {
 							return nil
 						}

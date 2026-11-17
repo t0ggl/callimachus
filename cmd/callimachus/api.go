@@ -69,7 +69,8 @@ type APISeries struct {
 	Status      string `json:"status"`
 }
 
-type APITranscodeJob struct {
+type APIConversionJob struct {
+	EditionID        string  `json:"editionId"`
 	ID               string  `json:"id"`
 	BookID           string  `json:"bookId"`
 	BookTitle        string  `json:"bookTitle"`
@@ -86,6 +87,9 @@ type APITranscodeJob struct {
 }
 
 type APIDownloadItem struct {
+	EditionID           string  `json:"editionId,omitempty"`
+	RequestID           string  `json:"requestId,omitempty"`
+	ErrorMessage        string  `json:"errorMessage,omitempty"`
 	ID                  string  `json:"id"`
 	Title               string  `json:"title"`
 	Category            string  `json:"category"`
@@ -99,9 +103,9 @@ type APIDownloadItem struct {
 }
 
 type APIActivityResponse struct {
-	TranscodeJobs []APITranscodeJob `json:"transcodeJobs"`
-	Downloads     []APIDownloadItem `json:"downloads"`
-	Logs          []any             `json:"logs"`
+	ConversionJobs []APIConversionJob `json:"conversionJobs"`
+	Downloads      []APIDownloadItem  `json:"downloads"`
+	Logs           []any              `json:"logs"`
 }
 
 type APIIndexerConfig struct {
@@ -360,65 +364,115 @@ func (s *Server) handleGetSeries(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetActivity(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	resp, err := s.activityResponse(r.Context())
+	if err != nil {
+		http.Error(w, "Unable to load activity", http.StatusInternalServerError)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) activityResponse(ctx context.Context) (APIActivityResponse, error) {
 	resp := APIActivityResponse{
-		TranscodeJobs: make([]APITranscodeJob, 0),
-		Downloads:     make([]APIDownloadItem, 0),
-		Logs:          make([]any, 0),
+		ConversionJobs: make([]APIConversionJob, 0),
+		Downloads:      make([]APIDownloadItem, 0),
+		Logs:           make([]any, 0),
 	}
 
 	if s.db == nil {
-		_ = json.NewEncoder(w).Encode(resp)
-		return
+		return resp, nil
 	}
 
-	// Query transcode queue
+	// Query conversion queue
 	tqQuery := `
-		SELECT t.id, t.edition_id, COALESCE(b.title, ''), COALESCE(a.name, ''),
+		SELECT t.id, t.edition_id, COALESCE(be.book_id, ''), COALESCE(b.title, ''), COALESCE(a.name, ''),
 		       t.status, t.progress_percent, t.current_stage, COALESCE(t.error_message, ''), t.target_path
-		FROM transcode_queue t
+		FROM conversion_queue t
 		LEFT JOIN book_editions be ON t.edition_id = be.id
 		LEFT JOIN books b ON be.book_id = b.id
 		LEFT JOIN authors a ON b.author_id = a.id
-		WHERE t.status IN ('pending', 'processing', 'failed')
-		ORDER BY t.created_at ASC
+		WHERE t.status != 'cancelled'
+		ORDER BY t.created_at DESC, t.id DESC
 	`
-	if rows, err := s.db.QueryContext(r.Context(), tqQuery); err == nil {
+	rows, err := s.db.QueryContext(ctx, tqQuery)
+	if err != nil {
+		return resp, err
+	}
+	{
 		defer rows.Close()
 		for rows.Next() {
-			var job APITranscodeJob
+			var job APIConversionJob
 			var targetPath string
 			if err := rows.Scan(
-				&job.ID, &job.BookID, &job.BookTitle, &job.AuthorName,
+				&job.ID, &job.EditionID, &job.BookID, &job.BookTitle, &job.AuthorName,
 				&job.Status, &job.ProgressPercent, &job.Stage, &job.ErrorMessage, &targetPath,
-			); err == nil {
+			); err != nil {
+				return resp, err
+			} else {
+				if job.Status == "pending" {
+					job.Status = "queued"
+				}
+				// Old persisted stages remain readable after the terminology change.
+				if job.Stage == "encoding" {
+					job.Stage = "converting"
+				}
+				if job.Stage == "probing" {
+					job.Stage = "preparing"
+				}
 				job.TargetFormat = strings.ToUpper(strings.TrimPrefix(filepath.Ext(targetPath), "."))
-				resp.TranscodeJobs = append(resp.TranscodeJobs, job)
+				resp.ConversionJobs = append(resp.ConversionJobs, job)
 			}
+		}
+		if err := rows.Err(); err != nil {
+			return resp, err
+		}
+		if err := rows.Close(); err != nil {
+			return resp, err
 		}
 	}
 
 	// Query download queue
 	dqQuery := `
-		SELECT id, title, status, progress_percent, size_bytes
-		FROM download_queue
-		WHERE status IN ('queued', 'downloading', 'importing')
-		ORDER BY created_at ASC
+		SELECT q.id, q.title, q.status, q.progress_percent, q.size_bytes,
+        COALESCE(q.edition_id, ''), COALESCE((SELECT request_id FROM acquisition_candidates WHERE queue_id=q.id LIMIT 1), ''),
+        COALESCE(q.error_message, ''), COALESCE(e.format, '')
+        FROM download_queue q LEFT JOIN book_editions e ON e.id=q.edition_id
+        ORDER BY q.created_at DESC, q.id DESC
 	`
-	if rows, err := s.db.QueryContext(r.Context(), dqQuery); err == nil {
+	rows, err = s.db.QueryContext(ctx, dqQuery)
+	if err != nil {
+		return resp, err
+	}
+	{
 		defer rows.Close()
 		for rows.Next() {
 			var item APIDownloadItem
+			var format string
 			item.Category = "callimachus-audiobooks"
 			item.ClientType = "Prowlarr"
 			if err := rows.Scan(
-				&item.ID, &item.Title, &item.Status, &item.ProgressPercent, &item.TotalSizeBytes,
-			); err == nil {
+				&item.ID, &item.Title, &item.Status, &item.ProgressPercent, &item.TotalSizeBytes, &item.EditionID, &item.RequestID, &item.ErrorMessage, &format,
+			); err != nil {
+				return resp, err
+			} else {
+				if format != "" && !strings.EqualFold(format, "m4b") && !strings.EqualFold(format, "mp3") {
+					item.Category = "callimachus-ebooks"
+				}
+				if item.Status == "failed" {
+					item.Status = "error"
+				}
+				if item.Status == "dispatching" || item.Status == "staged" {
+					item.Status = "queued"
+				}
 				resp.Downloads = append(resp.Downloads, item)
 			}
 		}
 	}
 
-	_ = json.NewEncoder(w).Encode(resp)
+	if err := rows.Err(); err != nil {
+		return resp, err
+	}
+	return resp, nil
 }
 
 func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.ResolvedSettings) APISettingsResponse {
@@ -697,7 +751,7 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintf(w, ": connected\n\n")
 	flusher.Flush()
 
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -705,7 +759,16 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			_, err := fmt.Fprintf(w, ": ping\n\n")
+			activity, loadErr := s.activityResponse(r.Context())
+			if loadErr != nil {
+				return
+			}
+			snapshot, marshalErr := json.Marshal(activity)
+			if marshalErr != nil {
+				return
+			}
+			// nosemgrep: go.lang.security.audit.xss.no-fprintf-to-responsewriter.no-fprintf-to-responsewriter -- SSE JSON payload, json.Marshal escapes HTML and embedded newlines; never rendered as HTML.
+			_, err := fmt.Fprintf(w, "event: activity_snapshot\ndata: %s\n\n", snapshot)
 			if err != nil {
 				return
 			}

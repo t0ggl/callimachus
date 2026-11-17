@@ -6,7 +6,7 @@ v0.8.0 after merge (latest existing tag: v0.7.0).
 ## Scope
 
 The current schema has no activity/audit log tables and the activity API exposes
-an empty logs placeholder. Persisted operational history lives in transcode_queue
+an empty logs placeholder. Persisted operational history lives in conversion_queue
 and download_queue. Maintenance prunes expired terminal rows there, with related
 acquisition candidates, while retaining queue records needed by unfinished
 requests. No unused log storage or new logging producers were introduced.

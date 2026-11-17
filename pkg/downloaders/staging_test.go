@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/t0ggl/callimachus/pkg/catalog"
+	"github.com/t0ggl/callimachus/pkg/converter"
 	"github.com/t0ggl/callimachus/pkg/database"
 	"github.com/t0ggl/callimachus/pkg/downloaders"
 	"github.com/t0ggl/callimachus/pkg/testutil"
-	"github.com/t0ggl/callimachus/pkg/transcoder"
 )
 
 func setupTestDB(t *testing.T) *database.DB { t.Helper(); return testutil.NewTestDB(t) }
@@ -97,7 +97,7 @@ func TestStagingMonitor_EBookIngestionLifecycle(t *testing.T) {
 	}
 }
 
-func TestStagingMonitor_MultiPartMP3_DispatchesToTranscoder(t *testing.T) {
+func TestStagingMonitor_MultiPartMP3_DispatchesToConverter(t *testing.T) {
 	t.Parallel()
 
 	db := setupTestDB(t)
@@ -129,12 +129,12 @@ func TestStagingMonitor_MultiPartMP3_DispatchesToTranscoder(t *testing.T) {
 	}
 
 	cat := catalog.New(db)
-	tq := transcoder.NewQueue(db)
+	tq := converter.NewQueue(db)
 
 	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{
 		DB:            db,
 		Catalog:       cat,
-		Transcoder:    tq,
+		Converter:     tq,
 		LibraryRoot:   libraryRoot,
 		CompletedRoot: completedRoot,
 	})
@@ -153,28 +153,28 @@ func TestStagingMonitor_MultiPartMP3_DispatchesToTranscoder(t *testing.T) {
 		t.Errorf("expected status 'completed', got '%s'", status)
 	}
 
-	// Verify task was enqueued into transcode_queue
+	// Verify task was enqueued into conversion_queue
 	var tqCount int
 	var tqSource, tqTarget, tqStatus string
 	err = db.QueryRowContext(ctx, `
 		SELECT COUNT(*), COALESCE(MAX(source_path), ''), COALESCE(MAX(target_path), ''), COALESCE(MAX(status), '')
-		FROM transcode_queue;
+		FROM conversion_queue;
 	`).Scan(&tqCount, &tqSource, &tqTarget, &tqStatus)
 	if err != nil {
-		t.Fatalf("query transcode queue failed: %v", err)
+		t.Fatalf("query conversion queue failed: %v", err)
 	}
 
 	if tqCount != 1 {
-		t.Fatalf("expected 1 item in transcode_queue, got %d", tqCount)
+		t.Fatalf("expected 1 item in conversion_queue, got %d", tqCount)
 	}
 	if tqSource != stagingDir {
-		t.Errorf("expected transcode source %s, got %s", stagingDir, tqSource)
+		t.Errorf("expected conversion source %s, got %s", stagingDir, tqSource)
 	}
 	if filepath.Ext(tqTarget) != ".m4b" {
-		t.Errorf("expected transcode target extension .m4b, got %s", tqTarget)
+		t.Errorf("expected conversion target extension .m4b, got %s", tqTarget)
 	}
-	if tqStatus != transcoder.StatusPending {
-		t.Errorf("expected transcode status '%s', got '%s'", transcoder.StatusPending, tqStatus)
+	if tqStatus != converter.StatusPending {
+		t.Errorf("expected conversion status '%s', got '%s'", converter.StatusPending, tqStatus)
 	}
 }
 
@@ -205,12 +205,12 @@ func TestStagingMonitor_DirectM4B_Ingestion(t *testing.T) {
 	}
 
 	cat := catalog.New(db)
-	tq := transcoder.NewQueue(db)
+	tq := converter.NewQueue(db)
 
 	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{
 		DB:            db,
 		Catalog:       cat,
-		Transcoder:    tq,
+		Converter:     tq,
 		LibraryRoot:   libraryRoot,
 		CompletedRoot: completedRoot,
 	})
@@ -225,11 +225,11 @@ func TestStagingMonitor_DirectM4B_Ingestion(t *testing.T) {
 		t.Errorf("expected direct m4b to create author directory %s", authorDir)
 	}
 
-	// Verify transcode queue has 0 items (since it was already .m4b)
+	// Verify conversion queue has 0 items (since it was already .m4b)
 	var tqCount int
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM transcode_queue`).Scan(&tqCount)
+	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversion_queue`).Scan(&tqCount)
 	if tqCount != 0 {
-		t.Errorf("expected 0 transcode queue items for direct m4b, got %d", tqCount)
+		t.Errorf("expected 0 conversion queue items for direct m4b, got %d", tqCount)
 	}
 }
 
@@ -332,8 +332,8 @@ func TestStagingEbookConversion(t *testing.T) {
 			if err := os.WriteFile(source, []byte("source"), 0644); err != nil {
 				t.Fatal(err)
 			}
-			q := transcoder.NewQueue(db)
-			sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{DB: db, Catalog: catalog.New(db), Transcoder: q, CompletedRoot: root, LibraryRoot: library,
+			q := converter.NewQueue(db)
+			sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{DB: db, Catalog: catalog.New(db), Converter: q, CompletedRoot: root, LibraryRoot: library,
 				QualityProfile: func(context.Context) (downloaders.QualityProfile, error) {
 					return downloaders.QualityProfile{ConvertEbooks: tc.enabled, EbookTargetFormat: tc.target}, nil
 				},
@@ -345,7 +345,7 @@ func TestStagingEbookConversion(t *testing.T) {
 				t.Fatal(err)
 			} // Must not enqueue twice.
 			var count int
-			if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM transcode_queue").Scan(&count); err != nil {
+			if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM conversion_queue").Scan(&count); err != nil {
 				t.Fatal(err)
 			}
 			if !tc.enabled || tc.source == tc.target {
@@ -358,7 +358,7 @@ func TestStagingEbookConversion(t *testing.T) {
 				t.Fatalf("jobs: %d", count)
 			}
 			var id string
-			if err := db.QueryRowContext(ctx, "SELECT id FROM transcode_queue").Scan(&id); err != nil {
+			if err := db.QueryRowContext(ctx, "SELECT id FROM conversion_queue").Scan(&id); err != nil {
 				t.Fatal(err)
 			}
 			job, err := q.GetJob(ctx, id)
@@ -372,9 +372,9 @@ func TestStagingEbookConversion(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			runner := transcoder.NewMockRunner()
-			runner.SetDefaultHandler(func(context.Context, transcoder.RunOptions) error { t.Fatal("unexpected command"); return nil })
-			runner.RegisterHandler("ebook-convert", func(_ context.Context, opt transcoder.RunOptions) error {
+			runner := converter.NewMockRunner()
+			runner.SetDefaultHandler(func(context.Context, converter.RunOptions) error { t.Fatal("unexpected command"); return nil })
+			runner.RegisterHandler("ebook-convert", func(_ context.Context, opt converter.RunOptions) error {
 				if tc.fail {
 					return fmt.Errorf("mock converter: DRM encrypted input")
 				}
@@ -384,7 +384,7 @@ func TestStagingEbookConversion(t *testing.T) {
 				}
 				return os.WriteFile(opt.Args[1], data, 0644)
 			})
-			worker := transcoder.NewWorker(q, runner, transcoder.WorkerConfig{WorkerID: "ebook-test", WorkDir: t.TempDir()})
+			worker := converter.NewWorker(q, runner, converter.WorkerConfig{WorkerID: "ebook-test", WorkDir: t.TempDir()})
 			processed, err := worker.RunOnce(ctx)
 			if !processed {
 				t.Fatal("not processed")
@@ -409,7 +409,7 @@ func TestStagingEbookConversion(t *testing.T) {
 				t.Fatal(err)
 			}
 			job, _ = q.GetJob(ctx, id)
-			if job.Status != transcoder.StatusCompleted || job.ProgressPercent != 100 {
+			if job.Status != converter.StatusCompleted || job.ProgressPercent != 100 {
 				t.Fatalf("incomplete: %+v", job)
 			}
 			for _, ext := range []string{"." + tc.target, ".opf", ".jpg"} {

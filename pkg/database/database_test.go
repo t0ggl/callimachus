@@ -194,7 +194,7 @@ func TestMigrationAndTables(t *testing.T) {
 		"book_editions",
 		"edition_narrators",
 		"media_assets",
-		"transcode_queue",
+		"conversion_queue",
 		"indexers",
 		"download_queue",
 		"blocklist",
@@ -230,7 +230,7 @@ func TestMigrationAndTables(t *testing.T) {
 		"idx_edition_narrators_narrator",
 		"idx_media_assets_edition",
 		"idx_media_assets_path",
-		"idx_transcode_status_priority",
+		"idx_conversion_status_priority",
 		"idx_download_queue_client_task",
 		"idx_download_queue_status",
 		"idx_blocklist_hash",
@@ -377,7 +377,7 @@ func TestForeignKeyCascades(t *testing.T) {
 	db, _ := openMigratedTestDB(t)
 	ctx := context.Background()
 
-	// 1. Insert Author -> Book -> BookEdition -> MediaAsset & TranscodeQueue & EditionNarrator
+	// 1. Insert Author -> Book -> BookEdition -> MediaAsset & ConversionQueue & EditionNarrator
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO authors (id, name, sort_name) VALUES ('auth-fk', 'Andy Weir', 'Weir, Andy');
 		INSERT INTO series (id, title) VALUES ('ser-fk', 'Standalone Works');
@@ -386,7 +386,7 @@ func TestForeignKeyCascades(t *testing.T) {
 		INSERT INTO narrators (id, name, sort_name) VALUES ('narr-fk', 'Ray Porter', 'Porter, Ray');
 		INSERT INTO edition_narrators (edition_id, narrator_id, role) VALUES ('ed-audio', 'narr-fk', 'primary');
 		INSERT INTO media_assets (id, edition_id, file_path, file_size) VALUES ('asset-1', 'ed-audio', '/audiobooks/phm.m4b', 500000000);
-		INSERT INTO transcode_queue (id, edition_id, source_path, target_path) VALUES ('tq-1', 'ed-audio', '/staging/phm', '/audiobooks/phm.m4b');
+		INSERT INTO conversion_queue (id, edition_id, source_path, target_path) VALUES ('tq-1', 'ed-audio', '/staging/phm', '/audiobooks/phm.m4b');
 	`)
 	if err != nil {
 		t.Fatalf("initial setup insert failed: %v", err)
@@ -399,7 +399,7 @@ func TestForeignKeyCascades(t *testing.T) {
 		t.Fatalf("expected media asset to exist")
 	}
 
-	// 2. Delete the Book: should cascade delete BookEdition, MediaAsset, TranscodeQueue, EditionNarrator
+	// 2. Delete the Book: should cascade delete BookEdition, MediaAsset, ConversionQueue, EditionNarrator
 	_, err = db.ExecContext(ctx, "DELETE FROM books WHERE id = 'book-fk';")
 	if err != nil {
 		t.Fatalf("failed to delete book: %v", err)
@@ -423,10 +423,10 @@ func TestForeignKeyCascades(t *testing.T) {
 		t.Errorf("media asset was not cascade deleted")
 	}
 
-	// Check transcode queue was cascade deleted
-	_ = db.QueryRowContext(ctx, "SELECT count(*) FROM transcode_queue WHERE id = 'tq-1';").Scan(&count)
+	// Check conversion queue was cascade deleted
+	_ = db.QueryRowContext(ctx, "SELECT count(*) FROM conversion_queue WHERE id = 'tq-1';").Scan(&count)
 	if count != 0 {
-		t.Errorf("transcode queue was not cascade deleted")
+		t.Errorf("conversion queue was not cascade deleted")
 	}
 
 	// Check edition narrator was cascade deleted
@@ -595,5 +595,40 @@ func TestMigrationRemoveAudioBitrateSettings(t *testing.T) {
 	var root string
 	if err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = 'library_root'").Scan(&root); err != nil || root != "/books" {
 		t.Fatalf("unrelated setting changed: %q, %v", root, err)
+	}
+}
+
+func TestMigrationConversionTerminologyPreservesQueue(t *testing.T) {
+	db, _ := openMigratedTestDB(t)
+	ctx := context.Background()
+	// Recreate a pre-upgrade queue containing work in flight.
+	_, err := db.Exec(`
+ DELETE FROM schema_migrations WHERE version='0009_conversion_terminology.sql';
+ ALTER TABLE conversion_queue RENAME TO transcode_queue;
+ DROP INDEX idx_conversion_status_priority;
+ DROP INDEX idx_conversion_retention;
+ CREATE INDEX idx_transcode_status_priority ON transcode_queue(status, priority DESC, created_at ASC);
+ CREATE INDEX idx_transcode_retention ON transcode_queue(status, updated_at);
+ INSERT INTO authors(id,name,sort_name) VALUES('migration-author','Author','Author');
+ INSERT INTO books(id,title,author_id) VALUES('migration-book','Book','migration-author');
+ INSERT INTO book_editions(id,book_id,format) VALUES('migration-edition','migration-book','m4b');
+ INSERT INTO transcode_queue(id,edition_id,source_path,target_path,current_stage,progress_percent)
+ VALUES('migration-job','migration-edition','/source','/target','probing',12.5);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var stage, edition string
+	var progress float64
+	if err := db.QueryRow(`SELECT current_stage,edition_id,progress_percent FROM conversion_queue WHERE id='migration-job'`).Scan(&stage, &edition, &progress); err != nil {
+		t.Fatal(err)
+	}
+	if stage != "preparing" || edition != "migration-edition" || progress != 12.5 {
+		t.Fatalf("lost queue data: %s %s %f", stage, edition, progress)
+	}
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
 	}
 }

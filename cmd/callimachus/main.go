@@ -21,12 +21,12 @@ import (
 	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/config"
+	"github.com/t0ggl/callimachus/pkg/converter"
 	"github.com/t0ggl/callimachus/pkg/database"
 	"github.com/t0ggl/callimachus/pkg/downloaders"
 	"github.com/t0ggl/callimachus/pkg/indexers"
 	"github.com/t0ggl/callimachus/pkg/notify"
 	"github.com/t0ggl/callimachus/pkg/requests"
-	"github.com/t0ggl/callimachus/pkg/transcoder"
 	"github.com/t0ggl/callimachus/web"
 )
 
@@ -195,7 +195,7 @@ func NewServer(cfg Config) (*Server, error) {
 		},
 		DB:            db,
 		Catalog:       catalog.New(db),
-		Transcoder:    transcoder.NewQueue(db),
+		Converter:     converter.NewQueue(db),
 		LibraryRoot:   sCfg.LibraryRoot,
 		CompletedRoot: sCfg.CompletedDownloadRoot,
 		PollInterval:  sCfg.StagingPollInterval,

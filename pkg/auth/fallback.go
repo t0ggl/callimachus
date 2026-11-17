@@ -6,10 +6,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
+	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/database"
 )
 
@@ -34,7 +34,7 @@ type FallbackAuthenticator struct {
 
 // NewFallbackAuthenticator creates a new FallbackAuthenticator.
 func NewFallbackAuthenticator(cfg FallbackConfig, db *database.DB, sessionMgr *SessionManager) *FallbackAuthenticator {
-	pass := strings.TrimSpace(os.Getenv("CALLIMACHUS_ADMIN_PASSWORD"))
+	pass := strings.TrimSpace(config.LoadAuthFromEnv().AdminPassword)
 	if pass == "" {
 		pass = strings.TrimSpace(cfg.AdminPassword)
 	}

@@ -1,4 +1,4 @@
-package transcoder
+package converter
 
 import (
 	"context"
@@ -215,7 +215,7 @@ func TestQueue_UpdateProgressAndComplete(t *testing.T) {
 	}
 
 	// Update stage to encoding
-	err = q.UpdateProgress(ctx, item.ID, StageEncoding, 45.0, nil)
+	err = q.UpdateProgress(ctx, item.ID, StageConverting, 45.0, nil)
 	if err != nil {
 		t.Fatalf("update progress failed: %v", err)
 	}
@@ -224,8 +224,8 @@ func TestQueue_UpdateProgressAndComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get job failed: %v", err)
 	}
-	if updated.CurrentStage != StageEncoding {
-		t.Errorf("expected stage %s, got %s", StageEncoding, updated.CurrentStage)
+	if updated.CurrentStage != StageConverting {
+		t.Errorf("expected stage %s, got %s", StageConverting, updated.CurrentStage)
 	}
 	if updated.ProgressPercent != 45.0 {
 		t.Errorf("expected progress 45.0, got %f", updated.ProgressPercent)

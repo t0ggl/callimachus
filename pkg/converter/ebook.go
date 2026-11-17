@@ -1,4 +1,4 @@
-package transcoder
+package converter
 
 import (
 	"context"
@@ -19,7 +19,7 @@ type ebookContext struct {
 }
 
 // EnqueueEbook persists the ingestion context with the job before a worker can lease it.
-func (q *Queue) EnqueueEbook(ctx context.Context, editionID, source, root string, book catalog.BookDetails) (*database.TranscodeQueueItem, error) {
+func (q *Queue) EnqueueEbook(ctx context.Context, editionID, source, root string, book catalog.BookDetails) (*database.ConversionQueueItem, error) {
 	book.Format = strings.ToLower(book.Format)
 	if book.Format != "epub" && book.Format != "azw3" {
 		return nil, fmt.Errorf("unsupported ebook target %q", book.Format)
@@ -35,16 +35,16 @@ func (q *Queue) EnqueueEbook(ctx context.Context, editionID, source, root string
 	return q.enqueue(ctx, editionID, source, target, 0, string(payload))
 }
 
-func (w *Worker) processEbook(ctx context.Context, job *database.TranscodeQueueItem) error {
+func (w *Worker) processEbook(ctx context.Context, job *database.ConversionQueueItem) error {
 	var payload string
-	if err := w.queue.db.QueryRowContext(ctx, "SELECT ebook_context FROM transcode_queue WHERE id = ?", job.ID).Scan(&payload); err != nil {
+	if err := w.queue.db.QueryRowContext(ctx, "SELECT ebook_context FROM conversion_queue WHERE id = ?", job.ID).Scan(&payload); err != nil {
 		return err
 	}
 	var info ebookContext
 	if err := json.Unmarshal([]byte(payload), &info); err != nil {
 		return fmt.Errorf("read ebook conversion context: %w", err)
 	}
-	w.reportStage(ctx, job.ID, StageProbing, 10)
+	w.reportStage(ctx, job.ID, StagePreparing, 10)
 	if err := os.MkdirAll(w.cfg.WorkDir, 0755); err != nil {
 		return err
 	}
@@ -54,7 +54,7 @@ func (w *Worker) processEbook(ctx context.Context, job *database.TranscodeQueueI
 	}
 	defer os.RemoveAll(dir)
 	output := filepath.Join(dir, "converted"+filepath.Ext(job.TargetPath))
-	w.reportStage(ctx, job.ID, StageEncoding, 25)
+	w.reportStage(ctx, job.ID, StageConverting, 25)
 	// Calibre preserves embedded metadata and artwork; no shell or user-supplied options.
 	if _, err := w.runner.Run(ctx, "ebook-convert", job.SourcePath, output); err != nil {
 		return fmt.Errorf("ebook conversion to %s (requires Calibre ebook-convert): %w", info.Book.Format, err)

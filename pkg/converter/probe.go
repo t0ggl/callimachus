@@ -1,4 +1,4 @@
-package transcoder
+package converter
 
 import (
 	"context"
@@ -86,7 +86,7 @@ func (p *Prober) ProbeFile(ctx context.Context, filePath string) (*AudioProbe, e
 // ProbeFiles probes multiple audio files in sequence and returns their probes.
 func (p *Prober) ProbeFiles(ctx context.Context, filePaths []string) ([]*AudioProbe, error) {
 	if len(filePaths) == 0 {
-		return nil, errors.New("no files provided for probing")
+		return nil, errors.New("no files provided for preparing")
 	}
 
 	probes := make([]*AudioProbe, 0, len(filePaths))

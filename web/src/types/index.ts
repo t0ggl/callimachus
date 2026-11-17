@@ -66,17 +66,18 @@ export interface Book {
   editions: BookEdition[];
 }
 
-export type TranscodeStage = 'queued' | 'probing' | 'encoding' | 'muxing' | 'tagging' | 'moving' | 'completed';
+export type ConversionStage = 'queued' | 'preparing' | 'converting' | 'muxing' | 'tagging' | 'moving' | 'completed';
 export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'paused';
 
-export interface TranscodeJob {
+export interface ConversionJob {
   id: string;
   bookId: string;
+  editionId?: string;
   bookTitle: string;
   authorName: string;
   sourceFilesCount: number;
   targetFormat: 'M4B' | 'EPUB' | 'AZW3';
-  stage: TranscodeStage;
+  stage: ConversionStage;
   status: JobStatus;
   progressPercent: number;
   bitrateKbps: number;
@@ -88,6 +89,9 @@ export interface TranscodeJob {
 export type DownloadCategory = 'callimachus-ebooks' | 'callimachus-audiobooks';
 
 export interface DownloadItem {
+  editionId?: string;
+  requestId?: string;
+  errorMessage?: string;
   id: string;
   title: string;
   category: DownloadCategory;
@@ -101,9 +105,10 @@ export interface DownloadItem {
 }
 
 export interface ImportLog {
+  editionId?: string;
   id: string;
   timestamp: string;
-  action: 'import' | 'transcode' | 'organize' | 'metadata_enrich';
+  action: 'import' | 'conversion' | 'organize' | 'metadata_enrich';
   itemName: string;
   status: 'success' | 'warning' | 'error';
   details: string;
