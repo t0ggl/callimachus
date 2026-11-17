@@ -15,6 +15,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: write
   packages: write
 
@@ -29,6 +30,43 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Reuse web build artifact from CI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_SHA: ${{ github.sha }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          GITHUB_REF_FULL: ${{ github.ref }}
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_FULL" == refs/tags/* ]]; then
+            OTHER_BUILD_ID=$(gh run list --workflow=build-ghcr.yml --commit "$COMMIT_SHA" --limit 5 --json databaseId,status --jq ".[] | select(.databaseId != $CURRENT_RUN_ID and .status != \"completed\") | .databaseId" | head -n 1 || true)
+            if [ -n "$OTHER_BUILD_ID" ]; then
+              echo "Waiting for in-progress container build $OTHER_BUILD_ID on commit $COMMIT_SHA to finish exporting cache..."
+              gh run watch "$OTHER_BUILD_ID" || true
+            fi
+          fi
+
+          CI_RUN_ID=""
+          MAX_TRIES=1
+          if [[ "$GITHUB_REF_FULL" == refs/heads/* ]]; then
+            MAX_TRIES=5
+          fi
+          for _ in $(seq 1 "$MAX_TRIES"); do
+            CI_RUN_ID=$(gh run list --workflow=ci.yml --commit "$COMMIT_SHA" --limit 1 --json databaseId,status,conclusion --jq '.[0] | select(.status != "completed" or .conclusion == "success") | .databaseId' || true)
+            if [ -n "$CI_RUN_ID" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -n "$CI_RUN_ID" ]; then
+            echo "Found CI run $CI_RUN_ID for commit $COMMIT_SHA; waiting for completion if needed..."
+            gh run watch "$CI_RUN_ID" || true
+            if gh run download "$CI_RUN_ID" -n web-dist -D web/dist; then
+              echo "Reusing web-dist artifact from CI run $CI_RUN_ID"
+            fi
+          fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
