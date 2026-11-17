@@ -255,6 +255,7 @@ func (h *AuthHandler) handleOIDCCallback(w http.ResponseWriter, r *http.Request)
 		target = "/"
 	}
 
+	// nosemgrep: go.lang.security.injection.open-redirect.open-redirect -- target validated by IsSafeRedirectTarget above
 	http.Redirect(w, r, target, http.StatusFound)
 }
 

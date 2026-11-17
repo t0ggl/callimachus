@@ -2,6 +2,7 @@ package epub
 
 import (
 	"archive/zip"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -10,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 )
+
+var maxCoverImageBytes int64 = 64 * 1024 * 1024 // 64 MiB
 
 // extractCoverFromZip finds the cover image file inside the EPUB zip archive
 // using standard cover resolution strategies and writes it to targetImagePath.
@@ -97,10 +100,19 @@ func extractCoverFromZip(epubPath string, opfDir string, manifestItems []Manifes
 	if err != nil {
 		return fmt.Errorf("failed to create target cover file %s: %w", targetImagePath, err)
 	}
-	defer out.Close()
 
-	if _, err := io.Copy(out, rc); err != nil {
-		return fmt.Errorf("failed to write cover image data: %w", err)
+	n, copyErr := io.CopyN(out, rc, maxCoverImageBytes+1)
+	closeErr := out.Close()
+	if copyErr != nil && !errors.Is(copyErr, io.EOF) {
+		_ = os.Remove(targetImagePath)
+		return fmt.Errorf("failed to write cover image data: %w", copyErr)
+	}
+	if n > maxCoverImageBytes {
+		_ = os.Remove(targetImagePath)
+		return fmt.Errorf("cover image %s exceeds maximum allowed size of %d bytes", zipPath, maxCoverImageBytes)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("failed to close cover image file: %w", closeErr)
 	}
 
 	return nil

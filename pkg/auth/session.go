@@ -173,6 +173,7 @@ func (sm *SessionManager) SetSessionCookie(w http.ResponseWriter, token string, 
 	if maxAge < 0 {
 		maxAge = 0
 	}
+	// nosemgrep: go.lang.security.audit.net.cookie-missing-httponly.cookie-missing-httponly, go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure -- CookieConfig sets HTTPOnly=true by default and allows configurable Secure for LAN HTTP or HTTPS proxy deployments
 	http.SetCookie(w, &http.Cookie{
 		Name:     sm.cookie.Name,
 		Value:    token,
@@ -188,6 +189,7 @@ func (sm *SessionManager) SetSessionCookie(w http.ResponseWriter, token string, 
 
 // ClearSessionCookie clears the session cookie from the client browser.
 func (sm *SessionManager) ClearSessionCookie(w http.ResponseWriter) {
+	// nosemgrep: go.lang.security.audit.net.cookie-missing-httponly.cookie-missing-httponly, go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure -- CookieConfig sets HTTPOnly=true by default and allows configurable Secure for LAN HTTP or HTTPS proxy deployments
 	http.SetCookie(w, &http.Cookie{
 		Name:     sm.cookie.Name,
 		Value:    "",

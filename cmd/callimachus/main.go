@@ -349,10 +349,7 @@ type HealthResponse struct {
 
 func (s *Server) withAuthGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cleanPath := path.Clean(r.URL.Path)
-		if cleanPath == "." {
-			cleanPath = "/"
-		}
+		cleanPath := path.Clean("/" + r.URL.Path)
 
 		// Always allow public health probes and OIDC initiation/callback endpoints
 		if cleanPath == "/healthz" ||
@@ -390,6 +387,7 @@ func (s *Server) withAuthGate(next http.Handler) http.Handler {
 		if cleanPath != "/" && auth.IsSafeRedirectTarget(reqURI) && !isStaticAssetPath(cleanPath) {
 			loginURL += "?redirect=" + url.QueryEscape(reqURI)
 		}
+		// nosemgrep: go.lang.security.injection.open-redirect.open-redirect -- loginURL always targets local /api/auth/oidc/login with a validated query parameter
 		http.Redirect(w, r, loginURL, http.StatusFound)
 	})
 }
@@ -435,8 +433,8 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cleanPath := path.Clean(strings.TrimPrefix(r.URL.Path, "/"))
-	if cleanPath == "." || cleanPath == "" || cleanPath == "/" {
+	cleanPath := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+	if cleanPath == "" {
 		cleanPath = "index.html"
 	}
 
@@ -457,6 +455,7 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 		if err == nil && len(content) > 0 {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
+			// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- serving static SPA index.html
 			_, _ = w.Write(content)
 			return
 		}
@@ -465,6 +464,7 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	// Fallback to minimal built-in HTML if dist/index.html is missing/empty
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
+	// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- serving static built-in FallbackHTML constant
 	_, _ = w.Write([]byte(web.FallbackHTML))
 }
 

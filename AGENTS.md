@@ -46,6 +46,9 @@ Welcome to the **Callimachus** project codebase. These guidelines govern all sub
      - Before merging any branch or opening a pull request, run `go test -v ./...` and `npm test` to audit test execution durations.
      - Any single test taking > 500ms or package taking > 2.5s is an outlier bottleneck that must be investigated and resolved before merging.
      - Ensure the entire repository test suite executes in under 5 seconds.
+   - **Static Application Security Testing (SAST):**
+     - Semgrep OSS SAST runs automatically in CI (`.github/workflows/ci.yml`) and locally via `make sast` or `./scripts/sast.sh` (also included in `make test`).
+     - Run `./scripts/sast.sh` before opening a pull request and resolve findings rather than bypassing them; only suppress verified false positives with inline `nosemgrep:` comments explaining the rationale.
 
 6. **Authentication & Multi-User:**
    - Primary: OIDC (Authentik, Authelia, Keycloak) with role mapping (Admin, Curator, User/Requester, Guest), configured **exclusively** via `CALLIMACHUS_OIDC_*` environment variables (`CALLIMACHUS_OIDC_ISSUER_URL`, `CALLIMACHUS_OIDC_CLIENT_ID`, `CALLIMACHUS_OIDC_CLIENT_SECRET`, `CALLIMACHUS_OIDC_REDIRECT_URL`, `CALLIMACHUS_OIDC_SCOPES`, `CALLIMACHUS_OIDC_ADMIN_GROUPS`, `CALLIMACHUS_OIDC_CURATOR_GROUPS`, `CALLIMACHUS_OIDC_DEFAULT_ROLE`, `CALLIMACHUS_OIDC_ENABLED`).

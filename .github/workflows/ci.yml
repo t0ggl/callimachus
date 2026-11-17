@@ -43,32 +43,47 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'pnpm'
-          cache-dependency-path: 'web/pnpm-lock.yaml'
+          cache: 'npm'
+          cache-dependency-path: 'web/package-lock.json'
 
       - name: Install Dependencies
         shell: bash
         run: |
           cd web
-          pnpm install --frozen-lockfile
+          npm ci
 
       - name: Run Vitest Component Tests
         shell: bash
         run: |
           cd web
-          pnpm test
+          npm test
 
       - name: Build Web Production Assets
         shell: bash
         run: |
           cd web
-          pnpm run build
+          npm run build
+
+  sast:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Semgrep
+        shell: bash
+        run: python -m pip install --no-cache-dir semgrep
+
+      - name: Run Semgrep SAST
+        shell: bash
+        run: ./scripts/sast.sh

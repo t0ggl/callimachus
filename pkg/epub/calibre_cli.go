@@ -16,6 +16,7 @@ var (
 
 	lookPath   = exec.LookPath
 	runCommand = func(name string, args ...string) ([]byte, error) {
+		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- non-shell subprocess wrapper for mockable ebook-meta execution
 		return exec.Command(name, args...).CombinedOutput()
 	}
 )

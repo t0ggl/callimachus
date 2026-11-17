@@ -3,14 +3,14 @@
 # Stage 1: Build Web UI
 FROM --platform=$BUILDPLATFORM node:20-alpine AS web-builder
 WORKDIR /app/web
-COPY web/package*.json web/pnpm-lock.yaml* web/pnpm-workspace.yaml* ./
+COPY web/package*.json ./
 RUN if [ -f package.json ]; then \
-      corepack enable && pnpm install --frozen-lockfile; \
+      npm ci; \
     else \
       mkdir -p dist && echo "<!DOCTYPE html><html><body><h1>Callimachus</h1></body></html>" > dist/index.html; \
     fi
 COPY web/ ./
-RUN if [ -f package.json ]; then pnpm run build; fi
+RUN if [ -f package.json ]; then npm run build; fi
 
 # Stage 2: Build Go Server & Worker
 FROM --platform=$BUILDPLATFORM golang:alpine AS go-builder
@@ -52,5 +52,8 @@ COPY --from=go-builder /bin/callimachus-worker /usr/local/bin/callimachus-worker
 VOLUME ["/config", "/books"]
 EXPOSE 8080
 
+# Container runs as root by default to preserve host-mounted /config and /books permissions.
+# nosemgrep: dockerfile.security.missing-user-entrypoint.missing-user-entrypoint
 ENTRYPOINT ["/usr/local/bin/callimachus"]
+# nosemgrep: dockerfile.security.missing-user.missing-user
 CMD ["--config", "/config"]

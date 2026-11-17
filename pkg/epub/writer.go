@@ -2,6 +2,7 @@ package epub
 
 import (
 	"archive/zip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"time"
 )
+
+var maxEPUBEntryBytes int64 = 256 * 1024 * 1024 // 256 MiB
 
 // repackEPUB safely repackages an EPUB archive, preserving all non-metadata contents
 // and strictly enforcing the EPUB specification:
@@ -108,12 +111,17 @@ func repackEPUB(sourcePath string, targetPath string, opfZipPath string, newOPFD
 				_ = tmpFile.Close()
 				return fmt.Errorf("failed to open source entry %s: %w", f.Name, err)
 			}
-			_, copyErr := io.Copy(w, rc)
+			n, copyErr := io.CopyN(w, rc, maxEPUBEntryBytes+1)
 			_ = rc.Close()
-			if copyErr != nil {
+			if copyErr != nil && !errors.Is(copyErr, io.EOF) {
 				_ = zw.Close()
 				_ = tmpFile.Close()
 				return fmt.Errorf("failed to copy entry %s: %w", f.Name, copyErr)
+			}
+			if n > maxEPUBEntryBytes {
+				_ = zw.Close()
+				_ = tmpFile.Close()
+				return fmt.Errorf("entry %s exceeds maximum allowed size of %d bytes", f.Name, maxEPUBEntryBytes)
 			}
 		}
 	}
