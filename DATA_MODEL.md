@@ -419,3 +419,13 @@ selects a tombstoned release. Manual downloads can override this exclusion.
    )
    RETURNING *;
    ```
+
+## Catalog monitoring (issue #10)
+
+Migration `0011_catalog_monitoring.sql` adds opt-in `monitored` flags and nullable
+RFC3339 UTC `discovery_checked_at` timestamps to authors and series. Books store
+`availability_checked_at` for durable daily checks. Future `release_date` values
+represent Scheduled titles; acquisition requests are created only once due.
+`catalog_actions` durably queues manual discovery/download actions, deduplicated
+by entity and action. Disabling an entity stops discovery, while previously added
+monitored books continue availability checks.

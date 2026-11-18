@@ -2,8 +2,10 @@ package metadata_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/t0ggl/callimachus/pkg/metadata"
@@ -336,4 +338,44 @@ func TestUnmockedNetworkCallsFailImmediately(t *testing.T) {
 		ol := metadata.NewOpenLibraryProvider(metadata.WithOpenLibraryClient(panicClient))
 		_, _ = ol.LookupByISBN(context.Background(), "9780123456789")
 	})
+}
+
+func TestHardcoverCatalogPagination(t *testing.T) {
+	for _, kind := range []string{"author", "series"} {
+		t.Run(kind, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var input struct {
+					Variables map[string]interface{} `json:"variables"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+					t.Error(err)
+					return
+				}
+				if int(input.Variables["offset"].(float64)) != calls*100 {
+					t.Error("wrong page offset")
+				}
+				calls++
+				books := []map[string]interface{}{}
+				if calls == 1 {
+					for i := 0; i < 100; i++ {
+						books = append(books, map[string]interface{}{"id": i + 1, "title": "Book", "release_date": "2028-01-01", "contributions": []map[string]interface{}{{"author": map[string]string{"name": "Author"}}}})
+					}
+				}
+				json.NewEncoder(w).Encode(map[string]interface{}{"data": map[string]interface{}{"books": books}})
+			}))
+			defer server.Close()
+			p := metadata.NewHardcoverProvider("mock", metadata.WithHardcoverBaseURL(server.URL), metadata.WithHardcoverClient(server.Client()))
+			var found []metadata.BookMetadata
+			var err error
+			if kind == "author" {
+				found, err = p.AuthorBooks(context.Background(), "Author")
+			} else {
+				found, err = p.SeriesBooks(context.Background(), "Sequence")
+			}
+			if err != nil || len(found) != 100 || calls != 2 {
+				t.Fatalf("pagination: %d books, %d calls: %v", len(found), calls, err)
+			}
+		})
+	}
 }

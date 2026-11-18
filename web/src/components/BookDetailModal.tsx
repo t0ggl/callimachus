@@ -1,3 +1,4 @@
+import { EntityLink } from './EntityLink';
 import React, { useEffect, useState } from 'react';
 import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers } from 'lucide-react';
 import { ManualSearch } from './ManualSearch';
@@ -156,7 +157,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
                 <div className="flex items-center gap-2 text-zinc-300">
                   <User className="w-4 h-4 text-zinc-500 shrink-0" />
                   <span className="text-zinc-500">Author:</span>
-                  <span className="font-medium text-zinc-200">{book.authorName}</span>
+                  <span className="font-medium text-zinc-200"><EntityLink kind="authors" name={book.authorName} /></span>
                 </div>
 
                 {book.seriesTitle && (
@@ -164,7 +165,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
                     <Layers className="w-4 h-4 text-purple-400 shrink-0" />
                     <span className="text-zinc-500">Series:</span>
                     <span className="font-medium text-zinc-200">
-                      {book.seriesTitle} ({book.seriesIndexDisplay || `#${book.seriesIndex}`})
+                      <EntityLink kind="series" name={book.seriesTitle} /> ({book.seriesIndexDisplay || `#${book.seriesIndex}`})
                     </span>
                   </div>
                 )}
