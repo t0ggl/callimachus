@@ -406,16 +406,7 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 				}
 			}
 
-			// Fallback: organize MP3 directly
-			bookDetails.Format = "mp3"
-			if sm.catalog != nil {
-				_, err = sm.catalog.IngestBook(ctx, sm.libraryRoot, bookDetails, singleMP3, nil)
-				return err
-			} else if sm.libraryRoot != "" {
-				_, err = catalog.OrganizeBook(sm.libraryRoot, bookDetails, singleMP3, nil)
-				return err
-			}
-			return nil
+			return errors.New("cannot import MP3 without successful M4B conversion queuing")
 		}
 	}
 

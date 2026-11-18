@@ -42,7 +42,6 @@ export interface SettingsUpdatePayload {
     ebookFormatPreferences?: FormatType[];
     convertEbooks?: boolean;
     ebookTargetFormat?: 'EPUB' | 'AZW3';
-    preferSingleFileM4b?: boolean;
     maxFileSizeMb?: number;
     maxEbookSizeBytes?: number;
   };
@@ -207,7 +206,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       qualityProfile: {
         ...(!isOverridden('convert_ebooks') ? { convertEbooks: qualityProfile.convertEbooks } : {}),
         ...(!isOverridden('ebook_target_format') ? { ebookTargetFormat: qualityProfile.ebookTargetFormat } : {}),
-        ...(!isOverridden('quality_profile_name') ? { name: qualityProfile.name } : {}),
         ...(!isOverridden('allowed_languages')
           ? { allowedLanguages: splitList(languagesInput) }
           : {}),
@@ -216,9 +214,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           : {}),
         ...(!isOverridden('ebook_format_preferences')
           ? { ebookFormatPreferences: qualityProfile.ebookFormatPreferences }
-          : {}),
-        ...(!isOverridden('prefer_single_file_m4b')
-          ? { preferSingleFileM4b: qualityProfile.preferSingleFileM4b }
           : {}),
         ...(!isOverridden('max_ebook_size_mb')
           ? { maxEbookSizeBytes: qualityProfile.maxEbookSizeBytes }
@@ -636,26 +631,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label htmlFor="quality-profile-name" className="block text-zinc-400 font-medium">
-                    Profile Name
-                  </label>
-                  <OverrideBadge settingKey="quality_profile_name" />
-                </div>
-                <input
-                  id="quality-profile-name"
-                  type="text"
-                  value={qualityProfile.name}
-                  disabled={isOverridden('quality_profile_name')}
-                  onChange={(e) =>
-                    setQualityProfile((prev) => ({ ...prev, name: e.target.value }))
-                  }
-                  className={inputClass(isOverridden('quality_profile_name'))}
-                />
-                <OverrideNote settingKey="quality_profile_name" />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1">
                   <label htmlFor="allowed-languages" className="block text-zinc-400 font-medium">
                     Allowed Languages (comma-separated)
                   </label>
@@ -693,15 +668,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <span className="block text-zinc-400 font-medium">Allowed File Formats</span>
+                <span className="block text-zinc-400 font-medium">Allowed eBook Formats</span>
                 <OverrideBadge settingKey="allowed_formats" />
               </div>
-              <p className="text-zinc-400 mb-3">Enable formats to allow downloads. Move eBook formats up to prefer them; disabled formats are never acquired.</p>
+              <p className="text-zinc-400 mb-3">Enable eBook formats to allow downloads. Move formats up to prefer them; disabled eBook formats are never acquired.</p>
               <OverrideBadge settingKey="ebook_format_preferences" />
               <ol aria-label="eBook format priority" className="space-y-2 max-w-lg">
                 {[...(qualityProfile.ebookFormatPreferences ?? []), ...FORMAT_TYPES.filter(
                   (fmt) => !qualityProfile.ebookFormatPreferences?.includes(fmt)
-                )].map((fmt, index) => {
+                )].filter((fmt) => fmt !== 'MP3' && fmt !== 'M4B').map((fmt, index) => {
                   const isChecked = qualityProfile.allowedFormats.includes(fmt);
                   const preferences = qualityProfile.ebookFormatPreferences ?? [];
                   const ranked = index < preferences.length;
@@ -808,28 +783,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <OverrideNote settingKey="max_ebook_size_mb" />
             </div>
 
-            <div className="pt-2">
-              <div className="flex items-center justify-between">
-                <label className={`flex items-center gap-2 text-zinc-300 ${isOverridden('prefer_single_file_m4b') ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
-                  <input
-                    id="prefer-single-file-m4b"
-                    type="checkbox"
-                    checked={qualityProfile.preferSingleFileM4b}
-                    disabled={isOverridden('prefer_single_file_m4b')}
-                    onChange={(e) =>
-                      setQualityProfile((prev) => ({
-                        ...prev,
-                        preferSingleFileM4b: e.target.checked,
-                      }))
-                    }
-                    className="rounded-sm bg-zinc-950 border-zinc-800 text-blue-500 focus:ring-0 disabled:cursor-not-allowed"
-                  />
-                  <span>Automatically convert audiobooks to M4B format</span>
-                </label>
-                <OverrideBadge settingKey="prefer_single_file_m4b" />
-              </div>
-              <OverrideNote settingKey="prefer_single_file_m4b" />
-            </div>
+            <p className="text-zinc-400">Audiobooks always prefer M4B. MP3 downloads are automatically converted to M4B.</p>
           </div>
         </div>
       )}
