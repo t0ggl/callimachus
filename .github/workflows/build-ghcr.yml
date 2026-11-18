@@ -52,6 +52,9 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          # Kata shares disk-backed directories through VirtioFS, which cannot back OverlayFS.
+          buildkitd-flags: ${{ runner.environment == 'self-hosted' && '--oci-worker-snapshotter=native' || '' }}
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
