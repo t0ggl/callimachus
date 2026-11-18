@@ -198,6 +198,7 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 	mux.HandleFunc("POST /api/settings", s.handleRejectSettingsPost)
 	mux.HandleFunc("POST /api/settings/prowlarr/sync", s.handleSyncProwlarr)
+	mux.HandleFunc("POST /api/settings/{service}/test", s.handleTestConnection)
 	mux.HandleFunc("GET /api/events", s.handleEventsSSE)
 	mux.Handle("GET /api/releases", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleSearchReleases)))
 	mux.Handle("POST /api/releases/grab", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleGrabRelease)))
