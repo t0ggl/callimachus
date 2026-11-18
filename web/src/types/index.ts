@@ -28,8 +28,8 @@ export interface Series {
 export interface MediaAsset {
   id: string;
   editionId: string;
-  filePath: string;
-  fileSizeBytes: number;
+  filename?: string;
+  fileSizeBytes?: number;
   format: FormatType;
   codec?: string;
   bitrateKbps?: number;

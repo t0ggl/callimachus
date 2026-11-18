@@ -8,11 +8,11 @@ interface BookDetailModalProps {
   onClose: () => void;
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
+function formatBytes(bytes?: number): string {
+  if (!bytes || !Number.isFinite(bytes) || bytes < 0) return 'Size unknown';
   const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const sizes = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  const i = Math.max(0, Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k))));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
@@ -144,7 +144,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
             </div>
 
             {/* Metadata overview */}
-            <div className="flex-1 space-y-4">
+            <div className="flex-1 min-w-0 space-y-4">
               <div>
                 <h3 className="text-xl font-bold text-zinc-100">{book.title}</h3>
                 {book.subtitle && (
@@ -194,24 +194,25 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
           <div className="space-y-4 border-t border-zinc-800 pt-5">
             <h4 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
               <HardDrive className="w-4 h-4 text-zinc-400" />
-              Editions & Media Assets
+              Available files
             </h4>
 
             <div className="space-y-3">
+              {book.editions.length === 0 && <p className="text-xs text-zinc-400">No files available.</p>}
               {book.editions.map((edition) => (
                 <div
                   key={edition.id}
                   className="bg-zinc-950/60 border border-zinc-800 rounded-lg p-4 space-y-3"
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
-                      {edition.format === 'M4B' ? (
+                      {edition.format.toUpperCase() === 'M4B' ? (
                         <Headphones className="w-4 h-4 text-purple-400" />
                       ) : (
                         <FileText className="w-4 h-4 text-blue-400" />
                       )}
                       <span className="text-xs font-semibold text-zinc-200">
-                        {edition.format} Edition
+                        {edition.format.toUpperCase()}
                       </span>
                       {edition.language && (
                         <span className="text-[10px] bg-zinc-800 px-1.5 py-0.5 rounded-sm text-zinc-400">
@@ -220,7 +221,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
                       )}
                     </div>
 
-                    <div className="flex items-center gap-3 text-xs text-zinc-400 font-mono">
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400 font-mono">
                       {edition.publisher && <span className="font-sans text-zinc-300">{edition.publisher}</span>}
                       {edition.isbn13 && <span>ISBN: {edition.isbn13}</span>}
                       {edition.asin && <span>ASIN: {edition.asin}</span>}
@@ -236,22 +237,26 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
                   )}
 
                   {/* Asset files */}
-                  <div className="space-y-1.5 pt-1">
+                  <div className="space-y-1.5 pt-1" role="list" aria-label={`${edition.format.toUpperCase()} files`}>
+                    {edition.assets.length === 0 && <p className="text-xs text-zinc-400">No files available for this edition.</p>}
                     {edition.assets.map((asset) => (
                       <div
                         key={asset.id}
-                        className="flex flex-col sm:flex-row sm:items-center justify-between p-2 rounded-sm bg-zinc-900/80 border border-zinc-800/60 text-xs gap-2"
+                        role="listitem"
+                        className="flex flex-col sm:flex-row sm:items-start justify-between p-2 rounded-sm bg-zinc-900/80 border border-zinc-800/60 text-xs gap-2"
                       >
-                        <div className="font-mono text-[11px] text-zinc-300 break-all">
-                          {asset.filePath}
+                        <div className="min-w-0 flex-1 text-xs text-zinc-200 [overflow-wrap:anywhere]">
+                          {asset.filename || 'Filename unknown'}
                         </div>
-                        <div className="flex items-center gap-3 text-zinc-400 shrink-0 text-[11px]">
-                          {asset.durationSeconds && (
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 sm:shrink-0 text-zinc-400 text-xs">
+                          <span>{asset.format?.toUpperCase() || edition.format.toUpperCase()}</span>
+                          {edition.language && <span>{edition.language}</span>}
+                          {!!asset.durationSeconds && (
                             <span>{formatDuration(asset.durationSeconds)}</span>
                           )}
                           {asset.codec && <span>{asset.codec}</span>}
-                          {asset.bitrateKbps && <span>{asset.bitrateKbps} kbps</span>}
-                          <span className="font-semibold text-zinc-200">
+                          {!!asset.bitrateKbps && <span>{asset.bitrateKbps} kbps</span>}
+                          <span className="whitespace-nowrap font-semibold text-zinc-200">
                             {formatBytes(asset.fileSizeBytes)}
                           </span>
                         </div>

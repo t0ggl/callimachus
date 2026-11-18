@@ -20,8 +20,8 @@ import (
 type APIMediaAsset struct {
 	ID            string `json:"id"`
 	EditionID     string `json:"editionId"`
-	FilePath      string `json:"filePath"`
-	FileSizeBytes int64  `json:"fileSizeBytes"`
+	Filename      string `json:"filename,omitempty"`
+	FileSizeBytes int64  `json:"fileSizeBytes,omitempty"`
 	Format        string `json:"format"`
 }
 
@@ -263,6 +263,45 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 
 	// Query editions if books exist
 	if len(bookIDs) > 0 {
+		// Keep server paths private; only send the basename and display metadata.
+		assetsByEdition := make(map[string][]APIMediaAsset)
+		assetRows, err := s.db.QueryContext(r.Context(), `
+			SELECT id, edition_id, file_path, file_size
+			FROM media_assets ORDER BY file_path, id
+		`)
+		if err != nil {
+			log.Printf("[api] get book assets query error: %v", err)
+			http.Error(w, "Unable to load book files", http.StatusInternalServerError)
+			return
+		}
+		defer assetRows.Close()
+		for assetRows.Next() {
+			var asset APIMediaAsset
+			var serverPath string
+			if err := assetRows.Scan(&asset.ID, &asset.EditionID, &serverPath, &asset.FileSizeBytes); err != nil {
+				log.Printf("[api] scan book asset error: %v", err)
+				http.Error(w, "Unable to load book files", http.StatusInternalServerError)
+				return
+			}
+			// Also strip Windows separators from libraries imported on another OS.
+			serverPath = strings.ReplaceAll(serverPath, `\`, "/")
+			if serverPath != "" && !strings.HasSuffix(serverPath, "/") {
+				asset.Filename = filepath.Base(serverPath)
+				if asset.Filename == "." || asset.Filename == ".." {
+					asset.Filename = ""
+				}
+			}
+			asset.Format = strings.ToUpper(strings.TrimPrefix(filepath.Ext(asset.Filename), "."))
+			if asset.FileSizeBytes < 0 {
+				asset.FileSizeBytes = 0
+			}
+			assetsByEdition[asset.EditionID] = append(assetsByEdition[asset.EditionID], asset)
+		}
+		if err := assetRows.Err(); err != nil {
+			log.Printf("[api] read book assets error: %v", err)
+			http.Error(w, "Unable to load book files", http.StatusInternalServerError)
+			return
+		}
 		edQuery := `
 			SELECT id, book_id, format, COALESCE(isbn13, ''), COALESCE(asin, ''),
 			       COALESCE(publisher, ''), language
@@ -278,7 +317,15 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 					&ed.ID, &ed.BookID, &ed.Format, &ed.ISBN13, &ed.ASIN,
 					&ed.Publisher, &ed.Language,
 				); err == nil {
-					ed.Assets = make([]APIMediaAsset, 0)
+					ed.Assets = assetsByEdition[ed.ID]
+					if ed.Assets == nil {
+						ed.Assets = make([]APIMediaAsset, 0)
+					}
+					for i := range ed.Assets {
+						if ed.Assets[i].Format == "" {
+							ed.Assets[i].Format = strings.ToUpper(ed.Format)
+						}
+					}
 					if parent, ok := bookMap[ed.BookID]; ok {
 						parent.Editions = append(parent.Editions, ed)
 						fmtUpper := strings.ToUpper(ed.Format)
