@@ -223,3 +223,13 @@ func joinAuthors(authors []string) string {
 	}
 	return res
 }
+
+// ExtractCoverWithCalibre provides read-only cover extraction for other ebook
+// formats supported by an optional host Calibre installation.
+func ExtractCoverWithCalibre(sourcePath, targetImagePath string) error {
+	bin, err := lookPath("ebook-meta")
+	if err != nil {
+		return ErrCalibreNotFound
+	}
+	return (&calibreEPUB{path: sourcePath, binPath: bin}).ExtractCover(targetImagePath)
+}

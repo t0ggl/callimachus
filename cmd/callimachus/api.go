@@ -37,6 +37,7 @@ type APIBookEdition struct {
 }
 
 type APIBook struct {
+	CoverURL           string           `json:"coverUrl,omitempty"`
 	ID                 string           `json:"id"`
 	Title              string           `json:"title"`
 	Subtitle           string           `json:"subtitle,omitempty"`
@@ -182,6 +183,7 @@ type APISettingsUpdateRequest struct {
 
 func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/discover", s.handleDiscover)
+	mux.HandleFunc("GET /api/books/{id}/cover", s.handleBookCover)
 	mux.Handle("POST /api/library/scan", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleScanLibrary)))
 	mux.Handle("POST /api/acquisition/failure", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleAcquisitionFailure)))
 	mux.HandleFunc("GET /api/books", s.handleGetBooks)
@@ -247,6 +249,9 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 		}
 		b.Formats = make([]string, 0)
 		b.Editions = make([]APIBookEdition, 0)
+		if s.bookCover(r, b.ID) != "" {
+			b.CoverURL = "/api/books/" + b.ID + "/cover"
+		}
 		books = append(books, b)
 		bookIDs = append(bookIDs, b.ID)
 	}

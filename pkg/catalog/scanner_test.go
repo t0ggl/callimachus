@@ -257,7 +257,7 @@ func TestCatalog_IngestBook_EndToEnd(t *testing.T) {
 		Language:    "en",
 	}
 
-	coverBytes := []byte("synthetic jpeg cover bytes")
+	coverBytes := testCoverJPEG(t)
 
 	ingestRes, err := cat.IngestBook(ctx, libraryRoot, book, srcMedia, coverBytes)
 	if err != nil {
