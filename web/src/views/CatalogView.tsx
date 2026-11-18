@@ -1,3 +1,4 @@
+import { EntityLink } from '../components/EntityLink';
 import React, { useState, useMemo } from 'react';
 import {
   Grid,
@@ -279,7 +280,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                           {book.title}
                         </h3>
                         <p className="text-[11px] text-zinc-400 mt-0.5 truncate">
-                          {book.authorName}
+                          <EntityLink kind="authors" name={book.authorName} />
                         </p>
                       </div>
 
@@ -320,7 +321,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                           <BookOpen className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
                           <span className="truncate">{book.title}</span>
                         </td>
-                        <td className="py-3 px-4 text-zinc-300">{book.authorName}</td>
+                        <td className="py-3 px-4 text-zinc-300"><EntityLink kind="authors" name={book.authorName} /></td>
                         <td className="py-3 px-4">
                           {book.seriesTitle ? (
                             <SeriesBadge title={book.seriesTitle} index={book.seriesIndex} total={series.find(s => s.id === book.seriesId)?.totalBooks} onSelect={setSelectedSeries} />
@@ -370,7 +371,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                   <User className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-semibold text-zinc-100">{author.name}</h3>
+                  <h3 className="text-sm font-semibold text-zinc-100"><EntityLink kind="authors" name={author.name} /></h3>
                   <p className="text-[11px] font-mono text-zinc-400">{author.sortName}</p>
                 </div>
               </div>
@@ -406,7 +407,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <Layers className="w-4 h-4 text-purple-400" />
-                    <h3 className="text-sm font-bold text-zinc-100"><button onClick={() => setSelectedSeries(s.title)} className="text-purple-300 underline underline-offset-2">{s.title}</button></h3>
+                    <h3 className="text-sm font-bold text-zinc-100"><button onClick={() => { window.location.hash = `#/series/${encodeURIComponent(s.title)}`; }} className="text-purple-300 underline underline-offset-2">{s.title}</button></h3>
                     <span className="text-[10px] font-mono px-2 py-0.5 rounded-sm bg-zinc-800 text-zinc-400 border border-zinc-700">
                       {s.status}
                     </span>
@@ -433,7 +434,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                           {book.title}
                         </div>
                         <div className="text-[11px] text-zinc-500 truncate">
-                          {book.authorName}
+                          <EntityLink kind="authors" name={book.authorName} />
                         </div>
                       </div>
                       <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-sm bg-purple-950 text-purple-300 border border-purple-800 shrink-0">

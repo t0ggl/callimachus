@@ -1,3 +1,4 @@
+import { EntityLink } from './EntityLink';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, Book as BookIcon, User, Layers, ArrowRight, CornerDownLeft, X } from 'lucide-react';
 import { Book, Author, Series, RequestType } from '../types';
@@ -81,7 +82,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         subtitle: 'View all books, authors, and series',
         badge: 'View',
         action: () => {
-          onNavigate('catalog');
+          window.location.hash = ''; onNavigate('catalog');
           closePalette();
         },
       },
@@ -134,7 +135,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         subtitle: `${a.bookCount} books in collection`,
         badge: 'Author',
         action: () => {
-          onNavigate('catalog');
+          window.location.hash = `#/authors/${encodeURIComponent(a.name)}`;
           closePalette();
         },
       });
@@ -149,7 +150,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         subtitle: `${s.totalBooks || 'Multiple'} volumes • ${s.status || 'Active'}`,
         badge: 'Series',
         action: () => {
-          setSelectedSeries(s.title);
+          window.location.hash = `#/series/${encodeURIComponent(s.title)}`; closePalette();
         },
       });
     });
@@ -281,7 +282,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                       <div className="font-medium text-zinc-100 truncate">{item.title}</div>
                       {item.book && <SeriesBadge title={item.book.seriesTitle} index={item.book.seriesIndex} total={series.find(s => s.id === item.book?.seriesId)?.totalBooks} onSelect={setSelectedSeries} />}
                       {item.subtitle && (
-                        <div className="text-xs text-zinc-400 truncate">{item.subtitle}</div>
+                        <div className="text-xs text-zinc-400 truncate">{item.book ? <EntityLink kind="authors" name={item.book.authorName} /> : item.subtitle}</div>
                       )}
                     </div>
                   </div>

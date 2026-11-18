@@ -54,6 +54,7 @@ type APIBook struct {
 }
 
 type APIAuthor struct {
+	Monitored bool   `json:"monitored"`
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	SortName  string `json:"sortName"`
@@ -63,6 +64,7 @@ type APIAuthor struct {
 }
 
 type APISeries struct {
+	Monitored   bool   `json:"monitored"`
 	ID          string `json:"id"`
 	Title       string `json:"title"`
 	Description string `json:"description,omitempty"`
@@ -182,6 +184,9 @@ type APISettingsUpdateRequest struct {
 }
 
 func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/catalog/entity", s.handleCatalogEntity)
+	mux.Handle("PUT /api/catalog/entity", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleCatalogMonitor)))
+	mux.Handle("POST /api/catalog/entity", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleCatalogAction)))
 	mux.HandleFunc("GET /api/discover", s.handleDiscover)
 	mux.HandleFunc("GET /api/books/{id}/cover", s.handleBookCover)
 	mux.Handle("POST /api/library/scan", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleScanLibrary)))
@@ -357,7 +362,7 @@ func (s *Server) handleGetAuthors(w http.ResponseWriter, r *http.Request) {
 
 	query := `
 		SELECT a.id, a.name, a.sort_name, COALESCE(a.photo_url, ''),
-		       COALESCE(a.biography, ''), COUNT(b.id)
+		       COALESCE(a.biography, ''), COUNT(b.id), a.monitored
 		FROM authors a
 		LEFT JOIN books b ON a.id = b.author_id
 		GROUP BY a.id, a.name, a.sort_name, a.photo_url, a.biography
@@ -374,7 +379,7 @@ func (s *Server) handleGetAuthors(w http.ResponseWriter, r *http.Request) {
 	authors := make([]APIAuthor, 0)
 	for rows.Next() {
 		var a APIAuthor
-		if err := rows.Scan(&a.ID, &a.Name, &a.SortName, &a.PhotoURL, &a.Biography, &a.BookCount); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.SortName, &a.PhotoURL, &a.Biography, &a.BookCount, &a.Monitored); err != nil {
 			continue
 		}
 		authors = append(authors, a)
@@ -391,7 +396,7 @@ func (s *Server) handleGetSeries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := `
-		SELECT s.id, s.title, COALESCE(s.description, ''), COALESCE(s.total_books, 0), s.status
+		SELECT s.id, s.title, COALESCE(s.description, ''), COALESCE(s.total_books, 0), s.status, s.monitored
 		FROM series s
 		ORDER BY s.title ASC
 	`
@@ -406,7 +411,7 @@ func (s *Server) handleGetSeries(w http.ResponseWriter, r *http.Request) {
 	seriesList := make([]APISeries, 0)
 	for rows.Next() {
 		var s APISeries
-		if err := rows.Scan(&s.ID, &s.Title, &s.Description, &s.TotalBooks, &s.Status); err != nil {
+		if err := rows.Scan(&s.ID, &s.Title, &s.Description, &s.TotalBooks, &s.Status, &s.Monitored); err != nil {
 			continue
 		}
 		seriesList = append(seriesList, s)

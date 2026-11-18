@@ -670,3 +670,19 @@ When new media assets are published to canonical storage, Callimachus dispatches
 - **Audiobookshelf:** Triggers an immediate POST to `/api/libraries/{libraryId}/scan` with an API bearer token.
 - **Calibre-Web:** Dispatches a webhook or shelf reload signal.
 - **Generic Webhooks:** Configurable JSON POST endpoints with payload containing author, title, format, file path, and checksum.
+
+## Catalog release monitoring
+
+The server owns a serialized `pkg/catalog.Monitor` worker. It wakes at startup,
+once a minute, and immediately after authenticated Curator/Admin monitoring
+changes or manual actions. Discovery runs once per calendar month per monitored
+entity (month ends are clamped), with timestamps persisted across restarts.
+Hardcover author and series queries paginate through exact memberships; author
+search falls back to keyless OpenLibrary when Hardcover is not configured.
+Only matching works are persisted, and existing per-book monitoring preferences
+are preserved. Books with future release dates stay Scheduled; due monitored
+books without media enter the existing quality-filtered Prowlarr acquisition
+pipeline and are checked daily. In-flight/acquired requests are reused. Automated
+requests belong to a non-login system identity with no credentials or OIDC subject.
+Manual actions return HTTP 202 after durable enqueue and share the worker's
+execution and shutdown lifecycle. Failed discovery remains eligible for retry.

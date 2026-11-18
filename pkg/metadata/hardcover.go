@@ -489,17 +489,20 @@ query BookByASIN($asin: String!) {
 
 // SeriesBooks returns the provider's reading order, including books not held locally.
 func (p *HardcoverProvider) SeriesBooks(ctx context.Context, title string) ([]BookMetadata, error) {
-	const query = `query SeriesBooks($title: String!) {
- books(where: {book_series: {series: {name: {_eq: $title}}}}) {
+	const query = `query SeriesBooks($title: String!, $offset: Int!) {
+ books(where: {book_series: {series: {name: {_eq: $title}}}}, limit: 100, offset: $offset, order_by: {id: asc}) {
  id title release_date release_year
  contributions { author { name } contribution }
  book_series { series_position: position series { name books_count } }
  }
  }`
-	var res hardcoverBookResponse
-	if err := p.doQuery(ctx, query, map[string]interface{}{"title": title}, &res); err != nil {
+	raw, err := p.catalogBooks(ctx, query, map[string]interface{}{"title": title})
+	if err != nil {
 		return nil, err
 	}
+	res := hardcoverBookResponse{}
+	res.Data.Books = raw
+
 	books := make([]BookMetadata, 0, len(res.Data.Books))
 	for _, b := range res.Data.Books {
 		// A book may belong to several series; select the requested membership.
@@ -512,4 +515,42 @@ func (p *HardcoverProvider) SeriesBooks(ctx context.Context, title string) ([]Bo
 		books = append(books, mapHardcoverBookNode(&b))
 	}
 	return books, nil
+}
+
+// AuthorBooks fetches works credited to an exact author, including announcements.
+func (p *HardcoverProvider) AuthorBooks(ctx context.Context, name string) ([]BookMetadata, error) {
+	const query = `query AuthorBooks($name: String!, $offset: Int!) {
+ books(where: {contributions: {author: {name: {_eq: $name}}}}, limit: 100, offset: $offset, order_by: {id: asc}) {
+ id title release_date release_year
+ contributions { author { name } contribution }
+ book_series { series_position: position series { name books_count } }
+ }
+ }`
+	raw, err := p.catalogBooks(ctx, query, map[string]interface{}{"name": name})
+	if err != nil {
+		return nil, err
+	}
+	res := hardcoverBookResponse{}
+	res.Data.Books = raw
+
+	books := make([]BookMetadata, 0, len(res.Data.Books))
+	for _, b := range res.Data.Books {
+		books = append(books, mapHardcoverBookNode(&b))
+	}
+	return books, nil
+}
+
+func (p *HardcoverProvider) catalogBooks(ctx context.Context, query string, variables map[string]interface{}) ([]hardcoverBookNode, error) {
+	var books []hardcoverBookNode
+	for offset := 0; ; offset += 100 {
+		variables["offset"] = offset
+		var res hardcoverBookResponse
+		if err := p.doQuery(ctx, query, variables, &res); err != nil {
+			return nil, err
+		}
+		books = append(books, res.Data.Books...)
+		if len(res.Data.Books) < 100 {
+			return books, nil
+		}
+	}
 }

@@ -1,3 +1,4 @@
+import { EntityLink } from './EntityLink';
 import { useState, useEffect } from 'react';
 import { Check } from 'lucide-react';
 import { RequestType } from '../types';
@@ -105,7 +106,7 @@ export function DiscoveryResults({ query, onSubmitRequest, onOpenBook }: Props) 
               <div className="min-w-0 break-words"><strong>{m.title}</strong>
               <SeriesBadge title={m.series} index={m.series_index} total={m.series_total} onSelect={setSelectedSeries} />
               <p className="text-sm text-zinc-300">
-                {m.authors.join(', ')} {m.year > 0 && `(${m.year})`}
+                {m.authors.map((name, i) => <span key={name}>{i > 0 && ', '}<EntityLink kind="authors" name={name} /></span>)} {m.year > 0 && `(${m.year})`}
               </p>
               </div>
             </div>

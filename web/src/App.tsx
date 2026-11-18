@@ -1,3 +1,4 @@
+import { EntityView } from './views/EntityView';
 import React, { useState, useEffect, useCallback } from 'react';
 import { Layout, NavView } from './components/Layout';
 import { CatalogView } from './views/CatalogView';
@@ -23,6 +24,11 @@ import {
 } from './types';
 
 export const App: React.FC = () => {
+  const [entityHash, setEntityHash] = useState(window.location.hash);
+  useEffect(() => { const changed = () => { setEntityHash(window.location.hash); setSelectedBook(null); setIsPaletteOpen(false); }; window.addEventListener('hashchange', changed); return () => window.removeEventListener('hashchange', changed); }, []);
+  const match = /^#\/(authors|series)\/(.+)$/.exec(entityHash);
+  let entityName = '';
+  try { entityName = match ? decodeURIComponent(match[2]) : ''; } catch { /* Invalid routes return to the library. */ }
   const [currentView, setCurrentView] = useState<NavView>('catalog');
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
@@ -288,9 +294,7 @@ export const App: React.FC = () => {
 
       // View switching shortcuts 1, 2, 3
       if (!isInput && !isPaletteOpen && !selectedBook) {
-        if (e.key === '1') setCurrentView('catalog');
-        else if (e.key === '2') setCurrentView('activity');
-        else if (e.key === '3') setCurrentView('settings');
+        if (['1', '2', '3'].includes(e.key)) { window.location.hash = ''; setCurrentView(e.key === '1' ? 'catalog' : e.key === '2' ? 'activity' : 'settings'); }
       }
     };
 
@@ -332,14 +336,14 @@ export const App: React.FC = () => {
     <>
       <Layout
         currentView={currentView}
-        onNavigate={(v) => setCurrentView(v)}
+        onNavigate={(v) => { window.location.hash = ''; setCurrentView(v); }}
         onOpenPalette={() => setIsPaletteOpen(true)}
         user={currentUser}
         activeDownloadsCount={activeDownloadsCount}
         convertingJobsCount={convertingJobsCount}
         onLogout={handleLogout}
       >
-        {currentView === 'catalog' && (
+        {match && entityName ? <EntityView key={entityHash} kind={match[1] as 'authors' | 'series'} name={entityName} canManage={currentUser?.role === 'admin' || currentUser?.role === 'curator'} onOpenBook={(id) => { void fetch('/api/books').then(async res => { if (res.ok) { const loaded: Book[] = await res.json(); setBooks(loaded); setSelectedBook(loaded.find(b => b.id === id) || null); } }).catch(console.error); }} /> : currentView === 'catalog' && (
           <CatalogView
             books={books}
             authors={authors}
@@ -350,7 +354,7 @@ export const App: React.FC = () => {
           />
         )}
 
-        {currentView === 'activity' && (
+        {!match && currentView === 'activity' && (
           <div className="space-y-6">
           <ActivityView
             requests={requests}
@@ -362,7 +366,7 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {currentView === 'settings' && (
+        {!match && currentView === 'settings' && (
           <SettingsView
             indexers={indexers}
             librarySettings={librarySettings}
@@ -385,6 +389,7 @@ export const App: React.FC = () => {
         authors={authors}
         series={series}
         onNavigate={(v) => {
+          window.location.hash = '';
           setCurrentView(v as NavView);
           setIsPaletteOpen(false);
         }}

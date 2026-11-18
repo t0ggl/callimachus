@@ -55,6 +55,9 @@ type Config struct {
 
 // Server coordinates the database, background workers, and HTTP services.
 type Server struct {
+	catalogMonitor     *catalog.Monitor
+	monitorDone        chan struct{}
+	monitorWake        chan struct{}
 	acquisition        *requests.Acquisition
 	acquisitionCancel  context.CancelFunc
 	acquisitionDone    chan struct{}
@@ -233,6 +236,8 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	srv.acquisition = srv.newAcquisition()
+	srv.catalogMonitor = srv.newCatalogMonitor()
+	srv.monitorWake = make(chan struct{}, 1)
 	reqHandler := requests.NewHandler(requests.HandlerConfig{Service: reqService, SessionManager: sessionMgr, DB: db, Acquisition: srv.acquisition})
 
 	// 8. Register HTTP Endpoints & Router
@@ -273,6 +278,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	s.acquisitionCancel = cancel
+	s.monitorDone = make(chan struct{})
+	go func() { defer close(s.monitorDone); s.runCatalogMonitor(workerCtx) }()
 	s.acquisitionDone = make(chan struct{})
 	go func() {
 		defer close(s.acquisitionDone)
@@ -332,6 +339,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.acquisitionCancel != nil {
 		s.acquisitionCancel()
 		<-s.acquisitionDone
+		if s.monitorDone != nil {
+			<-s.monitorDone
+		}
 		if s.maintenanceDone != nil {
 			<-s.maintenanceDone
 		}
