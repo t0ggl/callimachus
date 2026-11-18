@@ -529,7 +529,7 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 	t.Setenv("CALLIMACHUS_LIBRARY_ROOT", "/env/books")
 	t.Setenv("CALLIMACHUS_PROWLARR_URL", "http://env-prowlarr:9696")
 	t.Setenv("CALLIMACHUS_PROWLARR_API_KEY", "secret-prowlarr-key")
-	t.Setenv("CALLIMACHUS_MAX_FILE_SIZE_MB", "4096")
+	t.Setenv("CALLIMACHUS_MAX_AUDIOBOOK_SIZE_MB", "4096")
 
 	srv, err := NewServer(Config{
 		ConfigDir:   tempDir,
@@ -591,8 +591,8 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 	if got.Prowlarr.URL != "http://env-prowlarr:9696" || !got.Prowlarr.APIKeyConfigured {
 		t.Errorf("Prowlarr = %+v, want url=http://env-prowlarr:9696 and apiKeyConfigured=true", got.Prowlarr)
 	}
-	if got.QualityProfile.MaxFileSizeMb != 4096 {
-		t.Errorf("QualityProfile.MaxFileSizeMb = %d, want 4096", got.QualityProfile.MaxFileSizeMb)
+	if got.QualityProfile.MaxAudiobookSizeMb != 4096 {
+		t.Errorf("QualityProfile.MaxAudiobookSizeMb = %d, want 4096", got.QualityProfile.MaxAudiobookSizeMb)
 	}
 
 	if ov := got.Overrides["library_root"]; !ov.IsOverridden || ov.OverriddenBy != "CALLIMACHUS_LIBRARY_ROOT" {
@@ -606,7 +606,7 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 	putBody := `{
 		"library": {"rootPath": "/ui/attempted-override", "stagingPollInterval": "10s"},
 		"prowlarr": {"url": "http://ui-attempted:9696"},
-		"qualityProfile": {"allowedFormats": ["EPUB", "M4B", "MP3"], "maxFileSizeMb": 1024}
+		"qualityProfile": {"allowedFormats": ["EPUB", "M4B", "MP3"], "maxAudiobookSizeMb": 1024}
 	}`
 	putReq := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(putBody))
 	putReq.Header.Set("Content-Type", "application/json")
@@ -629,8 +629,8 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 	if updated.Prowlarr.URL != "http://env-prowlarr:9696" {
 		t.Errorf("after PUT, Prowlarr.URL = %q, want http://env-prowlarr:9696", updated.Prowlarr.URL)
 	}
-	if updated.QualityProfile.MaxFileSizeMb != 4096 {
-		t.Errorf("after PUT, MaxFileSizeMb = %d, want 4096", updated.QualityProfile.MaxFileSizeMb)
+	if updated.QualityProfile.MaxAudiobookSizeMb != 4096 {
+		t.Errorf("after PUT, MaxAudiobookSizeMb = %d, want 4096", updated.QualityProfile.MaxAudiobookSizeMb)
 	}
 
 	// Non-overridden fields persisted
@@ -1012,5 +1012,50 @@ func TestSettingsEbookConversionAPI(t *testing.T) {
 	}
 	if got.QualityProfile.ConvertEbooks || got.QualityProfile.EbookTargetFormat != "EPUB" || !got.Overrides[config.KeyConvertEbooks].IsOverridden {
 		t.Fatal(rec.Body.String())
+	}
+}
+
+func TestSettingsAudiobookSizeRoundTrip(t *testing.T) {
+	srv := &Server{db: testutil.NewTestDB(t)}
+	put := func(value string, status int) APISettingsResponse {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		srv.handleUpdateSettings(rec, httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(`{"qualityProfile":{"maxAudiobookSizeMb":`+value+`}}`)))
+		if rec.Code != status {
+			t.Fatalf("PUT %s: %d %s", value, rec.Code, rec.Body.String())
+		}
+		var result APISettingsResponse
+		if status == http.StatusOK {
+			if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return result
+	}
+	if got := put("50", http.StatusOK); got.QualityProfile.MaxAudiobookSizeMb != 50 || got.QualityProfile.MaxEbookSizeBytes != 100*1024*1024 {
+		t.Fatalf("limits were not independent: %+v", got.QualityProfile)
+	}
+	for _, value := range []string{"-1", "8796093022208", "1.5"} {
+		put(value, http.StatusBadRequest)
+	}
+	t.Setenv("CALLIMACHUS_MAX_AUDIOBOOK_SIZE_MB", "200")
+	got := put("10", http.StatusOK)
+	if got.QualityProfile.MaxAudiobookSizeMb != 200 || got.Overrides["max_audiobook_size_mb"].OverriddenBy != "CALLIMACHUS_MAX_AUDIOBOOK_SIZE_MB" || !got.Overrides["max_audiobook_size_mb"].IsOverridden {
+		t.Fatal("missing audiobook override metadata or precedence")
+	}
+	t.Setenv("CALLIMACHUS_MAX_AUDIOBOOK_SIZE_MB", "")
+	rec := httptest.NewRecorder()
+	srv.handleGetSettings(rec, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatal(rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.QualityProfile.MaxAudiobookSizeMb != 50 {
+		t.Fatal("environment override mutated saved audiobook limit")
+	}
+	if got := put("0", http.StatusOK); got.QualityProfile.MaxAudiobookSizeMb != 0 {
+		t.Fatal("cannot disable audiobook limit")
 	}
 }

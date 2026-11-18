@@ -33,7 +33,7 @@ type QualityProfile struct {
 	AllowedLanguages       []string
 	AllowedFormats         []string
 	PreferSingleM4B        bool
-	MaxFileSizeMB          int
+	MaxAudiobookSizeMB     int
 	MaxEbookSizeBytes      int64 `json:"maxEbookSizeBytes"`
 	RejectPatterns         []*regexp.Regexp
 	EbookFormatPreferences []string
@@ -58,7 +58,7 @@ func DefaultQualityProfile() QualityProfile {
 		AllowedFormats:         DefaultAllowedFormats,
 		PreferSingleM4B:        true,
 		MaxEbookSizeBytes:      100 * 1024 * 1024,
-		MaxFileSizeMB:          1536,
+		MaxAudiobookSizeMB:     1536,
 		EbookFormatPreferences: []string{"epub", "azw3", "mobi", "pdf", "cbr", "cbz"},
 	}
 }
@@ -240,11 +240,11 @@ func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string)
 		return false, fmt.Sprintf("eBook release size %d bytes exceeds maximum %d bytes", release.Size, p.MaxEbookSizeBytes)
 	}
 
-	// 4. Evaluate Max File Size
-	if p.MaxFileSizeMB > 0 && release.Size > 0 {
-		maxBytes := int64(p.MaxFileSizeMB) * 1024 * 1024
+	// 4. Evaluate audiobook size independently of the ebook limit
+	if isAudio && p.MaxAudiobookSizeMB > 0 && release.Size > 0 {
+		maxBytes := int64(p.MaxAudiobookSizeMB) * 1024 * 1024
 		if release.Size > maxBytes {
-			return false, fmt.Sprintf("release size %d bytes exceeds maximum %d MB", release.Size, p.MaxFileSizeMB)
+			return false, fmt.Sprintf("audiobook release size %d bytes exceeds maximum %d MB", release.Size, p.MaxAudiobookSizeMB)
 		}
 	}
 

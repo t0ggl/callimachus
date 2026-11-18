@@ -14,7 +14,7 @@ func TestEnvVarName(t *testing.T) {
 		"library_root":             "CALLIMACHUS_LIBRARY_ROOT",
 		"prowlarr_url":             "CALLIMACHUS_PROWLARR_URL",
 		"prowlarr_api_key":         "CALLIMACHUS_PROWLARR_API_KEY",
-		"max_file_size_mb":         "CALLIMACHUS_MAX_FILE_SIZE_MB",
+		"max_audiobook_size_mb":    "CALLIMACHUS_MAX_AUDIOBOOK_SIZE_MB",
 		"allowed_formats":          "CALLIMACHUS_ALLOWED_FORMATS",
 		"oidc.issuer-url":          "CALLIMACHUS_OIDC_ISSUER_URL",
 		"  session_timeout_hours ": "CALLIMACHUS_SESSION_TIMEOUT_HOURS",
@@ -114,8 +114,8 @@ func TestAllRegisteredSettings_AutoEnvOverridePrecedence(t *testing.T) {
 	if !reflect.DeepEqual(s.AllowedLanguages, []string{"env1", "env2"}) {
 		t.Errorf("AllowedLanguages = %v, want [env1 env2]", s.AllowedLanguages)
 	}
-	if s.MaxFileSizeMB != 777 {
-		t.Errorf("MaxFileSizeMB = %d, want 777", s.MaxFileSizeMB)
+	if s.MaxAudiobookSizeMB != 777 {
+		t.Errorf("MaxAudiobookSizeMB = %d, want 777", s.MaxAudiobookSizeMB)
 	}
 	if !s.PreferSingleFileM4B {
 		t.Errorf("expected boolean env override true, got preferM4B=%v", s.PreferSingleFileM4B)
@@ -132,7 +132,7 @@ func TestLoad_DatabaseAndDefaultFallbackWhenEnvUnset(t *testing.T) {
 		('library_root', '/mnt/audiobooks'),
 		('prowlarr_url', 'http://prowlarr.local:9696/'),
 		('allowed_formats', '["EPUB","PDF"]'),
-		('max_file_size_mb', '4096')
+		('max_audiobook_size_mb', '4096')
 	`)
 	if err != nil {
 		t.Fatalf("insert settings: %v", err)
@@ -153,8 +153,8 @@ func TestLoad_DatabaseAndDefaultFallbackWhenEnvUnset(t *testing.T) {
 	if !reflect.DeepEqual(s.AllowedFormats, []string{"EPUB", "PDF"}) {
 		t.Errorf("AllowedFormats = %v, want [EPUB PDF]", s.AllowedFormats)
 	}
-	if s.MaxFileSizeMB != 4096 {
-		t.Errorf("MaxFileSizeMB = %d, want 4096", s.MaxFileSizeMB)
+	if s.MaxAudiobookSizeMB != 4096 {
+		t.Errorf("MaxAudiobookSizeMB = %d, want 4096", s.MaxAudiobookSizeMB)
 	}
 	if resolved.Overrides[KeyLibraryRoot].IsOverridden {
 		t.Errorf("expected library_root IsOverridden=false when env var unset")
@@ -168,10 +168,10 @@ func TestSaveNonOverridden_ProtectsEnvOverriddenKeys(t *testing.T) {
 	t.Setenv("CALLIMACHUS_PROWLARR_URL", "http://env-prowlarr:9696")
 
 	resolved, err := SaveNonOverridden(ctx, db, map[string]string{
-		KeyProwlarrURL:    "http://attempted-db-overwrite:9696",
-		KeyLibraryRoot:    "/data/library",
-		KeyMaxFileSizeMB:  "1536",
-		KeyAllowedFormats: "EPUB,M4B,MP3",
+		KeyProwlarrURL:        "http://attempted-db-overwrite:9696",
+		KeyLibraryRoot:        "/data/library",
+		KeyMaxAudiobookSizeMB: "1536",
+		KeyAllowedFormats:     "EPUB,M4B,MP3",
 	}, Overrides{})
 	if err != nil {
 		t.Fatalf("SaveNonOverridden failed: %v", err)
@@ -183,8 +183,8 @@ func TestSaveNonOverridden_ProtectsEnvOverriddenKeys(t *testing.T) {
 	if resolved.Settings.LibraryRoot != "/data/library" {
 		t.Errorf("LibraryRoot = %q, want /data/library", resolved.Settings.LibraryRoot)
 	}
-	if resolved.Settings.MaxFileSizeMB != 1536 {
-		t.Errorf("MaxFileSizeMB = %d, want 1536", resolved.Settings.MaxFileSizeMB)
+	if resolved.Settings.MaxAudiobookSizeMB != 1536 {
+		t.Errorf("MaxAudiobookSizeMB = %d, want 1536", resolved.Settings.MaxAudiobookSizeMB)
 	}
 	if !reflect.DeepEqual(resolved.Settings.AllowedFormats, []string{"EPUB", "M4B", "MP3"}) {
 		t.Errorf("AllowedFormats = %v, want [EPUB M4B MP3]", resolved.Settings.AllowedFormats)
@@ -228,8 +228,8 @@ func TestEbookSizeConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.Settings.ToQualityProfile().MaxFileSizeMB != 1536 {
-		t.Fatal("expected 1.5 GB general file size default")
+	if resolved.Settings.ToQualityProfile().MaxAudiobookSizeMB != 1536 {
+		t.Fatal("expected 1,536 MB audiobook size default")
 	}
 	if resolved.Settings.ToQualityProfile().MaxEbookSizeBytes != 100*1024*1024 {
 		t.Fatal("missing default")
@@ -318,5 +318,14 @@ func TestEbookConversionSettings(t *testing.T) {
 	got, err = SaveNonOverridden(ctx, db, map[string]string{KeyEbookTargetFormat: "AZW3"}, Overrides{})
 	if err != nil || got.Settings.EbookTargetFormat != "EPUB" || !got.Overrides[KeyEbookTargetFormat].IsOverridden {
 		t.Fatalf("override: %+v %v", got, err)
+	}
+}
+
+func TestAudiobookSizeInvalidEnvironment(t *testing.T) {
+	for _, value := range []string{"-1", "1.5", "8796093022208"} {
+		t.Setenv("CALLIMACHUS_MAX_AUDIOBOOK_SIZE_MB", value)
+		if _, err := Load(context.Background(), nil, Overrides{}); err == nil {
+			t.Fatalf("accepted invalid audiobook size %q", value)
+		}
 	}
 }

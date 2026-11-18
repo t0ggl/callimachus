@@ -632,3 +632,44 @@ func TestMigrationConversionTerminologyPreservesQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestMigrationAudiobookSizePreservesSettings(t *testing.T) {
+	for _, existingNew := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existingNew=%v", existingNew), func(t *testing.T) {
+			db, _ := openMigratedTestDB(t)
+			ctx := context.Background()
+			if _, err := db.Exec(`
+DELETE FROM schema_migrations WHERE version='0010_audiobook_size_limit.sql';
+INSERT INTO settings (key,value,updated_at) VALUES
+('max_file_size_mb','4096','2025-01-01 00:00:00'), ('max_ebook_size_mb','200','2025-01-01 00:00:00');`); err != nil {
+				t.Fatal(err)
+			}
+			want := "4096"
+			if existingNew {
+				want = "0"
+				if _, err := db.Exec(`INSERT INTO settings (key,value,updated_at) VALUES ('max_audiobook_size_mb','0','2025-01-01 00:00:00')`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for range 2 {
+				if err := db.Migrate(ctx); err != nil {
+					t.Fatal(err)
+				}
+				var audio, ebook string
+				if err := db.QueryRow(`SELECT value FROM settings WHERE key='max_audiobook_size_mb'`).Scan(&audio); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.QueryRow(`SELECT value FROM settings WHERE key='max_ebook_size_mb'`).Scan(&ebook); err != nil {
+					t.Fatal(err)
+				}
+				var legacy int
+				if err := db.QueryRow(`SELECT count(*) FROM settings WHERE key='max_file_size_mb'`).Scan(&legacy); err != nil {
+					t.Fatal(err)
+				}
+				if audio != want || ebook != "200" || legacy != 0 {
+					t.Fatalf("audio=%s ebook=%s legacy rows=%d", audio, ebook, legacy)
+				}
+			}
+		})
+	}
+}

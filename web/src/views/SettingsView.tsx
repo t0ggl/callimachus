@@ -42,7 +42,7 @@ export interface SettingsUpdatePayload {
     ebookFormatPreferences?: FormatType[];
     convertEbooks?: boolean;
     ebookTargetFormat?: 'EPUB' | 'AZW3';
-    maxFileSizeMb?: number;
+    maxAudiobookSizeMb?: number;
     maxEbookSizeBytes?: number;
   };
 }
@@ -97,7 +97,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     ...initialQuality,
     allowedLanguages: initialQuality.allowedLanguages ?? ['en'],
     allowedFormats: initialQuality.allowedFormats ?? ['EPUB', 'M4B'],
-    maxFileSizeMb: initialQuality.maxFileSizeMb ?? 1536,
+    maxAudiobookSizeMb: initialQuality.maxAudiobookSizeMb ?? 1536,
     maxEbookSizeBytes: initialQuality.maxEbookSizeBytes ?? 100 * 1024 * 1024,
     ebookFormatPreferences: initialQuality.ebookFormatPreferences ?? DEFAULT_EBOOK_PREFERENCES,
     convertEbooks: initialQuality.convertEbooks ?? false,
@@ -127,7 +127,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       ...initialQuality,
       allowedLanguages: langs,
       allowedFormats: initialQuality.allowedFormats ?? ['EPUB', 'M4B'],
-      maxFileSizeMb: initialQuality.maxFileSizeMb ?? 1536,
+      maxAudiobookSizeMb: initialQuality.maxAudiobookSizeMb ?? 1536,
       maxEbookSizeBytes: initialQuality.maxEbookSizeBytes ?? 100 * 1024 * 1024,
       ebookFormatPreferences: initialQuality.ebookFormatPreferences ?? DEFAULT_EBOOK_PREFERENCES,
       convertEbooks: initialQuality.convertEbooks ?? false,
@@ -219,8 +219,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         ...(!isOverridden('max_ebook_size_mb')
           ? { maxEbookSizeBytes: qualityProfile.maxEbookSizeBytes }
           : {}),
-        ...(!isOverridden('max_file_size_mb')
-          ? { maxFileSizeMb: qualityProfile.maxFileSizeMb }
+        ...(!isOverridden('max_audiobook_size_mb')
+          ? { maxAudiobookSizeMb: qualityProfile.maxAudiobookSizeMb }
           : {}),
       },
     };
@@ -782,26 +782,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <div className="max-w-sm">
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label htmlFor="max-file-size-mb" className="block text-zinc-400 font-medium">
-                    Max File Size (MB)
+                  <label htmlFor="max-audiobook-size-mb" className="block text-zinc-400 font-medium">
+                    Max Audiobook Size (MB)
                   </label>
-                  <OverrideBadge settingKey="max_file_size_mb" />
+                  <OverrideBadge settingKey="max_audiobook_size_mb" />
                 </div>
                 <input
-                  id="max-file-size-mb"
+                  id="max-audiobook-size-mb"
                   type="number"
                   min={0}
-                  value={qualityProfile.maxFileSizeMb}
-                  disabled={isOverridden('max_file_size_mb')}
+                  step={1}
+                  aria-describedby="max-audiobook-size-help"
+                  value={qualityProfile.maxAudiobookSizeMb}
+                  disabled={isOverridden('max_audiobook_size_mb')}
                   onChange={(e) =>
                     setQualityProfile((prev) => ({
                       ...prev,
-                      maxFileSizeMb: Number(e.target.value),
+                      maxAudiobookSizeMb: Number(e.target.value),
                     }))
                   }
-                  className={inputClass(isOverridden('max_file_size_mb'))}
+                  className={inputClass(isOverridden('max_audiobook_size_mb'))}
                 />
-                <OverrideNote settingKey="max_file_size_mb" />
+                <p id="max-audiobook-size-help" className="mt-1.5 text-xs text-zinc-400">
+                  Applies only to audiobook downloads. 0 disables the audiobook limit; 1 MB = 1,048,576 bytes.
+                </p>
+                <OverrideNote settingKey="max_audiobook_size_mb" />
               </div>
             </div>
 
@@ -827,7 +832,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 className={inputClass(isOverridden('max_ebook_size_mb'))}
               />
               <p id="max-ebook-size-help" className="mt-1.5 text-xs text-zinc-400">
-                Reject oversized eBook downloads such as large scans and omnibus archives. Audiobooks use the general file size limit above. 0 disables the eBook limit; 1 MB = 1,048,576 bytes.
+                Reject oversized eBook downloads such as large scans and omnibus archives. This limit applies only to eBooks. 0 disables the eBook limit; 1 MB = 1,048,576 bytes.
               </p>
               <OverrideNote settingKey="max_ebook_size_mb" />
             </div>
