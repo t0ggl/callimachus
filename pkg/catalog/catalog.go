@@ -689,6 +689,18 @@ func (c *Catalog) ReconcileScannedBook(ctx context.Context, sb *ScannedBook) (*I
 		return nil, ErrMissingTitle
 	}
 
+	// Rescans backfill missing artwork without moving or reimporting media.
+	for _, media := range sb.MediaFiles {
+		target := strings.TrimSuffix(media.Path, filepath.Ext(media.Path)) + ".jpg"
+		if validCover(sb.CoverPath) {
+			break
+		}
+		if ensureCover(media.Path, target, nil) {
+			sb.CoverPath = target
+			break
+		}
+	}
+
 	author, err := c.GetOrCreateAuthor(ctx, sb.Author)
 	if err != nil {
 		return nil, fmt.Errorf("reconcile author: %w", err)

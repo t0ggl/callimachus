@@ -295,7 +295,7 @@ func TestOrganizeBook_WithSidecarAndCover(t *testing.T) {
 		t.Fatalf("write src media: %v", err)
 	}
 
-	coverBytes := []byte("synthetic jpeg image bytes")
+	coverBytes := testCoverJPEG(t)
 	book := BookDetails{
 		Title:       "Synthetic Chronicles Alpha",
 		Author:      "Synthetic Creator",
@@ -370,7 +370,7 @@ func TestOrganizeBook_EPUB_CoverExtraction(t *testing.T) {
 	srcMedia := filepath.Join(srcDir, "book_with_cover.epub")
 
 	// Create a minimal valid EPUB with an embedded cover
-	coverImageBytes := []byte("image/jpeg cover binary data")
+	coverImageBytes := testCoverJPEG(t)
 	createTestEPUBWithCover(t, srcMedia, coverImageBytes)
 
 	book := BookDetails{

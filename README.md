@@ -158,3 +158,17 @@ Existing queue data is preserved when upgrading to the conversion terminology.
 Local password login is disabled unless `CALLIMACHUS_ADMIN_PASSWORD` is explicitly
 set. There is no default password. Authentication settings and password status are
 never shown in Settings. Deployment examples do not supply an admin password.
+
+### Embedded library covers
+
+Imports extract embedded covers from EPUB, M4B (MP4 `covr` metadata), and MP3
+(ID3v2.3/v2.4 APIC frames). With optional Calibre `ebook-meta` installed, cover
+extraction is also attempted for AZW3, MOBI, PDF, CBZ, and CBR files. Image support
+includes JPEG, PNG, and GIF; extracted artwork is validated and saved as the
+canonical companion `.jpg`. Unsupported image encodings, missing artwork, and
+malformed metadata do not prevent imports. Source media is never rewritten for
+cover extraction, and existing valid companion artwork is preserved.
+
+Use **Scan library** to populate missing covers on existing library files without
+importing them again. Library and detail views load companion artwork through the
+book's `/api/books/{id}/cover` URL, associated through its catalogued media asset.

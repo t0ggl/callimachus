@@ -177,29 +177,12 @@ func OrganizeBook(libraryRoot string, book BookDetails, mediaSrcPath string, cov
 	// Handle companion cover image
 	coverPath := filepath.Join(titleDir, basename+".jpg")
 	var finalCoverPath string
-	if len(coverData) > 0 {
-		if err := os.WriteFile(filepath.Join(staging, "cover.jpg"), coverData, 0644); err != nil {
-			return nil, fmt.Errorf("write cover file %s: %w", coverPath, err)
-		}
+	if ensureCover(mediaSrcPath, coverPath, coverData) {
 		finalCoverPath = coverPath
-	} else if strings.EqualFold(ext, ".epub") {
-		// Attempt extraction from canonical EPUB file
-		if ep, err := epub.Open(mediaSrcPath); err == nil {
-			if err := ep.ExtractCover(filepath.Join(staging, "cover.jpg")); err == nil {
-				if fi, err := os.Stat(filepath.Join(staging, "cover.jpg")); err == nil && fi.Size() > 0 {
-					finalCoverPath = coverPath
-				}
-			}
-		}
 	}
 
 	if err := AtomicMove(filepath.Join(staging, "metadata.opf"), opfPath); err != nil {
 		return nil, err
-	}
-	if finalCoverPath != "" {
-		if err := AtomicMove(filepath.Join(staging, "cover.jpg"), coverPath); err != nil {
-			return nil, err
-		}
 	}
 	if err := AtomicMove(mediaSrcPath, mediaPath); err != nil {
 		return nil, fmt.Errorf("atomic move media file: %w", err)
