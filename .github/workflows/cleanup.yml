@@ -28,10 +28,14 @@ concurrency:
 jobs:
   cleanup:
     name: Cleanup GHCR Images & Releases
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install GitHub CLI
+        if: ${{ runner.environment == 'self-hosted' }}
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gh jq
 
       - name: Prune untagged container images
         uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1
