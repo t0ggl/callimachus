@@ -130,7 +130,7 @@ describe('App Integration', () => {
     await user.click(settingsNav);
 
     expect(screen.getByRole('heading', { name: /System Settings/i })).toBeInTheDocument();
-    expect(screen.getByText('Indexers & Prowlarr')).toBeInTheDocument();
+    expect(screen.getByText('Indexers & Metadata')).toBeInTheDocument();
   });
 
   it('counts downloading, converting and importing items and opens Activity', async () => {

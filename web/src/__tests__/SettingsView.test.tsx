@@ -305,3 +305,66 @@ it('never exposes local admin password indicators', () => {
   render(<SettingsView indexers={[]} librarySettings={baseLibrary} prowlarrSettings={baseProwlarr} qualityProfile={baseQuality} />);
   expect(screen.queryByText(/Argon2id|Configured & Encrypted|admin password|local password/i)).not.toBeInTheDocument();
 });
+
+describe('Connection tests', () => {
+  it.each([
+    ['prowlarr', 'Prowlarr', 'Prowlarr API Key'],
+    ['google-books', 'Google Books', 'Google Books API key (optional)'],
+    ['hardcover', 'Hardcover', 'Hardcover API key'],
+  ])('tests %s with unsaved values and shows progress and success without saving or syncing', async (service, label, field) => {
+    const user = userEvent.setup({ delay: null });
+    let finish!: (value: unknown) => void;
+    const fetchMock = vi.fn(() => new Promise(resolve => { finish = resolve; }));
+    vi.stubGlobal('fetch', fetchMock);
+    const save = vi.fn(); const sync = vi.fn();
+    try {
+      render(<SettingsView indexers={[]} qualityProfile={baseQuality} prowlarrSettings={baseProwlarr} onSaveSettings={save} onSyncIndexers={sync} />);
+      await user.type(screen.getByLabelText(field), 'draft-key');
+      const button = screen.getByRole('button', { name: `Test ${label} connection` });
+      await user.click(button);
+      expect(button).toBeDisabled();
+      expect(button).toHaveTextContent('Testing…');
+      expect(fetchMock).toHaveBeenCalledWith(`/api/settings/${service}/test`, expect.objectContaining({
+        method: 'POST', body: JSON.stringify(service === 'prowlarr' ? { url: baseProwlarr.url, apiKey: 'draft-key' } : { apiKey: 'draft-key' }),
+      }));
+      finish({ ok: true, json: async () => ({ message: 'Connection successful.' }) });
+      expect(await screen.findByText('Connection successful.')).toBeInTheDocument();
+      expect(button).toBeEnabled(); expect(save).not.toHaveBeenCalled(); expect(sync).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it.each(['prowlarr', 'google-books', 'hardcover'])('shows actionable %s failure and allows retry with blank saved credentials', async service => {
+    const user = userEvent.setup({ delay: null });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ message: 'Authentication failed. Check the API key and service permissions.' }) });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(<SettingsView indexers={[]} qualityProfile={baseQuality} prowlarrSettings={baseProwlarr} />);
+      const label = service === 'prowlarr' ? 'Prowlarr' : service === 'google-books' ? 'Google Books' : 'Hardcover';
+      const button = screen.getByRole('button', { name: `Test ${label} connection` });
+      await user.click(button);
+      expect(await screen.findByText(/Authentication failed/)).toBeInTheDocument();
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body).apiKey).toBe('');
+      expect(button).toBeEnabled();
+      fetchMock.mockRejectedValueOnce(new Error('network'));
+      await user.click(button);
+      expect(await screen.findByText('Unable to test connection. Check your network and retry.')).toBeInTheDocument();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('keeps metadata in separate sections and allows testing locked providers', async () => {
+    const user = userEvent.setup({ delay: null });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ message: 'Connection successful.' }) });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const overrides = Object.fromEntries(['google_books_api_key', 'hardcover_api_key', 'prowlarr_api_key'].map(key => [key, { isOverridden: true, overriddenBy: `CALLIMACHUS_${key.toUpperCase()}`, envVar: `CALLIMACHUS_${key.toUpperCase()}` }]));
+      render(<SettingsView indexers={[]} qualityProfile={baseQuality} overrides={overrides} />);
+      for (const [label, field] of [['Google Books', 'Google Books API key (optional)'], ['Hardcover', 'Hardcover API key'], ['Prowlarr', 'Prowlarr API Key']]) {
+        expect(screen.getByLabelText(field)).toBeDisabled();
+        await user.click(screen.getByRole('button', { name: `Test ${label} connection` }));
+      }
+      expect(screen.getByRole('region', { name: 'Google Books' })).toContainElement(screen.getByLabelText('Google Books API key (optional)'));
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(screen.getByTestId('override-note-hardcover_api_key')).toHaveTextContent('CALLIMACHUS_HARDCOVER_API_KEY');
+    } finally { vi.unstubAllGlobals(); }
+  });
+});

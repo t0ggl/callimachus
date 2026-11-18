@@ -91,6 +91,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [prowlarrSettings, setProwlarrSettings] = useState<ProwlarrSettings>(initialProwlarr);
   const [prowlarrApiKeyDraft, setProwlarrApiKeyDraft] = useState('');
  const [metadataKeys,setMetadataKeys]=useState<Record<string,string>>({});
+  const [connectionTests, setConnectionTests] = useState<Record<string, { pending: boolean; ok?: boolean; message?: string }>>({});
 
   const [qualityProfile, setQualityProfile] = useState<QualityProfile>({
     ...initialQuality,
@@ -266,6 +267,35 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
+  const testConnection = async (service: string) => {
+    setConnectionTests(prev => ({ ...prev, [service]: { pending: true } }));
+    const payload = service === 'prowlarr'
+      ? { url: prowlarrSettings.url, apiKey: prowlarrApiKeyDraft }
+      : { apiKey: metadataKeys[service === 'google-books' ? 'google_books_api_key' : 'hardcover_api_key'] || '' };
+    try {
+      const response = await fetch(`/api/settings/${service}/test`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      setConnectionTests(prev => ({ ...prev, [service]: { pending: false, ok: response.ok, message: data.message } }));
+    } catch {
+      setConnectionTests(prev => ({ ...prev, [service]: { pending: false, ok: false, message: 'Unable to test connection. Check your network and retry.' } }));
+    }
+  };
+
+  const connectionControl = (service: string, label: string) => (
+    <div className="space-y-2">
+      <button type="button" aria-label={`Test ${label} connection`} disabled={connectionTests[service]?.pending}
+        onClick={() => void testConnection(service)}
+        className="px-3.5 py-2 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 text-zinc-100 border border-zinc-700 rounded-md text-xs font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400">
+        {connectionTests[service]?.pending ? 'Testing…' : 'Test connection'}
+      </button>
+      <p role="status" aria-live="polite" className={`text-xs ${connectionTests[service]?.ok ? 'text-emerald-300' : 'text-rose-300'}`}>
+        {connectionTests[service]?.message}
+      </p>
+    </div>
+  );
+
   const toggleIndexer = (id: string) => {
     setIndexers((prev) =>
       prev.map((idx) => (idx.id === id ? { ...idx, enabled: !idx.enabled } : idx))
@@ -337,7 +367,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           }`}
         >
           <Globe className="w-3.5 h-3.5 text-blue-400" />
-          Indexers & Prowlarr
+          Indexers & Metadata
         </button>
 
         <button
@@ -390,6 +420,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </button>
             </div>
 
+            {connectionControl('prowlarr', 'Prowlarr')}
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs pt-2 border-t border-zinc-800/80">
               <div>
                 <div className="flex items-center justify-between mb-1">
@@ -431,12 +463,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <OverrideNote settingKey="prowlarr_api_key" />
               </div>
 
-              {(['google_books_api_key','hardcover_api_key'] as const).map(key=><div key={key}>
-                <label htmlFor={key} className="block text-zinc-300">{key==='google_books_api_key'?'Google Books API key (optional)':'Hardcover API key'}</label>
-                <OverrideBadge settingKey={key}/>
-                <input id={key} type="password" autoComplete="off" value={metadataKeys[key]||''} onChange={e=>setMetadataKeys(prev=>({...prev,[key]:e.target.value}))} disabled={isOverridden(key)} placeholder="Leave blank to keep current key" className={inputClass(isOverridden(key))}/>
-                <OverrideNote settingKey={key}/>
-              </div>)}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label htmlFor="prowlarr-sync-interval" className="block text-zinc-400 font-medium">
@@ -459,6 +485,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
             </div>
           </div>
+
+          <section aria-label="Metadata providers" className="space-y-4">
+            <h2 className="text-sm font-semibold text-zinc-100">Metadata providers</h2>
+            {(['google_books_api_key', 'hardcover_api_key'] as const).map(key => {
+              const google = key === 'google_books_api_key';
+              const label = google ? 'Google Books' : 'Hardcover';
+              return (
+                <section key={key} aria-label={label} className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-3">
+                  <h3 className="text-sm font-semibold text-zinc-100">{label}</h3>
+                  <div className="max-w-lg space-y-1">
+                    <label htmlFor={key} className="block text-xs text-zinc-300">{label} API key{google ? ' (optional)' : ''}</label>
+                    <OverrideBadge settingKey={key} />
+                    <input id={key} type="password" autoComplete="off" value={metadataKeys[key] || ''}
+                      onChange={e => setMetadataKeys(prev => ({ ...prev, [key]: e.target.value }))}
+                      disabled={isOverridden(key)} placeholder="Leave blank to keep current key" className={inputClass(isOverridden(key))} />
+                    <OverrideNote settingKey={key} />
+                    <p className="text-xs text-zinc-400">{google ? 'An API key is optional. Without one, tests use public access unless a saved key exists.' : 'Leave blank to test with your saved API key.'}</p>
+                  </div>
+                  {connectionControl(google ? 'google-books' : 'hardcover', label)}
+                </section>
+              );
+            })}
+          </section>
 
           {syncSuccess && (
             <div className="p-3 bg-emerald-950/60 border border-emerald-800 text-emerald-300 text-xs rounded-lg flex items-center gap-2">
