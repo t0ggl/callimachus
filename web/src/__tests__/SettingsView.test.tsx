@@ -27,7 +27,7 @@ const baseQuality: QualityProfile = {
   allowedLanguages: ['en'],
   allowedFormats: ['EPUB', 'M4B'],
   preferSingleFileM4b: true,
-  maxFileSizeMb: 4096,
+  maxAudiobookSizeMb: 4096,
   maxEbookSizeBytes: 100 * 1024 * 1024,
 };
 
@@ -42,10 +42,10 @@ const baseOverrides: SettingsOverridesMap = {
     overriddenBy: 'CALLIMACHUS_LIBRARY_ROOT',
     envVar: 'CALLIMACHUS_LIBRARY_ROOT',
   },
-  max_file_size_mb: {
+  max_audiobook_size_mb: {
     isOverridden: true,
-    overriddenBy: 'CALLIMACHUS_MAX_FILE_SIZE_MB',
-    envVar: 'CALLIMACHUS_MAX_FILE_SIZE_MB',
+    overriddenBy: 'CALLIMACHUS_MAX_AUDIOBOOK_SIZE_MB',
+    envVar: 'CALLIMACHUS_MAX_AUDIOBOOK_SIZE_MB',
   },
   max_ebook_size_mb: {
     isOverridden: true,
@@ -102,11 +102,11 @@ describe('SettingsView Environment Overrides', () => {
 
     // Tab 4: Quality & Profiles
     await user.click(screen.getByTestId('tab-settings-quality'));
-    expect(screen.getByLabelText('Max File Size (MB)')).toBeDisabled();
+    expect(screen.getByLabelText('Max Audiobook Size (MB)')).toBeDisabled();
     expect(screen.getByLabelText('Maximum eBook File Size (MB)')).toBeDisabled();
     expect(screen.getByTestId('override-note-max_ebook_size_mb')).toHaveTextContent('CALLIMACHUS_MAX_EBOOK_SIZE_MB');
-    expect(screen.getByTestId('override-note-max_file_size_mb')).toHaveTextContent(
-      'Managed via environment variable CALLIMACHUS_MAX_FILE_SIZE_MB and cannot be modified here.'
+    expect(screen.getByTestId('override-note-max_audiobook_size_mb')).toHaveTextContent(
+      'Managed via environment variable CALLIMACHUS_MAX_AUDIOBOOK_SIZE_MB and cannot be modified here.'
     );
     for (const format of ['EPUB', 'AZW3', 'MOBI', 'CBR', 'CBZ']) {
       expect(screen.getByRole('button', { name: format })).toBeDisabled();
@@ -162,7 +162,7 @@ describe('SettingsView Environment Overrides', () => {
 
     expect(payload.qualityProfile).not.toHaveProperty('audioMinBitrateKbps');
     expect(payload.qualityProfile).not.toHaveProperty('audioTargetBitrateKbps');
-    expect(payload.qualityProfile.maxFileSizeMb).toBeUndefined();
+    expect(payload.qualityProfile.maxAudiobookSizeMb).toBeUndefined();
     expect(payload.qualityProfile.maxEbookSizeBytes).toBeUndefined();
     expect(payload.qualityProfile.allowedFormats).toBeUndefined();
 
@@ -367,4 +367,23 @@ describe('Connection tests', () => {
       expect(screen.getByTestId('override-note-hardcover_api_key')).toHaveTextContent('CALLIMACHUS_HARDCOVER_API_KEY');
     } finally { vi.unstubAllGlobals(); }
   });
+});
+
+it('saves independent audiobook and ebook sizes with clear units', async () => {
+  const user = userEvent.setup({ delay: null });
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<SettingsView indexers={[]} qualityProfile={baseQuality} onSaveSettings={save} />);
+  await user.click(screen.getByTestId('tab-settings-quality'));
+  const audio = screen.getByLabelText('Max Audiobook Size (MB)');
+  const ebook = screen.getByLabelText('Maximum eBook File Size (MB)');
+  expect(audio).toHaveAccessibleDescription(/only to audiobook downloads.*1 MB = 1,048,576 bytes/);
+  expect(ebook).toHaveAccessibleDescription(/only to eBooks.*1 MB = 1,048,576 bytes/);
+  await user.clear(audio);
+  await user.type(audio, '50');
+  await user.clear(ebook);
+  await user.type(ebook, '200');
+  await user.click(screen.getByTestId('save-settings-btn'));
+  expect(save).toHaveBeenCalledWith(expect.objectContaining({
+    qualityProfile: expect.objectContaining({ maxAudiobookSizeMb: 50, maxEbookSizeBytes: 200 * 1024 * 1024 }),
+  }));
 });

@@ -141,7 +141,7 @@ type APIQualityProfileSettings struct {
 	AllowedLanguages       []string `json:"allowedLanguages"`
 	AllowedFormats         []string `json:"allowedFormats"`
 	PreferSingleFileM4b    bool     `json:"preferSingleFileM4b"`
-	MaxFileSizeMb          int      `json:"maxFileSizeMb"`
+	MaxAudiobookSizeMb     int      `json:"maxAudiobookSizeMb"`
 	MaxEbookSizeBytes      int64    `json:"maxEbookSizeBytes"`
 	EbookFormatPreferences []string `json:"ebookFormatPreferences"`
 }
@@ -175,7 +175,7 @@ type APISettingsUpdateRequest struct {
 		AllowedLanguages       *[]string `json:"allowedLanguages"`
 		AllowedFormats         *[]string `json:"allowedFormats"`
 		PreferSingleFileM4b    *bool     `json:"preferSingleFileM4b"`
-		MaxFileSizeMb          *int      `json:"maxFileSizeMb"`
+		MaxAudiobookSizeMb     *int      `json:"maxAudiobookSizeMb"`
 		MaxEbookSizeBytes      *int64    `json:"maxEbookSizeBytes"`
 		EbookFormatPreferences *[]string `json:"ebookFormatPreferences"`
 	} `json:"qualityProfile"`
@@ -521,7 +521,7 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 		AllowedLanguages:       cfg.AllowedLanguages,
 		AllowedFormats:         cfg.AllowedFormats,
 		PreferSingleFileM4b:    cfg.PreferSingleFileM4B,
-		MaxFileSizeMb:          cfg.MaxFileSizeMB,
+		MaxAudiobookSizeMb:     cfg.MaxAudiobookSizeMB,
 		MaxEbookSizeBytes:      cfg.MaxEbookSizeBytes,
 		EbookFormatPreferences: cfg.EbookFormatPreferences,
 	}
@@ -685,8 +685,8 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 				updates[config.KeyMaxEbookSizeMB] = strconv.FormatInt(*size/(1024*1024), 10)
 			}
 		}
-		if req.QualityProfile.MaxFileSizeMb != nil {
-			updates[config.KeyMaxFileSizeMB] = strconv.Itoa(*req.QualityProfile.MaxFileSizeMb)
+		if req.QualityProfile.MaxAudiobookSizeMb != nil {
+			updates[config.KeyMaxAudiobookSizeMB] = strconv.Itoa(*req.QualityProfile.MaxAudiobookSizeMb)
 		}
 	}
 

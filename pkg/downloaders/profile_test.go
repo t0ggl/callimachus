@@ -363,13 +363,13 @@ func TestPackageEvaluateRelease(t *testing.T) {
 	}
 }
 
-func TestQualityProfile_EvaluateRelease_MaxFileSizeMB(t *testing.T) {
+func TestQualityProfile_EvaluateRelease_MaxAudiobookSizeMB(t *testing.T) {
 	t.Parallel()
 
 	profile := QualityProfile{
-		AllowedLanguages: []string{"en"},
-		AllowedFormats:   []string{"epub", "m4b"},
-		MaxFileSizeMB:    500,
+		AllowedLanguages:   []string{"en"},
+		AllowedFormats:     []string{"epub", "m4b"},
+		MaxAudiobookSizeMB: 500,
 	}
 
 	okCandidate := ReleaseCandidate{
@@ -430,9 +430,9 @@ func TestQualityProfile_EbookSize(t *testing.T) {
 	if ok, _ := profile.EvaluateRelease(ReleaseCandidate{Format: "epub", Size: 500 * mb}); !ok {
 		t.Fatal("zero should disable ebook limit")
 	}
-	profile.MaxFileSizeMB = 300
+	profile.MaxAudiobookSizeMB = 300
 	if ok, _ := profile.EvaluateRelease(ReleaseCandidate{Format: "m4b", Size: 500 * mb}); ok {
-		t.Fatal("audio must retain general size limit")
+		t.Fatal("audio must use audiobook size limit")
 	}
 }
 
@@ -499,5 +499,47 @@ func TestAudiobookFormatsAlwaysAcceptedAndM4BPreferred(t *testing.T) {
 	ranked := profile.RankReleases(releases)
 	if len(ranked) != 2 || ranked[0].Format != "M4B" {
 		t.Fatalf("audio must remain enabled and prefer M4B: %+v", ranked)
+	}
+}
+
+func TestQualityProfile_IndependentMediaSizeLimits(t *testing.T) {
+	const mb = 1024 * 1024
+	for _, limits := range []struct {
+		name             string
+		audioMB, ebookMB int
+	}{
+		{"audio smaller", 100, 300},
+		{"ebook smaller", 300, 100},
+		{"audio disabled", 0, 100},
+		{"ebook disabled", 100, 0},
+	} {
+		t.Run(limits.name, func(t *testing.T) {
+			profile := DefaultQualityProfile()
+			profile.AllowedFormats = nil
+			profile.MaxAudiobookSizeMB = limits.audioMB
+			profile.MaxEbookSizeBytes = int64(limits.ebookMB) * mb
+			for _, candidate := range []ReleaseCandidate{
+				{Format: "epub"}, {Format: "pdf"}, {Title: "Book.azw3"},
+				{Format: "m4b"}, {Title: "Book.mp3"}, {IsAudio: true},
+				{Categories: []int{3030}},
+			} {
+				isAudio := candidate.Format == "m4b" || candidate.Title == "Book.mp3" || candidate.IsAudio || len(candidate.Categories) > 0
+				limit := limits.ebookMB
+				if isAudio {
+					limit = limits.audioMB
+				}
+				for _, size := range []int64{0, 100 * mb, 100*mb + 1, 200 * mb, 300 * mb, 300*mb + 1} {
+					candidate.Size = size
+					want := limit == 0 || size <= int64(limit)*mb
+					accepted, reason, err := ShouldDownload(context.Background(), profile, nil, candidate)
+					if err != nil || accepted != want {
+						t.Fatalf("candidate=%+v limit=%d: accepted=%v reason=%s err=%v", candidate, limit, accepted, reason, err)
+					}
+					if ranked := profile.RankReleases([]ReleaseCandidate{candidate}); (len(ranked) == 1) != want {
+						t.Fatalf("ranking ignored media size limit: %+v", candidate)
+					}
+				}
+			}
+		})
 	}
 }

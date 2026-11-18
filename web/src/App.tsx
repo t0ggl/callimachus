@@ -50,7 +50,7 @@ export const App: React.FC = () => {
     allowedLanguages: ['en'],
     allowedFormats: ['EPUB', 'M4B'],
     preferSingleFileM4b: true,
-    maxFileSizeMb: 1536,
+    maxAudiobookSizeMb: 1536,
     maxEbookSizeBytes: 100 * 1024 * 1024,
   });
   const [settingsOverrides, setSettingsOverrides] = useState<SettingsOverridesMap>({});
