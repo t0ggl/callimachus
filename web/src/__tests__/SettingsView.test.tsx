@@ -173,7 +173,7 @@ describe('SettingsView Environment Overrides', () => {
   });
 });
 
-it('offers common ebook formats and saves selections with the exact audiobook conversion label', async () => {
+it('offers ebook formats while keeping audiobook handling automatic', async () => {
   const user = userEvent.setup({ delay: null });
   const onSaveSettings = vi.fn().mockResolvedValue(undefined);
   render(
@@ -194,16 +194,13 @@ it('offers common ebook formats and saves selections with the exact audiobook co
     await user.click(button);
     expect(button).toHaveAttribute('aria-pressed', 'true');
   }
-  const conversion = screen.getByRole('checkbox', {
-    name: 'Automatically convert audiobooks to M4B format',
-  });
-  expect(conversion).toBeChecked();
-  await user.click(conversion);
+  expect(screen.queryByRole('button', { name: /^M4B/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /^MP3/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('checkbox', { name: /convert audiobooks/i })).not.toBeInTheDocument();
   await user.click(screen.getByTestId('save-settings-btn'));
   expect(onSaveSettings).toHaveBeenCalledWith(expect.objectContaining({
     qualityProfile: expect.objectContaining({
       allowedFormats: ['EPUB', 'M4B', ...formats],
-      preferSingleFileM4b: false,
     }),
   }));
 });

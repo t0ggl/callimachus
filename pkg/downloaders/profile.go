@@ -213,7 +213,7 @@ func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string)
 		}
 	}
 
-	if len(p.AllowedFormats) > 0 {
+	if len(p.AllowedFormats) > 0 && format != "m4b" && format != "mp3" {
 		if format == "" {
 			return false, "release format could not be determined"
 		}
@@ -251,14 +251,11 @@ func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string)
 	return true, ""
 }
 
-// ScoreRelease assigns a higher score to a more preferred ebook format.
-// Rejected releases score -1; audio and unranked formats score zero.
+// ScoreRelease ranks ebook preferences and always prefers M4B over MP3.
+// Rejected releases score -1; MP3 and unranked formats score zero.
 func (p QualityProfile) ScoreRelease(release ReleaseCandidate) int {
 	if accepted, _ := p.EvaluateRelease(release); !accepted {
 		return -1
-	}
-	if release.IsAudio {
-		return 0
 	}
 	format := NormalizeFormat(release.Format)
 	if format == "" {
@@ -267,7 +264,10 @@ func (p QualityProfile) ScoreRelease(release ReleaseCandidate) int {
 			format = SanitizeExt(release.Title)
 		}
 	}
-	if format == "m4b" || format == "mp3" {
+	if format == "m4b" {
+		return 1
+	}
+	if release.IsAudio || format == "mp3" {
 		return 0
 	}
 	for i, preferred := range p.EbookFormatPreferences {

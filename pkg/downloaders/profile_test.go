@@ -490,3 +490,14 @@ func TestEbookRankingStableTiesAndEmptyPreferences(t *testing.T) {
 		t.Fatalf("ties reordered: %+v", ranked)
 	}
 }
+
+func TestAudiobookFormatsAlwaysAcceptedAndM4BPreferred(t *testing.T) {
+	profile := DefaultQualityProfile()
+	profile.AllowedFormats = []string{"epub"}
+	profile.PreferSingleM4B = false
+	releases := []ReleaseCandidate{{Title: "Book.mp3", IsAudio: true}, {Format: "M4B", IsAudio: true}}
+	ranked := profile.RankReleases(releases)
+	if len(ranked) != 2 || ranked[0].Format != "M4B" {
+		t.Fatalf("audio must remain enabled and prefer M4B: %+v", ranked)
+	}
+}

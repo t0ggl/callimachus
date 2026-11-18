@@ -669,9 +669,6 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			encoded, _ := json.Marshal(*req.QualityProfile.EbookFormatPreferences)
 			updates[config.KeyEbookFormatPreferences] = string(encoded)
 		}
-		if req.QualityProfile.PreferSingleFileM4b != nil {
-			updates[config.KeyPreferSingleFileM4B] = strconv.FormatBool(*req.QualityProfile.PreferSingleFileM4b)
-		}
 		if size := req.QualityProfile.MaxEbookSizeBytes; size != nil {
 			if _, _, overridden := config.LookupEnvForSetting(config.KeyMaxEbookSizeMB); !overridden {
 				if *size < 0 || *size%(1024*1024) != 0 {

@@ -424,3 +424,29 @@ func TestStagingEbookConversion(t *testing.T) {
 		})
 	}
 }
+
+func TestStagingMonitor_SingleMP3RequiresConversion(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	root, library := t.TempDir(), t.TempDir()
+	source := filepath.Join(root, "Author - Book.mp3")
+	if err := os.WriteFile(source, []byte("audio"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{DB: db, CompletedRoot: root, LibraryRoot: library})
+	if err := sm.PollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	var message *string
+	if err := db.QueryRow(`SELECT status, error_message FROM download_queue`).Scan(&status, &message); err != nil || status != "queued" || message == nil {
+		t.Fatalf("MP3 without conversion must remain retryable: %s %v %v", status, message, err)
+	}
+	entries, err := os.ReadDir(library)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("unconverted MP3 imported: %v %v", entries, err)
+	}
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("MP3 source lost: %v", err)
+	}
+}
