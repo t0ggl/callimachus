@@ -156,19 +156,21 @@ type APIQualityProfileSettings struct {
 }
 
 type APISettingsResponse struct {
-	LogLevel       string                         `json:"logLevel"`
-	Metadata       map[string]bool                `json:"metadata"`
-	Indexers       []APIIndexerConfig             `json:"indexers"`
-	Library        APILibrarySettings             `json:"library"`
-	Prowlarr       APIProwlarrSettings            `json:"prowlarr"`
-	QualityProfile APIQualityProfileSettings      `json:"qualityProfile"`
-	Overrides      map[string]config.OverrideInfo `json:"overrides"`
+	DefaultSearchFormat string                         `json:"defaultSearchFormat"`
+	LogLevel            string                         `json:"logLevel"`
+	Metadata            map[string]bool                `json:"metadata"`
+	Indexers            []APIIndexerConfig             `json:"indexers"`
+	Library             APILibrarySettings             `json:"library"`
+	Prowlarr            APIProwlarrSettings            `json:"prowlarr"`
+	QualityProfile      APIQualityProfileSettings      `json:"qualityProfile"`
+	Overrides           map[string]config.OverrideInfo `json:"overrides"`
 }
 
 type APISettingsUpdateRequest struct {
-	LogLevel *string                    `json:"logLevel"`
-	Metadata map[string]json.RawMessage `json:"metadata"`
-	Library  *struct {
+	DefaultSearchFormat *string                    `json:"defaultSearchFormat"`
+	LogLevel            *string                    `json:"logLevel"`
+	Metadata            map[string]json.RawMessage `json:"metadata"`
+	Library             *struct {
 		CompletedDownloadRoot *string `json:"completedDownloadRoot"`
 		RootPath              *string `json:"rootPath"`
 		StagingPollInterval   *string `json:"stagingPollInterval"`
@@ -578,6 +580,7 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 	cfg := resolved.Settings
 	resp.Overrides = resolved.Overrides
 	resp.LogLevel = strings.ToLower(cfg.LogLevel.String())
+	resp.DefaultSearchFormat = cfg.DefaultSearchFormat
 
 	// Library & Storage
 	resp.Library = APILibrarySettings{
@@ -723,6 +726,9 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	updates := make(map[string]string)
 	if req.LogLevel != nil {
 		updates[config.KeyLogLevel] = *req.LogLevel
+	}
+	if req.DefaultSearchFormat != nil {
+		updates[config.KeyDefaultSearchFormat] = *req.DefaultSearchFormat
 	}
 	for key, rawVal := range req.Metadata {
 		switch key {

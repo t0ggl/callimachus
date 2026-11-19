@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { SettingsView } from '../views/SettingsView';
@@ -512,6 +512,48 @@ describe('Log Level', () => {
     await user.click(screen.getByTestId('save-settings-btn'));
     expect(save).toHaveBeenCalledOnce();
     expect(save.mock.calls[0][0]).not.toHaveProperty('logLevel');
+  });
+});
+
+describe('Default Search/Add Format setting', () => {
+  it('defaults to eBook and saves the selected format', async () => {
+    const user = userEvent.setup({ delay: null });
+    const save = vi.fn().mockResolvedValue(undefined);
+    render(<SettingsView indexers={[]} qualityProfile={baseQuality} onSaveSettings={save} />);
+
+    await user.click(screen.getByTestId('tab-settings-library'));
+    const select = screen.getByRole('combobox', { name: 'Default Search/Add Format' });
+    expect(select).toHaveValue('ebook');
+    expect(within(select).getAllByRole('option').map((option) => option.textContent))
+      .toEqual(['eBook', 'Audiobook', 'Both']);
+    await user.selectOptions(select, 'both');
+    await user.click(screen.getByTestId('save-settings-btn'));
+
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ defaultSearchFormat: 'both' }));
+  });
+
+  it('shows the effective override and omits the locked setting on save', async () => {
+    const user = userEvent.setup({ delay: null });
+    const save = vi.fn().mockResolvedValue(undefined);
+    const envVar = 'CALLIMACHUS_DEFAULT_SEARCH_FORMAT';
+    render(
+      <SettingsView
+        indexers={[]}
+        qualityProfile={baseQuality}
+        defaultSearchFormat="audiobook"
+        overrides={{ default_search_format: { isOverridden: true, overriddenBy: envVar, envVar } }}
+        onSaveSettings={save}
+      />
+    );
+
+    await user.click(screen.getByTestId('tab-settings-library'));
+    const select = screen.getByRole('combobox', { name: 'Default Search/Add Format' });
+    expect(select).toHaveValue('audiobook');
+    expect(select).toBeDisabled();
+    expect(select).toHaveAccessibleDescription(expect.stringContaining(envVar));
+    await user.click(screen.getByTestId('save-settings-btn'));
+    expect(save).toHaveBeenCalledOnce();
+    expect(save.mock.calls[0][0]).not.toHaveProperty('defaultSearchFormat');
   });
 });
 

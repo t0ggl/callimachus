@@ -42,7 +42,11 @@ const (
 	KeyEbookTargetFormat      = "ebook_target_format"
 	KeyEbookFormatPreferences = "ebook_format_preferences"
 	KeyBundleSeriesInLibrary  = "bundle_series_in_library"
+	KeyDefaultSearchFormat    = "default_search_format"
 )
+
+// DefaultSearchFormat is the format selected when no preference is configured.
+const DefaultSearchFormat = "ebook"
 
 // Bootstrap setting keys (resolved before opening SQLite).
 const (
@@ -81,6 +85,7 @@ func EnvVarName(settingKey string) string {
 var registry = []SettingSpec{
 	{Key: KeyConvertEbooks, Kind: KindBool, Default: "false"},
 	{Key: KeyBundleSeriesInLibrary, Kind: KindBool, Default: "true"},
+	{Key: KeyDefaultSearchFormat, Kind: KindString, Default: DefaultSearchFormat},
 	{Key: KeyEbookTargetFormat, Kind: KindString, Default: "EPUB"},
 	{Key: KeyGoogleBooksAPIKey, Kind: KindString, Secret: true},
 	{Key: KeyHardcoverAPIKey, Kind: KindString, Secret: true},
@@ -133,6 +138,7 @@ type OverrideInfo struct {
 type Settings struct {
 	LogLevel               slog.Level    `json:"logLevel"`
 	BundleSeriesInLibrary  bool          `json:"bundleSeriesInLibrary"`
+	DefaultSearchFormat    string        `json:"defaultSearchFormat"`
 	ConvertEbooks          bool          `json:"convertEbooks"`
 	EbookTargetFormat      string        `json:"ebookTargetFormat"`
 	GoogleBooksAPIKey      string        `json:"-"`
@@ -342,6 +348,9 @@ func resolveSettings(ctx context.Context, db interface {
 	if _, err := validateAndNormalize(specByKey[KeyEbookTargetFormat], resolvedValues[KeyEbookTargetFormat]); err != nil {
 		return nil, err
 	}
+	if _, err := validateAndNormalize(specByKey[KeyDefaultSearchFormat], resolvedValues[KeyDefaultSearchFormat]); err != nil {
+		return nil, err
+	}
 	level, err := parseLogLevel(resolvedValues[KeyLogLevel])
 	if err != nil {
 		return nil, err
@@ -435,6 +444,14 @@ func validateAndNormalize(spec SettingSpec, raw string) (string, error) {
 			return "", fmt.Errorf("ebook target must be EPUB or AZW3")
 		}
 		return target, nil
+	}
+	if spec.Key == KeyDefaultSearchFormat {
+		switch trimmed {
+		case "ebook", "audiobook", "both":
+			return trimmed, nil
+		default:
+			return "", errors.New("default_search_format must be ebook, audiobook, or both")
+		}
 	}
 	switch spec.Kind {
 	case KindString:
@@ -551,6 +568,7 @@ func materializeSettings(vals map[string]string) Settings {
 		IndexerSyncInterval:    parseDurationOr(vals[KeyIndexerSyncInterval], 15*time.Minute),
 		StagingPollInterval:    parseDurationOr(vals[KeyStagingPollInterval], 5*time.Second),
 		BundleSeriesInLibrary:  parseBoolOr(vals[KeyBundleSeriesInLibrary], true),
+		DefaultSearchFormat:    vals[KeyDefaultSearchFormat],
 		ConvertEbooks:          parseBoolOr(vals[KeyConvertEbooks], false),
 		EbookTargetFormat:      strings.ToUpper(orDefault(vals[KeyEbookTargetFormat], "EPUB")),
 		QualityProfileName:     orDefault(vals[KeyQualityProfileName], "Standard Audiobook"),

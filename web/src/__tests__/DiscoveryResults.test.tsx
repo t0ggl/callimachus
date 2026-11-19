@@ -6,6 +6,24 @@ import { DiscoveryResults } from '../components/DiscoveryResults';
 afterEach(() => vi.unstubAllGlobals());
 
 describe('book discovery', () => {
+  it.each(['ebook', 'audiobook', 'both'] as const)('initializes the format picker to %s when configured', (format) => {
+    render(<DiscoveryResults query="" defaultSearchFormat={format} onSubmitRequest={vi.fn()} />);
+    expect(screen.getByRole('combobox', { name: 'Format' })).toHaveValue(format);
+  });
+
+  it('uses a preference that arrives after opening and preserves an explicit selection', async () => {
+    const user = userEvent.setup({ delay: null });
+    const add = vi.fn();
+    const { rerender } = render(<DiscoveryResults query="" onSubmitRequest={add} />);
+    const select = screen.getByRole('combobox', { name: 'Format' });
+    expect(select).toHaveValue('ebook');
+    rerender(<DiscoveryResults query="" defaultSearchFormat="audiobook" onSubmitRequest={add} />);
+    expect(select).toHaveValue('audiobook');
+    await user.selectOptions(select, 'both');
+    rerender(<DiscoveryResults query="" defaultSearchFormat="ebook" onSubmitRequest={add} />);
+    expect(select).toHaveValue('both');
+  });
+
   it('confirms metadata with a single compact Add action and loading/added states', async () => {
     const user = userEvent.setup({ delay: null });
     let resolveAdd!: () => void;
@@ -54,7 +72,7 @@ describe('book discovery', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Adding book to queue');
 
     resolveAdd();
-    expect(add).toHaveBeenCalledWith('Dune', 'Frank Herbert', 'both', 1965, {
+    expect(add).toHaveBeenCalledWith('Dune', 'Frank Herbert', 'ebook', 1965, {
       book_id: undefined,
       cover_url: 'https://covers.example/dune.jpg',
       series: 'Dune Chronicles',

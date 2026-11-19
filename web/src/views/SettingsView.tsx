@@ -18,6 +18,7 @@ import {
   LogLevel,
   ProwlarrSettings,
   QualityProfile,
+  RequestType,
   SettingsOverridesMap,
   FormatType,
   FORMAT_TYPES,
@@ -26,6 +27,7 @@ import {
 
 export interface SettingsUpdatePayload {
   logLevel?: LogLevel;
+  defaultSearchFormat?: RequestType;
  metadata?: Record<string,string>;
   library?: {
     rootPath?: string;
@@ -54,6 +56,7 @@ export interface SettingsUpdatePayload {
 interface SettingsViewProps {
   indexers: IndexerConfig[];
   logLevel?: LogLevel;
+  defaultSearchFormat?: RequestType;
   metadata?: Record<string, boolean>;
   librarySettings?: LibrarySettings;
   prowlarrSettings?: ProwlarrSettings;
@@ -79,6 +82,7 @@ const DEFAULT_PROWLARR: ProwlarrSettings = {
 export const SettingsView: React.FC<SettingsViewProps> = ({
   indexers: initialIndexers,
   logLevel: initialLogLevel = 'info',
+  defaultSearchFormat: initialDefaultSearchFormat = 'ebook',
   metadata: initialMetadata,
   librarySettings: initialLibrary = DEFAULT_LIBRARY,
   prowlarrSettings: initialProwlarr = DEFAULT_PROWLARR,
@@ -92,6 +96,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [syncSuccess, setSyncSuccess] = useState(false);
 
   const [logLevel, setLogLevel] = useState(initialLogLevel);
+  const [defaultSearchFormat, setDefaultSearchFormat] = useState(initialDefaultSearchFormat);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -156,7 +161,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setLogLevel(initialLogLevel);
   }, [initialLogLevel]);
 
+  useEffect(() => {
+    setDefaultSearchFormat(initialDefaultSearchFormat);
+  }, [initialDefaultSearchFormat]);
+
   const isOverridden = (key: string): boolean => Boolean(overrides[key]?.isOverridden);
+  const searchFormatLocked = isOverridden('default_search_format');
 
   const overriddenCount = Object.values(overrides).filter((o) => o?.isOverridden).length;
 
@@ -213,6 +223,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
     const payload: SettingsUpdatePayload = {
       ...(!isOverridden('log_level') && logLevel !== initialLogLevel ? { logLevel } : {}),
+      ...(!searchFormatLocked && defaultSearchFormat !== initialDefaultSearchFormat ? { defaultSearchFormat } : {}),
       metadata: metadataPayload,
       library: {
         ...(!isOverridden("completed_download_root") ? { completedDownloadRoot: librarySettings.completedDownloadRoot ?? "" } : {}),
@@ -761,6 +772,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 />
                 <OverrideNote settingKey="indexer_sync_interval" />
               </div>
+            </div>
+
+            <div>
+              <label htmlFor="default-search-format" className="block text-zinc-400 font-medium mb-1">
+                Default Search/Add Format
+              </label>
+              <select
+                id="default-search-format"
+                value={defaultSearchFormat}
+                disabled={searchFormatLocked}
+                aria-describedby={searchFormatLocked ? 'override-note-default_search_format' : undefined}
+                onChange={(e) => setDefaultSearchFormat(e.target.value as RequestType)}
+                className={inputClass(searchFormatLocked)}
+              >
+                <option value="ebook">eBook</option>
+                <option value="audiobook">Audiobook</option>
+                <option value="both">Both</option>
+              </select>
+              <OverrideNote settingKey="default_search_format" />
             </div>
 
             <div className="pt-3 border-t border-zinc-800/80">

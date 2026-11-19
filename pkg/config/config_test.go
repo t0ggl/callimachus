@@ -45,6 +45,9 @@ func TestAllRegisteredSettings_AutoEnvOverridePrecedence(t *testing.T) {
 		case KindStringList:
 			dbVal = `["DB1","DB2"]`
 		}
+		if spec.Key == KeyDefaultSearchFormat {
+			dbVal = "audiobook"
+		}
 		if _, err := db.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES (?, ?)`, spec.Key, dbVal); err != nil {
 			t.Fatalf("seed setting %s: %v", spec.Key, err)
 		}
@@ -69,6 +72,9 @@ func TestAllRegisteredSettings_AutoEnvOverridePrecedence(t *testing.T) {
 		}
 		if spec.Key == KeyLogLevel {
 			envVal = "warn"
+		}
+		if spec.Key == KeyDefaultSearchFormat {
+			envVal = "both"
 		}
 		t.Setenv(envName, envVal)
 	}
@@ -391,6 +397,59 @@ func TestLogLevelSettings(t *testing.T) {
 	}
 	if _, err := Load(ctx, db, Overrides{}); !errors.Is(err, ErrInvalidLogLevel) {
 		t.Fatalf("invalid database value must fail validation: %v", err)
+	}
+}
+
+func TestDefaultSearchFormat(t *testing.T) {
+	const env = "CALLIMACHUS_DEFAULT_SEARCH_FORMAT"
+	t.Setenv(env, "")
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+
+	spec, ok := LookupSpec(KeyDefaultSearchFormat)
+	if !ok || spec.Kind != KindString || spec.Default != "ebook" || EnvVarName(spec.Key) != env {
+		t.Fatalf("unexpected default_search_format spec: %+v", spec)
+	}
+	assertFormat := func(got *ResolvedSettings, err error, want string, override OverrideInfo) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Settings.DefaultSearchFormat != want || got.Overrides[KeyDefaultSearchFormat] != override {
+			t.Fatalf("format = %q, override = %+v; want %q, %+v",
+				got.Settings.DefaultSearchFormat, got.Overrides[KeyDefaultSearchFormat], want, override)
+		}
+	}
+
+	resolved, err := Load(ctx, db, Overrides{})
+	assertFormat(resolved, err, "ebook", OverrideInfo{EnvVar: env})
+	for _, format := range []string{"ebook", "audiobook", "both"} {
+		resolved, err := SaveNonOverridden(ctx, db, map[string]string{KeyDefaultSearchFormat: format}, Overrides{})
+		assertFormat(resolved, err, format, OverrideInfo{EnvVar: env})
+	}
+	for _, invalid := range []string{"", "epub", "ebook,audiobook"} {
+		if _, err := SaveNonOverridden(ctx, db, map[string]string{KeyDefaultSearchFormat: invalid}, Overrides{}); err == nil {
+			t.Errorf("accepted invalid format %q", invalid)
+		}
+	}
+
+	t.Setenv(env, "audiobook")
+	resolved, err = SaveNonOverridden(ctx, db, map[string]string{KeyDefaultSearchFormat: "ebook"}, Overrides{})
+	assertFormat(resolved, err, "audiobook", OverrideInfo{IsOverridden: true, OverriddenBy: env, EnvVar: env})
+
+	t.Setenv(env, "epub")
+	if _, err := Load(ctx, db, Overrides{}); err == nil {
+		t.Fatal("accepted invalid environment override")
+	}
+	t.Setenv(env, "")
+	resolved, err = Load(ctx, db, Overrides{})
+	assertFormat(resolved, err, "both", OverrideInfo{EnvVar: env})
+
+	if _, err := db.ExecContext(ctx, "UPDATE settings SET value = ? WHERE key = ?", "m4b", KeyDefaultSearchFormat); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(ctx, db, Overrides{}); err == nil {
+		t.Fatal("accepted invalid database value")
 	}
 }
 

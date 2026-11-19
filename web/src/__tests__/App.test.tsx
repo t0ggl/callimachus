@@ -441,7 +441,8 @@ describe('App Integration', () => {
     }
   );
 
-  it('applies non-admin bundling preference from /api/auth/me without requesting /api/settings', async () => {
+  it('applies non-admin UI preferences from /api/auth/me without requesting /api/settings', async () => {
+    const user = userEvent.setup({ delay: null });
     const originalFetch = vi.mocked(global.fetch).getMockImplementation()!;
     vi.mocked(global.fetch).mockImplementation((...args) => {
       if (String(args[0]).includes('/api/auth/me')) {
@@ -450,7 +451,7 @@ describe('App Integration', () => {
           json: async () => ({
             ...testUser,
             role: 'requester',
-            preferences: { bundleSeriesInLibrary: false },
+            preferences: { bundleSeriesInLibrary: false, defaultSearchFormat: 'audiobook' },
           }),
         } as unknown as Response);
       }
@@ -464,8 +465,38 @@ describe('App Integration', () => {
     });
     expect(screen.queryByTestId('series-card-ser_1')).not.toBeInTheDocument();
 
+    await user.keyboard('{Control>}k{/Control}');
+    await user.type(screen.getByTestId('command-palette-input'), 'Dune');
+    expect(screen.getByRole('combobox', { name: 'Format' })).toHaveValue('audiobook');
+
     const calledUrls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
     expect(calledUrls).not.toContain('/api/settings');
+  });
+
+  it('uses the saved admin setting the next time search is opened', async () => {
+    const user = userEvent.setup({ delay: null });
+    const fetchMock = vi.mocked(global.fetch);
+    const existingFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url, options) => {
+      if (url !== '/api/settings') return existingFetch(url, options);
+      const format = options?.method === 'PUT'
+        ? JSON.parse(String(options.body)).defaultSearchFormat
+        : 'both';
+      return Promise.resolve(new Response(JSON.stringify({ defaultSearchFormat: format })));
+    });
+
+    render(<App />);
+    await user.click(await screen.findByTestId('nav-settings'));
+    await user.click(screen.getByTestId('tab-settings-library'));
+    const select = screen.getByRole('combobox', { name: 'Default Search/Add Format' });
+    await waitFor(() => expect(select).toHaveValue('both'));
+    await user.selectOptions(select, 'audiobook');
+    await user.click(screen.getByTestId('save-settings-btn'));
+    await screen.findByTestId('settings-save-success');
+
+    await user.keyboard('{Control>}k{/Control}');
+    await user.type(screen.getByTestId('command-palette-input'), 'Dune');
+    expect(screen.getByRole('combobox', { name: 'Format' })).toHaveValue('audiobook');
   });
 
   it('allows admin to toggle bundle series in Settings and updates Library view', async () => {

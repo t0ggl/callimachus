@@ -19,6 +19,7 @@ type Match = {
 
 interface Props {
   query: string;
+  defaultSearchFormat?: RequestType;
   onOpenBook?: (id: string) => void;
   onSubmitRequest: (
     title: string,
@@ -56,9 +57,10 @@ function DiscoveryCover({ coverUrl, title }: { coverUrl?: string; title: string 
   );
 }
 
-export function DiscoveryResults({ query, onSubmitRequest, onOpenBook }: Props) {
+export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmitRequest, onOpenBook }: Props) {
   const [selectedSeries, setSelectedSeries] = useState<string | null>(null);
-  const [format, setFormat] = useState<RequestType>('both');
+  const [selectedFormat, setSelectedFormat] = useState<RequestType>();
+  const format = selectedFormat ?? defaultSearchFormat;
   const [matches, setMatches] = useState<Match[]>([]);
   const [retry, setRetry] = useState(0);
   const [addingKey, setAddingKey] = useState<string | null>(null);
@@ -164,7 +166,7 @@ export function DiscoveryResults({ query, onSubmitRequest, onOpenBook }: Props) 
           <select
             id="discovery-format-select"
             value={format}
-            onChange={(e) => setFormat(e.target.value as RequestType)}
+            onChange={(e) => setSelectedFormat(e.target.value as RequestType)}
             className="px-2.5 py-1.5 bg-zinc-950 border border-zinc-700/80 hover:border-zinc-600 rounded-md text-xs font-medium text-zinc-200 focus:outline-hidden focus-visible:outline-2 focus-visible:outline-blue-400 focus:border-blue-500/70 transition-colors cursor-pointer"
           >
             <option value="both">Both</option>

@@ -185,13 +185,15 @@ func NewServer(cfg Config) (*Server, error) {
 		OIDCClient:     oidcClient,
 		FallbackAuth:   fallbackAuth,
 		UIPreferences: func(ctx context.Context) *auth.UIPreferences {
-			bundle := true
+			prefs := &auth.UIPreferences{
+				BundleSeriesInLibrary: true,
+				DefaultSearchFormat:   config.DefaultSearchFormat,
+			}
 			if resolved, loadErr := config.Load(ctx, db, baseOverrides); loadErr == nil {
-				bundle = resolved.Settings.BundleSeriesInLibrary
+				prefs.BundleSeriesInLibrary = resolved.Settings.BundleSeriesInLibrary
+				prefs.DefaultSearchFormat = resolved.Settings.DefaultSearchFormat
 			}
-			return &auth.UIPreferences{
-				BundleSeriesInLibrary: bundle,
-			}
+			return prefs
 		},
 	})
 

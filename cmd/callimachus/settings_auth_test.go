@@ -12,8 +12,79 @@ import (
 	"time"
 
 	"github.com/t0ggl/callimachus/pkg/auth"
+	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
+
+func TestSettingsDefaultSearchFormat(t *testing.T) {
+	const env = "CALLIMACHUS_DEFAULT_SEARCH_FORMAT"
+	t.Setenv(env, "")
+	t.Setenv("CALLIMACHUS_OIDC_ENABLED", "false")
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "settings.db")
+	testutil.PrepareTestDBFile(t, dbPath)
+	srv, err := NewServer(Config{ConfigDir: tempDir, DBPath: dbPath, LibraryPath: tempDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	admin := createTestSessionCookie(t, srv, "format-admin", "formatadmin", auth.RoleAdmin)
+	requester := createTestSessionCookie(t, srv, "format-requester", "formatrequester", auth.RoleRequester)
+	call := func(method, path, body string, cookie *http.Cookie, wantCode int) []byte {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != wantCode {
+			t.Fatalf("%s %s = %d, want %d: %s", method, path, rec.Code, wantCode, rec.Body.String())
+		}
+		return rec.Body.Bytes()
+	}
+	checkSettings := func(body []byte, want string, override config.OverrideInfo) {
+		t.Helper()
+		var got APISettingsResponse
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.DefaultSearchFormat != want || got.Overrides[config.KeyDefaultSearchFormat] != override {
+			t.Fatalf("settings = %s, want defaultSearchFormat %q and override %+v", body, want, override)
+		}
+	}
+	checkPreference := func(want string) {
+		t.Helper()
+		var got struct {
+			Preferences auth.UIPreferences `json:"preferences"`
+		}
+		if err := json.Unmarshal(call(http.MethodGet, "/api/auth/me", "", requester, http.StatusOK), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Preferences.DefaultSearchFormat != want {
+			t.Fatalf("requester format = %q, want %q", got.Preferences.DefaultSearchFormat, want)
+		}
+	}
+
+	unlocked := config.OverrideInfo{EnvVar: env}
+	checkSettings(call(http.MethodGet, "/api/settings", "", admin, http.StatusOK), "ebook", unlocked)
+	checkPreference("ebook")
+	call(http.MethodGet, "/api/settings", "", requester, http.StatusForbidden)
+	call(http.MethodPut, "/api/settings", `{"defaultSearchFormat":"both"}`, requester, http.StatusForbidden)
+	checkSettings(call(http.MethodPut, "/api/settings", `{"defaultSearchFormat":"audiobook"}`, admin, http.StatusOK), "audiobook", unlocked)
+	call(http.MethodPut, "/api/settings", `{"defaultSearchFormat":"epub"}`, admin, http.StatusBadRequest)
+	call(http.MethodPut, "/api/settings", `{"defaultSearchFormat":42}`, admin, http.StatusBadRequest)
+	checkSettings(call(http.MethodGet, "/api/settings", "", admin, http.StatusOK), "audiobook", unlocked)
+	checkPreference("audiobook")
+
+	t.Setenv(env, "both")
+	locked := config.OverrideInfo{IsOverridden: true, OverriddenBy: env, EnvVar: env}
+	checkSettings(call(http.MethodGet, "/api/settings", "", admin, http.StatusOK), "both", locked)
+	checkSettings(call(http.MethodPut, "/api/settings", `{"defaultSearchFormat":"ebook"}`, admin, http.StatusOK), "both", locked)
+	checkPreference("both")
+
+	t.Setenv(env, "")
+	checkSettings(call(http.MethodGet, "/api/settings", "", admin, http.StatusOK), "audiobook", unlocked)
+}
 
 func TestSettingsAPI_AdminOnlyRBAC(t *testing.T) {
 	tempDir := t.TempDir()
