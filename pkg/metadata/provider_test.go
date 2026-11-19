@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/t0ggl/callimachus/pkg/metadata"
@@ -406,5 +407,27 @@ func TestHardcoverSeriesCanonicalEnglishVolumes(t *testing.T) {
 	if books[0].HardcoverID != "5" || books[0].Series != "Court" || books[0].CoverURL == "" ||
 		books[1].SeriesIndex == nil || *books[1].SeriesIndex != 2.5 || books[2].SeriesIndex != nil {
 		t.Fatalf("unexpected series volumes: %+v", books)
+	}
+}
+
+func TestHardcoverSeriesExcludesDerivatives(t *testing.T) {
+	mt := testutil.NewMockTransport()
+	mt.PanicOnUnmocked = true
+	mt.RegisterFixture("/v1/graphql", http.StatusOK, "testdata/metadata/hardcover_series_acotar.json", nil)
+	p := metadata.NewHardcoverProvider("mock", metadata.WithHardcoverClient(mt.Client()))
+	books, err := p.SeriesBooks(context.Background(), "A Court of Thorns and Roses")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var ids []string
+	for _, book := range books {
+		ids = append(ids, book.HardcoverID)
+	}
+	if want := []string{"1", "4", "7", "8", "11", "14"}; !slices.Equal(ids, want) {
+		t.Fatalf("series IDs = %v, want %v", ids, want)
+	}
+	if novella := books[3]; novella.Title != "A Court of Frost and Starlight" || novella.SeriesIndex == nil || *novella.SeriesIndex != 3.5 {
+		t.Fatalf("unexpected novella: %+v", novella)
 	}
 }
