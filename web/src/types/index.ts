@@ -17,6 +17,13 @@ export interface Narrator {
   sortName: string;
 }
 
+export interface SeriesSelection {
+  title: string;
+  id?: string;
+  author?: string;
+  hardcoverID?: number;
+}
+
 export interface Series {
   id: string;
   title: string;
@@ -276,6 +283,7 @@ export const mapBookRequest = (r: APIBookRequest): BookRequest => ({
 });
 
 export interface RequestMetadata {
+  hardcover_series_id?: number;
   book_id?: string;
   cover_url?: string;
   series?: string;

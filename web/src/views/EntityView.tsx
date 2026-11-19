@@ -5,7 +5,7 @@ import { EntityLink } from '../components/EntityLink';
 import { SeriesBookCover } from '../components/SeriesDetailModal';
 import type { Book } from '../types';
 
-type EntityBook = Pick<Book, 'id' | 'title' | 'subtitle' | 'authorName' | 'seriesTitle' | 'coverUrl' | 'formats' | 'releaseDate' | 'seriesIndex' | 'state'>;
+type EntityBook = Pick<Book, 'id' | 'title' | 'subtitle' | 'authorName' | 'seriesTitle' | 'seriesId' | 'coverUrl' | 'formats' | 'releaseDate' | 'seriesIndex' | 'state'>;
 type Data = { monitored: boolean; photoUrl?: string; books: EntityBook[] };
 
 const button = 'inline-flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50';
@@ -15,9 +15,12 @@ const availableBadge = 'border-emerald-800/60 bg-emerald-950/80 text-emerald-300
 const blueBadge = 'border-blue-800/60 bg-blue-950/80 text-blue-300';
 const purpleBadge = 'border-purple-800/60 bg-purple-950/80 text-purple-300';
 
-export function EntityView({ kind, name, canManage, isAdmin, onMetadataApplied }: {
+export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, canManage, isAdmin, onMetadataApplied }: {
   kind: 'authors' | 'series';
   name: string;
+  seriesID?: string;
+  seriesAuthor?: string;
+  hardcoverID?: string;
   canManage: boolean;
   isAdmin?: boolean;
   onMetadataApplied?: () => void;
@@ -31,7 +34,10 @@ export function EntityView({ kind, name, canManage, isAdmin, onMetadataApplied }
   const [bookID, setBookID] = useState<string | null>(null);
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [detailError, setDetailError] = useState('');
-  const url = `/api/catalog/entity?kind=${kind}&name=${encodeURIComponent(name)}`;
+  const url = `/api/catalog/entity?kind=${kind}&name=${encodeURIComponent(name)}`
+    + (seriesID ? `&id=${encodeURIComponent(seriesID)}` : '')
+    + (seriesAuthor ? `&author=${encodeURIComponent(seriesAuthor)}` : '')
+    + (hardcoverID ? `&hardcover_id=${encodeURIComponent(hardcoverID)}` : '');
   useEffect(() => {
     const controller = new AbortController();
     setData(null); setError(''); setToast('');
@@ -179,7 +185,7 @@ export function EntityView({ kind, name, canManage, isAdmin, onMetadataApplied }
                     {isSeries ? (
                       <p className="text-xs text-zinc-400">by <EntityLink kind="authors" name={book.authorName} /></p>
                     ) : book.seriesTitle && (
-                      <p className="text-xs text-zinc-400"><EntityLink kind="series" name={book.seriesTitle} /></p>
+                      <p className="text-xs text-zinc-400"><EntityLink kind="series" name={book.seriesTitle} id={book.seriesId} /></p>
                     )}
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400">

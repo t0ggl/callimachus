@@ -206,7 +206,7 @@ func (s *RequestService) insertRequests(ctx context.Context, input CreateRequest
 			book.ReleaseDate = &date
 		}
 		if strings.TrimSpace(input.Series) != "" {
-			series, err := c.GetOrCreateSeries(ctx, input.Series)
+			series, err := c.GetOrCreateSeries(ctx, input.Series, author.ID, input.HardcoverSeriesID)
 			if err != nil {
 				return nil, err
 			}

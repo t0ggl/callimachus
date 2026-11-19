@@ -273,7 +273,7 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 					}
 					var seriesID *string
 					if bookDetails.Series != "" {
-						series, err := sm.catalog.GetOrCreateSeries(ctx, bookDetails.Series)
+						series, err := sm.catalog.GetOrCreateSeries(ctx, bookDetails.Series, author.ID, 0)
 						if err != nil {
 							return err
 						}

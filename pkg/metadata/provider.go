@@ -5,6 +5,7 @@ package metadata
 import (
 	"context"
 	"errors"
+	"strings"
 )
 
 // ErrNotFound is returned when requested metadata is not found by a provider.
@@ -41,6 +42,8 @@ type BookMetadata struct {
 	Language      string            `json:"language"`
 	Chapters      []ChapterMetadata `json:"chapters"`
 	DurationSec   float64           `json:"duration_sec"`
+
+	HardcoverSeriesID int `json:"hardcover_series_id,omitempty"`
 }
 
 // Provider defines the unified contract implemented by metadata source clients.
@@ -49,4 +52,24 @@ type Provider interface {
 	Search(ctx context.Context, query string) ([]BookMetadata, error)
 	LookupByISBN(ctx context.Context, isbn string) (*BookMetadata, error)
 	LookupByASIN(ctx context.Context, asin string) (*BookMetadata, error)
+}
+
+// SharesAuthor compares normalized author names across catalog and provider records.
+func SharesAuthor(left, right []string) bool {
+	for _, a := range left {
+		for _, la := range strings.Split(NormalizeAuthor(a), " & ") {
+			la = strings.TrimSpace(la)
+			if la == "" {
+				continue
+			}
+			for _, b := range right {
+				for _, rb := range strings.Split(NormalizeAuthor(b), " & ") {
+					if rb = strings.TrimSpace(rb); rb != "" && strings.EqualFold(la, rb) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }

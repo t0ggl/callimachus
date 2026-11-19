@@ -1,4 +1,4 @@
-import { EntityLink } from '../components/EntityLink';
+import { EntityLink, entityURL } from '../components/EntityLink';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Grid,
@@ -9,7 +9,7 @@ import {
   Layers,
   Filter,
 } from 'lucide-react';
-import { Book, Author, Series, FormatType, FORMAT_TYPES } from '../types';
+import { Book, Author, Series, SeriesSelection, FormatType, FORMAT_TYPES } from '../types';
 
 import { useKeyboardNav } from '../hooks/useKeyboardNav';
 import { SeriesBadge } from '../components/SeriesBadge';
@@ -162,8 +162,8 @@ interface CatalogViewProps {
   bundleSeriesInLibrary?: boolean;
   onSelectBook: (book: Book) => void;
   keyboardNavigationEnabled?: boolean;
-  selectedSeries?: string | null;
-  onSelectSeries?: (title: string | null) => void;
+  selectedSeries?: SeriesSelection | null;
+  onSelectSeries?: (series: SeriesSelection | null) => void;
   onScanComplete?: () => Promise<void>;
 }
 
@@ -178,7 +178,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
   onSelectSeries,
   onScanComplete,
 }) => {
-  const [internalSelectedSeries, setInternalSelectedSeries] = useState<string | null>(null);
+  const [internalSelectedSeries, setInternalSelectedSeries] = useState<SeriesSelection | null>(null);
   const selectedSeries =
     controlledSelectedSeries !== undefined ? controlledSelectedSeries : internalSelectedSeries;
   const setSelectedSeries = onSelectSeries ?? setInternalSelectedSeries;
@@ -229,7 +229,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
     enabled: keyboardNavigationEnabled && activeTab === 'books' && !selectedSeries,
     onSelect: (index) => {
       const item = displayItems[index];
-      if (item.kind === 'series') setSelectedSeries(item.title);
+      if (item.kind === 'series') setSelectedSeries({ title: item.title, id: item.seriesId });
       else onSelectBook(item.book);
     },
   });
@@ -260,7 +260,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
     <div className="space-y-6">
       {selectedSeries && (
         <SeriesDetailModal
-          title={selectedSeries}
+          {...selectedSeries}
           onClose={() => setSelectedSeries(null)}
           onOpenBook={(bookId) => {
             const found = books.find((b) => b.id === bookId);
@@ -439,7 +439,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                       key={`series-${item.key}`}
                       ref={isSelected ? setSelectedItem : undefined}
                       data-testid={`series-card-${seriesTestId}`}
-                      onClick={() => setSelectedSeries(item.title)}
+                      onClick={() => setSelectedSeries({ title: item.title, id: item.seriesId })}
                       className={`group relative bg-zinc-900/90 rounded-lg border overflow-hidden cursor-pointer transition-all duration-150 flex flex-col ${
                         isSelected
                           ? 'border-purple-500 ring-1 ring-purple-500 shadow-lg shadow-purple-500/10'
@@ -494,7 +494,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                               data-catalog-title
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setSelectedSeries(item.title);
+                                setSelectedSeries({ title: item.title, id: item.seriesId });
                               }}
                               className="text-left hover:text-blue-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 rounded-sm truncate max-w-full"
                             >
@@ -606,7 +606,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                         </p>
                       </div>
 
-                      <SeriesBadge title={book.seriesTitle} index={book.seriesIndex} total={series.find(s => s.id === book.seriesId)?.totalBooks} onSelect={setSelectedSeries} />
+                      <SeriesBadge title={book.seriesTitle} id={book.seriesId} author={book.authorName} index={book.seriesIndex} total={series.find(s => s.id === book.seriesId)?.totalBooks} onSelect={setSelectedSeries} />
                     </div>
                   </div>
                 );
@@ -635,7 +635,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                           key={`series-${item.key}`}
                           ref={isSelected ? setSelectedItem : undefined}
                           data-testid={`series-row-${seriesTestId}`}
-                          onClick={() => setSelectedSeries(item.title)}
+                          onClick={() => setSelectedSeries({ title: item.title, id: item.seriesId })}
                           className={`cursor-pointer transition-colors duration-150 ${
                             isSelected
                               ? 'bg-purple-600/15 text-white'
@@ -649,7 +649,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                               data-catalog-title
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setSelectedSeries(item.title);
+                                setSelectedSeries({ title: item.title, id: item.seriesId });
                               }}
                               className="truncate text-left hover:text-purple-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-400 rounded-sm"
                             >
@@ -734,7 +734,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                         <td className="py-3 px-4 text-zinc-300"><EntityLink kind="authors" name={book.authorName} /></td>
                         <td className="py-3 px-4">
                           {book.seriesTitle ? (
-                            <SeriesBadge title={book.seriesTitle} index={book.seriesIndex} total={series.find(s => s.id === book.seriesId)?.totalBooks} onSelect={setSelectedSeries} />
+                            <SeriesBadge title={book.seriesTitle} id={book.seriesId} author={book.authorName} index={book.seriesIndex} total={series.find(s => s.id === book.seriesId)?.totalBooks} onSelect={setSelectedSeries} />
                           ) : (
                             <span className="text-zinc-600">—</span>
                           )}
@@ -820,7 +820,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <Layers className="w-4 h-4 text-purple-400" />
-                    <h3 className="text-sm font-bold text-zinc-100"><button onClick={() => { window.location.hash = `#/series/${encodeURIComponent(s.title)}`; }} className="text-purple-300 underline underline-offset-2">{s.title}</button></h3>
+                    <h3 className="text-sm font-bold text-zinc-100"><button onClick={() => { window.location.hash = entityURL('series', s.title, s.id); }} className="text-purple-300 underline underline-offset-2">{s.title}</button></h3>
                     <span className="text-[10px] font-mono px-2 py-0.5 rounded-sm bg-zinc-800 text-zinc-400 border border-zinc-700">
                       {s.status}
                     </span>

@@ -440,7 +440,12 @@ func mergeDiscoveryBook(dst *metadata.BookMetadata, src metadata.BookMetadata) {
 	if dst.ISBN13 == "" || (discoveryISBN13(dst.ISBN13) == "" && discoveryISBN13(src.ISBN13) != "") {
 		dst.ISBN13 = src.ISBN13
 	}
-	if dst.Series == "" || strings.EqualFold(dst.Series, src.Series) {
+	if src.HardcoverSeriesID > 0 && dst.HardcoverSeriesID == 0 && !strings.EqualFold(dst.Series, src.Series) {
+		dst.Series, dst.SeriesIndex, dst.SeriesTotal = src.Series, src.SeriesIndex, src.SeriesTotal
+	}
+	if (dst.Series == "" || strings.EqualFold(dst.Series, src.Series)) &&
+		(dst.HardcoverSeriesID == 0 || src.HardcoverSeriesID == 0 || dst.HardcoverSeriesID == src.HardcoverSeriesID) {
+		dst.HardcoverSeriesID = cmp.Or(dst.HardcoverSeriesID, src.HardcoverSeriesID)
 		dst.Series = cmp.Or(dst.Series, src.Series)
 		dst.SeriesIndex = cmp.Or(dst.SeriesIndex, src.SeriesIndex)
 		dst.SeriesTotal = cmp.Or(dst.SeriesTotal, src.SeriesTotal)

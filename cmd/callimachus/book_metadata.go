@@ -598,22 +598,35 @@ func updateCandidateMetadata(ctx context.Context, tx *sql.Tx, bookID string, boo
 		uuid.NewString(), author, catalog.AuthorSortName(author), author); err != nil {
 		return err
 	}
-	if target.Series != "" {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO series (id, title) SELECT ?, ?
-			WHERE NOT EXISTS (SELECT 1 FROM series WHERE title = ? COLLATE NOCASE)`,
-			uuid.NewString(), target.Series, target.Series); err != nil {
+	var authorID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM authors WHERE name = ? COLLATE NOCASE LIMIT 1`, author).Scan(&authorID); err != nil {
+		return err
+	}
+	var seriesID *string
+	// A metadata repair that leaves author and series unchanged should preserve
+	// the existing membership, including ambiguous legacy rows.
+	err := tx.QueryRowContext(ctx, `SELECT b.series_id FROM books b JOIN series s ON s.id = b.series_id
+  WHERE b.id = ? AND b.author_id = ? AND s.title = ? COLLATE NOCASE`, bookID, authorID, target.Series).Scan(&seriesID)
+	if errors.Is(err, sql.ErrNoRows) {
+		series, err := catalog.ResolveSeries(ctx, tx, target.Series, authorID, 0)
+		if err != nil {
 			return err
 		}
+		if series != nil {
+			seriesID = &series.ID
+		}
+	} else if err != nil {
+		return err
 	}
+
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE books SET title = ?, subtitle = NULLIF(?, ''),
-			author_id = (SELECT id FROM authors WHERE name = ? COLLATE NOCASE LIMIT 1),
-			series_id = (SELECT id FROM series WHERE title = ? COLLATE NOCASE LIMIT 1),
+			author_id = ?,
+			series_id = ?,
 			series_index_display = CASE WHEN series_index IS NOT ? THEN NULLIF(?, '') ELSE series_index_display END,
 			series_index = ?, release_date = NULLIF(?, ''), synopsis = NULLIF(?, ''),
 			updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		target.Title, target.Subtitle, author, target.Series, target.SeriesIndex, catalog.SeriesIndexLabel(target.SeriesIndex),
+		target.Title, target.Subtitle, authorID, seriesID, target.SeriesIndex, catalog.SeriesIndexLabel(target.SeriesIndex),
 		target.SeriesIndex, target.PublishDate, target.Description, bookID); err != nil {
 		return err
 	}

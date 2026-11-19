@@ -9,16 +9,18 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/config"
+	"github.com/t0ggl/callimachus/pkg/database"
 	"github.com/t0ggl/callimachus/pkg/metadata"
 )
 
 func (s *Server) newCatalogMonitor() *catalog.Monitor {
-	return &catalog.Monitor{DB: s.db, Discover: func(ctx context.Context, kind, name string) ([]metadata.BookMetadata, error) {
+	return &catalog.Monitor{DB: s.db, Discover: func(ctx context.Context, kind, name string, known []metadata.BookMetadata) ([]metadata.BookMetadata, error) {
 		cfg, err := config.Load(ctx, s.db, s.baseOverrides)
 		if err != nil {
 			return nil, err
@@ -30,7 +32,10 @@ func (s *Server) newCatalogMonitor() *catalog.Monitor {
 		if cfg.Settings.HardcoverAPIKey != "" {
 			p := metadata.NewHardcoverProvider(cfg.Settings.HardcoverAPIKey, metadata.WithHardcoverClient(client))
 			if kind == "series" {
-				return p.SeriesBooks(ctx, name)
+				if len(known) == 0 {
+					return nil, nil
+				}
+				return p.SeriesBooks(ctx, name, known...)
 			}
 			return p.AuthorBooks(ctx, name)
 		}
@@ -101,7 +106,14 @@ func (s *Server) runCatalogMonitor(ctx context.Context) {
 	}
 }
 
-func (s *Server) catalogEntity(ctx context.Context, kind, name string) (string, error) {
+func requestedSeriesIdentity(r *http.Request) (id, author string, hardcoverID int) {
+	query := r.URL.Query()
+	hardcoverID, _ = strconv.Atoi(query.Get("hardcover_id"))
+	return query.Get("id"), strings.TrimSpace(query.Get("author")), max(0, hardcoverID)
+}
+
+func (s *Server) catalogEntity(r *http.Request, kind, name string) (string, error) {
+	ctx := r.Context()
 	c := catalog.New(s.db)
 	if kind == "authors" {
 		a, err := c.GetOrCreateAuthor(ctx, name)
@@ -111,7 +123,19 @@ func (s *Server) catalogEntity(ctx context.Context, kind, name string) (string, 
 		return a.ID, nil
 	}
 	if kind == "series" {
-		v, err := c.GetOrCreateSeries(ctx, name)
+		id, author, hardcoverID := requestedSeriesIdentity(r)
+		v, err := c.FindSeries(ctx, id, name, author, hardcoverID)
+		if id == "" && errors.Is(err, sql.ErrNoRows) {
+			var authorID string
+			if author != "" {
+				a, err := c.GetOrCreateAuthor(ctx, author)
+				if err != nil {
+					return "", err
+				}
+				authorID = a.ID
+			}
+			v, err = c.GetOrCreateSeries(ctx, name, authorID, hardcoverID)
+		}
 		if err != nil {
 			return "", err
 		}
@@ -140,9 +164,13 @@ func (s *Server) handleCatalogMonitor(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "monitored is required", 400)
 		return
 	}
-	id, err := s.catalogEntity(r.Context(), kind, name)
+	id, err := s.catalogEntity(r, kind, name)
 	if err == nil {
 		err = s.catalogMonitor.SetMonitored(r.Context(), kind, id, *input.Monitored)
+	}
+	if errors.Is(err, catalog.ErrAmbiguousSeries) {
+		http.Error(w, "Choose a series by catalog ID", http.StatusConflict)
+		return
 	}
 	if err != nil {
 		http.Error(w, "Unable to save monitoring", 500)
@@ -165,9 +193,13 @@ func (s *Server) handleCatalogAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid action", 400)
 		return
 	}
-	id, err := s.catalogEntity(r.Context(), kind, name)
+	id, err := s.catalogEntity(r, kind, name)
 	if err == nil {
 		err = s.catalogMonitor.Queue(r.Context(), kind, id, action)
+	}
+	if errors.Is(err, catalog.ErrAmbiguousSeries) {
+		http.Error(w, "Choose a series by catalog ID", http.StatusConflict)
+		return
 	}
 	if err != nil {
 		http.Error(w, "Unable to queue check", 500)
@@ -189,7 +221,22 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 	}
 	var id, photoURL string
 	var monitored bool
-	err := s.db.QueryRowContext(r.Context(), "SELECT id,monitored,"+photo+" FROM "+kind+" WHERE "+column+"=? COLLATE NOCASE", name).Scan(&id, &monitored, &photoURL)
+	var err error
+	if kind == "series" {
+		var series *database.Series
+		seriesID, author, hardcoverID := requestedSeriesIdentity(r)
+		series, err = catalog.New(s.db).FindSeries(r.Context(), seriesID, name, author, hardcoverID)
+		if errors.Is(err, catalog.ErrAmbiguousSeries) {
+			http.Error(w, "Choose a series by catalog ID", http.StatusConflict)
+			return
+		}
+		if err == nil {
+			id = series.ID
+			err = s.db.QueryRowContext(r.Context(), "SELECT monitored FROM series WHERE id=?", id).Scan(&monitored)
+		}
+	} else {
+		err = s.db.QueryRowContext(r.Context(), "SELECT id,monitored,"+photo+" FROM "+kind+" WHERE "+column+"=? COLLATE NOCASE", name).Scan(&id, &monitored, &photoURL)
+	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		http.Error(w, "Unable to load entity", 500)
 		return
@@ -199,6 +246,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 		Title       string   `json:"title"`
 		Subtitle    string   `json:"subtitle,omitempty"`
 		AuthorName  string   `json:"authorName"`
+		SeriesID    string   `json:"seriesId,omitempty"`
 		SeriesTitle string   `json:"seriesTitle,omitempty"`
 		Date        string   `json:"releaseDate"`
 		Index       *float64 `json:"seriesIndex"`
@@ -208,7 +256,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 	}
 	books := []entry{}
 	rows, err := s.db.QueryContext(r.Context(), `
-		SELECT b.id, b.title, COALESCE(b.subtitle,''), a.name, COALESCE(s.title,''),
+		SELECT b.id, b.title, COALESCE(b.subtitle,''), a.name, COALESCE(s.title,''), COALESCE(s.id,''),
 		       COALESCE(b.release_date,''), b.series_index, `+bookAvailabilitySQL+`,
 		       (SELECT json_group_array(format) FROM (
 		           SELECT DISTINCT UPPER(e.format) AS format
@@ -227,7 +275,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var b entry
 		var formats string
-		if err := rows.Scan(&b.ID, &b.Title, &b.Subtitle, &b.AuthorName, &b.SeriesTitle, &b.Date, &b.Index, &b.State, &formats); err != nil {
+		if err := rows.Scan(&b.ID, &b.Title, &b.Subtitle, &b.AuthorName, &b.SeriesTitle, &b.SeriesID, &b.Date, &b.Index, &b.State, &formats); err != nil {
 			http.Error(w, "Unable to load books", 500)
 			return
 		}

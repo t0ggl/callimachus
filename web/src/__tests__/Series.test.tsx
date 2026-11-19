@@ -23,7 +23,7 @@ it.each([
   render(<SeriesBadge title="Broken Earth" index={index} total={total} onSelect={select} />);
   expect(screen.getByRole('button').parentElement).toHaveTextContent(text);
   await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Broken Earth' }));
-  expect(select).toHaveBeenCalledWith('Broken Earth');
+  expect(select).toHaveBeenCalledWith({ title: 'Broken Earth' });
 });
 
 it('opens reading order from discovery with series details, covers, formats, and owned book navigation', async () => {

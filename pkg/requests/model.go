@@ -55,6 +55,8 @@ type CreateRequestInput struct {
 	Author      string   `json:"author"`
 	Format      string   `json:"format"`
 	UserRole    string   `json:"user_role,omitempty"`
+
+	HardcoverSeriesID int `json:"hardcover_series_id"`
 }
 
 // RequestFilter defines search, filtering, and pagination parameters.

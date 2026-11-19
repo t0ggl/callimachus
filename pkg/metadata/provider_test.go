@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -421,10 +422,9 @@ func TestHardcoverSeriesCanonicalEnglishVolumes(t *testing.T) {
 func TestHardcoverSeriesExcludesDerivatives(t *testing.T) {
 	mt := testutil.NewMockTransport()
 	mt.PanicOnUnmocked = true
-	fixture := strings.ReplaceAll(string(testutil.LoadFixture(t, "testdata/metadata/hardcover_series_acotar.json")), `"series":{"name":`, `"series":{"id":7,"name":`)
-	registerHardcoverSeries(t, mt, `{"data":{"named":[{"id":7,"name":"A Court of Thorns and Roses"}]}}`, fixture)
+	mt.RegisterFixture("/v1/graphql", http.StatusOK, "testdata/metadata/hardcover_series_acotar.json", nil)
 	p := metadata.NewHardcoverProvider("mock", metadata.WithHardcoverClient(mt.Client()))
-	books, err := p.SeriesBooks(context.Background(), "A Court of Thorns and Roses")
+	books, err := p.SeriesBooks(context.Background(), "A Court of Thorns and Roses", metadata.BookMetadata{HardcoverSeriesID: 41})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,5 +542,108 @@ func TestHardcoverSeriesAmbiguousNames(t *testing.T) {
 				t.Fatalf("unexpected lookup result: %+v, %v", books, err)
 			}
 		})
+	}
+}
+
+func TestHardcoverWitnessPrimaryMembership(t *testing.T) {
+	const other = `{"series_position":9,"featured":true,"series":{"id":701,"name":"The Witness","author":{"name":"Grace Monroe"}}}`
+	const witness = `{"series_position":1,"series":{"id":702,"canonical_id":703,"name":"The Tales of Witness","books_count":3,"author":{"name":"Steven Erikson"}}}`
+	const umbrella = `{"series_position":21,"series":{"id":704,"name":"Malazan","author":{"name":"Steven Erikson"}}}`
+	for _, tc := range []struct {
+		name, featured, memberships string
+		wantID                      int
+	}{
+		{"featured relationship supersedes array order", witness, other + "," + umbrella + "," + witness, 703},
+		{"wrong-author featured relationship is ignored", other, other + "," + witness, 703},
+		{"featured flag breaks same-author tie", "null", other + "," + umbrella + "," + strings.Replace(witness, `"series_position":1`, `"series_position":1,"featured":true`, 1), 703},
+		{"ambiguous unfeatured memberships", "null", other + "," + witness + "," + umbrella, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mt := testutil.NewMockTransportForTest(t)
+			mt.RegisterHandler("/v1/graphql", func(r *http.Request) (*http.Response, error) {
+				var input struct{ Query string }
+				if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+					t.Fatal(err)
+				}
+				for _, field := range []string{"featured_book_series", "canonical_id", "author { name }"} {
+					if !strings.Contains(input.Query, field) {
+						t.Fatalf("query missing %s", field)
+					}
+				}
+				body := fmt.Sprintf(`{"data":{"books_by_pk":{"id":801,"title":"The God Is Not Willing","contributions":[{"author":{"name":"Steven Erikson"}},{"author":{"name":"Grace Monroe"},"contribution":"Narrator"}],"featured_book_series":%s,"book_series":[%s]}}}`, tc.featured, tc.memberships)
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})
+			p := metadata.NewHardcoverProvider("mock", metadata.WithHardcoverClient(mt.Client()))
+			book, err := p.GetBook(context.Background(), 801)
+			if err != nil || book.HardcoverSeriesID != tc.wantID {
+				t.Fatalf("book = %+v, err = %v", book, err)
+			}
+			if tc.wantID != 0 && (book.Series != "The Tales of Witness" || book.SeriesIndex == nil || *book.SeriesIndex != 1 || book.SeriesTotal != 3) {
+				t.Fatalf("unexpected primary membership: %+v", book)
+			}
+		})
+	}
+}
+
+func TestHardcoverSeriesIdentityBeforeVolumeDeduplication(t *testing.T) {
+	mt := testutil.NewMockTransportForTest(t)
+	calls := 0
+	mt.RegisterHandler("/v1/graphql", func(r *http.Request) (*http.Response, error) {
+		calls++
+		var input struct {
+			Query     string
+			Variables struct {
+				ID   int
+				Name string
+			}
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		var body string
+		switch {
+		case strings.Contains(input.Query, "query FindSeries") && regexp.MustCompile("(?i)"+input.Variables.Name).MatchString("The Witness"):
+			body = `{"data":{"named":[
+    {"id":701,"name":"The Witness","author":{"name":"Grace Monroe"}},
+    {"id":702,"name":"The Witness","canonical":{"id":703,"name":"The Tales of Witness","author":{"name":"Steven Erikson"}}}
+   ]}}`
+		case strings.Contains(input.Query, "query SeriesBooks") && input.Variables.ID == 703:
+			body = `{"data":{"books":[
+    {"id":801,"title":"The God Is Not Willing","contributions":[{"author":{"name":"Steven Erikson"}}],"book_series":[{"series_position":1,"series":{"id":702,"canonical_id":703}}]},
+    {"id":802,"title":"A Different Witness","users_count":10000,"contributions":[{"author":{"name":"Grace Monroe"}}],"book_series":[{"series_position":1,"series":{"id":701}}]}
+   ]}}`
+		default:
+			t.Fatalf("unexpected GraphQL request: %+v", input)
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	p := metadata.NewHardcoverProvider("mock", metadata.WithHardcoverClient(mt.Client()))
+	ctx := context.Background()
+	if found, err := p.SeriesBooks(ctx, "The Witness"); err != nil || len(found) != 0 || calls != 1 {
+		t.Fatalf("title-only lookup should be ambiguous: %+v (%v), %d calls", found, err, calls)
+	}
+	for _, known := range []metadata.BookMetadata{
+		{Title: "The God Is Not Willing", Authors: []string{"Steven Erikson"}},
+		{HardcoverSeriesID: 703},
+	} {
+		found, err := p.SeriesBooks(ctx, "The Witness", known)
+		if err != nil || len(found) != 1 || found[0].Title != "The God Is Not Willing" || found[0].HardcoverSeriesID != 703 {
+			t.Fatalf("unexpected reading order: %+v (%v)", found, err)
+		}
+	}
+	if calls != 4 {
+		t.Fatalf("pinned lookup should skip name resolution: %d calls", calls)
+	}
+}
+
+func TestSharesAuthorCoAuthors(t *testing.T) {
+	if !metadata.SharesAuthor([]string{"Raymond E. Feist & William R. Forstchen"}, []string{"Feist, Raymond E."}) {
+		t.Fatal("expected co-authored credit to share author with individual primary author")
+	}
+	if !metadata.SharesAuthor([]string{"Raymond E. Feist"}, []string{"Raymond E. Feist & Joel Rosenberg"}) {
+		t.Fatal("expected individual author to match co-authored credit")
+	}
+	if metadata.SharesAuthor([]string{"Steven Erikson"}, []string{"Grace Monroe"}) {
+		t.Fatal("unrelated authors must not match")
 	}
 }

@@ -11,6 +11,7 @@ import {
   Book,
   Author,
   Series,
+  SeriesSelection,
   mapBookRequest,
   RequestMetadata,
   IndexerConfig,
@@ -49,12 +50,14 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
     window.addEventListener('hashchange', changed);
     return () => window.removeEventListener('hashchange', changed);
   }, []);
-  const match = /^#\/(authors|series)\/(.+)$/.exec(entityHash);
+  const [entityPath, entityQuery] = entityHash.split('?', 2);
+  const match = /^#\/(authors|series)\/(.+)$/.exec(entityPath);
+  const entityParams = new URLSearchParams(entityQuery);
   let entityName = '';
   try { entityName = match ? decodeURIComponent(match[2]) : ''; } catch { /* Invalid routes return to the library. */ }
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
-  const [selectedSeries, setSelectedSeries] = useState<string | null>(null);
+  const [selectedSeries, setSelectedSeries] = useState<SeriesSelection | null>(null);
 
   // Real backend state
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
@@ -418,6 +421,9 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
             key={entityHash}
             kind={match[1] as 'authors' | 'series'}
             name={entityName}
+            seriesID={entityParams.get('id') ?? undefined}
+            seriesAuthor={entityParams.get('author') ?? undefined}
+            hardcoverID={entityParams.get('hardcover_id') ?? undefined}
             canManage={currentUser?.role === 'admin' || currentUser?.role === 'curator'}
             isAdmin={isAdmin}
             onMetadataApplied={fetchCatalog}

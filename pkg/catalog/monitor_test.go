@@ -22,7 +22,7 @@ func TestMonitoringPersistenceAndMonthlyCadence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			series, err := c.GetOrCreateSeries(ctx, "Example Series")
+			series, err := c.GetOrCreateSeries(ctx, "Example Series", "", 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -31,7 +31,10 @@ func TestMonitoringPersistenceAndMonthlyCadence(t *testing.T) {
 				id = series.ID
 			}
 			scans := 0
-			m := &catalog.Monitor{DB: db, Discover: func(context.Context, string, string) ([]metadata.BookMetadata, error) { scans++; return nil, nil }, Search: func(context.Context, string) error { return nil }}
+			m := &catalog.Monitor{DB: db, Discover: func(context.Context, string, string, []metadata.BookMetadata) ([]metadata.BookMetadata, error) {
+				scans++
+				return nil, nil
+			}, Search: func(context.Context, string) error { return nil }}
 			if err = m.SetMonitored(ctx, kind, id, true); err != nil {
 				t.Fatal(err)
 			}
@@ -82,7 +85,7 @@ func TestMonitoringReleaseDayDailyChecksAndAcquisition(t *testing.T) {
 	}
 	calls := 0
 	var bookID string
-	m := &catalog.Monitor{DB: db, Discover: func(context.Context, string, string) ([]metadata.BookMetadata, error) {
+	m := &catalog.Monitor{DB: db, Discover: func(context.Context, string, string, []metadata.BookMetadata) ([]metadata.BookMetadata, error) {
 		return []metadata.BookMetadata{
 			{Title: "Upcoming", Authors: []string{"Example Author"}, PublishDate: "2028-05-10", Series: "Sequence"},
 			{Title: "Wrong author", Authors: []string{"Someone Else"}},
@@ -136,7 +139,7 @@ func TestMonitoringRetriesFailedDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	m := &catalog.Monitor{DB: db, Discover: func(context.Context, string, string) ([]metadata.BookMetadata, error) {
+	m := &catalog.Monitor{DB: db, Discover: func(context.Context, string, string, []metadata.BookMetadata) ([]metadata.BookMetadata, error) {
 		calls++
 		return nil, errors.New("offline")
 	}, Search: func(context.Context, string) error { return nil }}
@@ -173,7 +176,7 @@ func TestMonitoringPreservesPartialAndYearOnlyDates(t *testing.T) {
 	var searched []string
 	m := &catalog.Monitor{
 		DB: db,
-		Discover: func(context.Context, string, string) ([]metadata.BookMetadata, error) {
+		Discover: func(context.Context, string, string, []metadata.BookMetadata) ([]metadata.BookMetadata, error) {
 			return discovered, nil
 		},
 		Search: func(_ context.Context, id string) error {
@@ -246,5 +249,68 @@ func TestMonitoringPreservesPartialAndYearOnlyDates(t *testing.T) {
 	}
 	if len(searched) != 2 || searched[0] != "Exact Future" || searched[1] != "Partial Month ISO" {
 		t.Fatalf("on 2028-06-01 searched = %v, want [Exact Future Partial Month ISO]", searched)
+	}
+}
+
+func TestMonitoringKeepsWitnessSeriesSeparate(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	c := catalog.New(db)
+	for _, query := range []string{
+		`INSERT INTO authors(id,name,sort_name) VALUES('erikson','Steven Erikson','Erikson, Steven'),('monroe','Grace Monroe','Monroe, Grace')`,
+		`INSERT INTO series(id,title,description,monitored) VALUES('legacy','The Witness','Local description',1)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index,monitored) VALUES('god','erikson','The God Is Not Willing','legacy',1,0)`,
+		`INSERT INTO book_editions(id,book_id,format) VALUES('local-edition','god','epub')`,
+		`INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES('local-file','local-edition','/library/erikson.epub',1)`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other, err := c.GetOrCreateSeries(ctx, "The Witness", "monroe", 701)
+	if err != nil || other.ID == "legacy" {
+		t.Fatalf("unrelated author reused legacy series: %+v (%v)", other, err)
+	}
+	calls := 0
+	m := &catalog.Monitor{DB: db, Search: func(context.Context, string) error { return nil }}
+	m.Discover = func(_ context.Context, kind, name string, known []metadata.BookMetadata) ([]metadata.BookMetadata, error) {
+		calls++
+		if kind != "series" || name != "The Witness" || len(known) != 1 {
+			t.Fatalf("unexpected discovery context: %s %s %+v", kind, name, known)
+		}
+		if calls == 1 && (known[0].Title != "The God Is Not Willing" || !metadata.SharesAuthor(known[0].Authors, []string{"Steven Erikson"})) {
+			t.Fatalf("legacy author evidence missing: %+v", known)
+		}
+		if calls == 2 && known[0].HardcoverSeriesID != 703 {
+			t.Fatalf("canonical series ID missing: %+v", known)
+		}
+		return []metadata.BookMetadata{
+			{Title: "A Different Witness", Authors: []string{"Grace Monroe"}, Series: name, HardcoverSeriesID: 701},
+			{Title: "The God Is Not Willing", Authors: []string{"Steven Erikson"}, Series: name, HardcoverSeriesID: 703, PublishDate: "2021-11-09"},
+			{Title: "No Life Forsaken", Authors: []string{"Steven Erikson"}, Series: name, HardcoverSeriesID: 703, PublishDate: "2099-10-23"},
+		}, nil
+	}
+	for _, month := range []time.Month{time.January, time.February} {
+		if err := m.Tick(ctx, time.Date(2028, month, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("discovery ran %d times", calls)
+	}
+	aliased, err := c.GetOrCreateSeries(ctx, "The Tales of Witness", "erikson", 703)
+	if err != nil || aliased.ID != "legacy" || aliased.Description == nil || *aliased.Description != "Local description" {
+		t.Fatalf("canonical ID failed to preserve the catalog row: %+v (%v)", aliased, err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM books WHERE series_id='legacy' AND author_id='erikson'`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("series books = %d (%v)", count, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM books`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("unrelated or duplicate books persisted: %d (%v)", count, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM books b JOIN book_editions e ON e.book_id=b.id JOIN media_assets m ON m.edition_id=e.id
+  WHERE b.id='god' AND b.series_id='legacy' AND b.series_index=1 AND b.monitored=0 AND m.id='local-file'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("existing book, flags, or media changed: %d (%v)", count, err)
 	}
 }
