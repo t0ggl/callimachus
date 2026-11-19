@@ -23,18 +23,39 @@ import {
   RequestStatus,
 } from './types';
 
-export const App: React.FC = () => {
+interface AppProps {
+  initialView?: NavView;
+}
+
+export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
   const [entityHash, setEntityHash] = useState(window.location.hash);
-  useEffect(() => { const changed = () => { setEntityHash(window.location.hash); setSelectedBook(null); setIsPaletteOpen(false); }; window.addEventListener('hashchange', changed); return () => window.removeEventListener('hashchange', changed); }, []);
+  const [currentView, setCurrentView] = useState<NavView>(() => {
+    if (window.location.hash === '#/settings' || window.location.pathname === '/settings') {
+      return 'settings';
+    }
+    return initialView;
+  });
+  useEffect(() => {
+    const changed = () => {
+      setEntityHash(window.location.hash);
+      if (window.location.hash === '#/settings') {
+        setCurrentView('settings');
+      }
+      setSelectedBook(null);
+      setIsPaletteOpen(false);
+    };
+    window.addEventListener('hashchange', changed);
+    return () => window.removeEventListener('hashchange', changed);
+  }, []);
   const match = /^#\/(authors|series)\/(.+)$/.exec(entityHash);
   let entityName = '';
   try { entityName = match ? decodeURIComponent(match[2]) : ''; } catch { /* Invalid routes return to the library. */ }
-  const [currentView, setCurrentView] = useState<NavView>('catalog');
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
 
   // Real backend state
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const isAdmin = currentUser?.role === 'admin';
   const [books, setBooks] = useState<Book[]>([]);
   const [authors, setAuthors] = useState<Author[]>([]);
   const [series, setSeries] = useState<Series[]>([]);
@@ -207,6 +228,9 @@ export const App: React.FC = () => {
         redirectToOIDC();
         return;
       }
+      if (res.status === 403) {
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         applySettingsResponse(data);
@@ -240,6 +264,15 @@ export const App: React.FC = () => {
     await fetchSettings();
   }, [redirectToOIDC, fetchSettings]);
 
+  const navigateTo = useCallback((v: NavView) => {
+    window.location.hash = '';
+    if (v === 'settings' && !isAdmin) {
+      setCurrentView('catalog');
+      return;
+    }
+    setCurrentView(v);
+  }, [isAdmin]);
+
   useEffect(() => {
     fetchAuthUser();
   }, [fetchAuthUser]);
@@ -249,7 +282,9 @@ export const App: React.FC = () => {
     fetchCatalog();
     fetchRequests();
     fetchActivity();
-    fetchSettings();
+    if (currentUser.role === 'admin') {
+      fetchSettings();
+    }
   }, [currentUser, fetchCatalog, fetchRequests, fetchActivity, fetchSettings]);
 
   // Vim navigation for catalog
@@ -294,13 +329,22 @@ export const App: React.FC = () => {
 
       // View switching shortcuts 1, 2, 3
       if (!isInput && !isPaletteOpen && !selectedBook) {
-        if (['1', '2', '3'].includes(e.key)) { window.location.hash = ''; setCurrentView(e.key === '1' ? 'catalog' : e.key === '2' ? 'activity' : 'settings'); }
+        if (e.key === '1') {
+          window.location.hash = '';
+          setCurrentView('catalog');
+        } else if (e.key === '2') {
+          window.location.hash = '';
+          setCurrentView('activity');
+        } else if (e.key === '3' && isAdmin) {
+          window.location.hash = '';
+          setCurrentView('settings');
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPaletteOpen, selectedBook]);
+  }, [isPaletteOpen, selectedBook, isAdmin]);
 
   // Request actions wired to real API
   const handleSubmitRequest = async (
@@ -336,7 +380,7 @@ export const App: React.FC = () => {
     <>
       <Layout
         currentView={currentView}
-        onNavigate={(v) => { window.location.hash = ''; setCurrentView(v); }}
+        onNavigate={navigateTo}
         onOpenPalette={() => setIsPaletteOpen(true)}
         user={currentUser}
         activeDownloadsCount={activeDownloadsCount}
@@ -367,15 +411,35 @@ export const App: React.FC = () => {
         )}
 
         {!match && currentView === 'settings' && (
-          <SettingsView
-            indexers={indexers}
-            librarySettings={librarySettings}
-            prowlarrSettings={prowlarrSettings}
-            qualityProfile={qualityProfile}
-            overrides={settingsOverrides}
-            onSyncIndexers={handleSyncIndexers}
-            onSaveSettings={handleSaveSettings}
-          />
+          isAdmin ? (
+            <SettingsView
+              indexers={indexers}
+              librarySettings={librarySettings}
+              prowlarrSettings={prowlarrSettings}
+              qualityProfile={qualityProfile}
+              overrides={settingsOverrides}
+              onSyncIndexers={handleSyncIndexers}
+              onSaveSettings={handleSaveSettings}
+            />
+          ) : currentUser ? (
+            <div data-testid="settings-access-denied" role="alert" className="py-16 text-center space-y-3">
+              <h1 className="text-xl font-bold text-white">Access Denied</h1>
+              <p className="text-sm text-zinc-400">
+                Administrator privileges are required to view or modify system settings.
+              </p>
+              <button
+                type="button"
+                onClick={() => navigateTo('catalog')}
+                className="px-4 py-2 rounded-md bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-100"
+              >
+                Return to Library
+              </button>
+            </div>
+          ) : (
+            <div data-testid="settings-verifying" role="status" className="py-16 text-center text-sm text-zinc-400">
+              Verifying permissions…
+            </div>
+          )
         )}
       </Layout>
 
@@ -388,9 +452,9 @@ export const App: React.FC = () => {
         books={books}
         authors={authors}
         series={series}
+        canAccessSettings={isAdmin}
         onNavigate={(v) => {
-          window.location.hash = '';
-          setCurrentView(v as NavView);
+          navigateTo(v as NavView);
           setIsPaletteOpen(false);
         }}
         onSelectBook={(b) => {

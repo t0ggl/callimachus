@@ -15,6 +15,7 @@ interface CommandPaletteProps {
   books: Book[];
   authors: Author[];
   series: Series[];
+  canAccessSettings?: boolean;
   onNavigate: (view: string) => void;
   onSelectBook: (book: Book) => void;
 }
@@ -37,6 +38,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   books,
   authors,
   series,
+  canAccessSettings = false,
   onNavigate,
   onSelectBook,
 }) => {
@@ -97,17 +99,21 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           closePalette();
         },
       },
-      {
-        id: 'nav_settings',
-        type: 'navigation',
-        title: 'Settings',
-        subtitle: 'Indexers, download clients, profiles & auth',
-        badge: 'View',
-        action: () => {
-          onNavigate('settings');
-          closePalette();
-        },
-      },
+      ...(canAccessSettings
+        ? [
+            {
+              id: 'nav_settings',
+              type: 'navigation' as const,
+              title: 'Settings',
+              subtitle: 'Indexers, download clients, profiles & auth',
+              badge: 'View',
+              action: () => {
+                onNavigate('settings');
+                closePalette();
+              },
+            },
+          ]
+        : []),
     ];
 
     // Add books
@@ -166,7 +172,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         (item.subtitle && item.subtitle.toLowerCase().includes(q)) ||
         item.book?.seriesTitle?.toLowerCase().includes(q)
     );
-  }, [books, authors, series, query, onNavigate, onSelectBook, onClose]);
+  }, [books, authors, series, query, canAccessSettings, onNavigate, onSelectBook, onClose]);
 
   useEffect(() => {
     setSelectedIndex(0);

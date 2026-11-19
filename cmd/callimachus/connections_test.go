@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -8,8 +9,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
+
+func withAdminUser(req *http.Request) *http.Request {
+	return req.WithContext(auth.ContextWithUser(context.Background(), &auth.User{
+		ID:       "admin-test",
+		Username: "admin",
+		Role:     auth.RoleAdmin,
+	}))
+}
 
 func TestConnectionChecks(t *testing.T) {
 	for _, service := range []string{"prowlarr", "google-books", "hardcover"} {
@@ -77,7 +87,7 @@ func TestConnectionChecks(t *testing.T) {
 				s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
 				mux := http.NewServeMux()
 				s.registerAPIRoutes(mux)
-				req := httptest.NewRequest("POST", "/api/settings/"+service+"/test", strings.NewReader(`{"url":"http://draft","apiKey":"draft-secret"}`))
+				req := withAdminUser(httptest.NewRequest("POST", "/api/settings/"+service+"/test", strings.NewReader(`{"url":"http://draft","apiKey":"draft-secret"}`)))
 				w := httptest.NewRecorder()
 				mux.ServeHTTP(w, req)
 				want := 502
@@ -164,7 +174,7 @@ func TestConnectionCredentialPrecedence(t *testing.T) {
 				mux := http.NewServeMux()
 				s.registerAPIRoutes(mux)
 				w := httptest.NewRecorder()
-				mux.ServeHTTP(w, httptest.NewRequest("POST", "/api/settings/"+service+"/test", strings.NewReader(draft)))
+				mux.ServeHTTP(w, withAdminUser(httptest.NewRequest("POST", "/api/settings/"+service+"/test", strings.NewReader(draft))))
 				want := 200
 				if mode == "missing" && service != "google-books" {
 					want = 400
@@ -183,7 +193,7 @@ func TestConnectionInputValidation(t *testing.T) {
 		mux := http.NewServeMux()
 		s.registerAPIRoutes(mux)
 		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, httptest.NewRequest("POST", "/api/settings/prowlarr/test", strings.NewReader(body)))
+		mux.ServeHTTP(w, withAdminUser(httptest.NewRequest("POST", "/api/settings/prowlarr/test", strings.NewReader(body))))
 		if w.Code != 400 || strings.Contains(w.Body.String(), "secret") {
 			t.Fatalf("unexpected response: %d %s", w.Code, w.Body.String())
 		}

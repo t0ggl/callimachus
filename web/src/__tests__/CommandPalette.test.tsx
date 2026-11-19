@@ -109,6 +109,46 @@ describe('CommandPalette Component', () => {
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onCloseMock).toHaveBeenCalled();
   });
+
+  it('hides Settings navigation entry when canAccessSettings is false or omitted', () => {
+    render(
+      <CommandPalette
+        isOpen={true}
+        onClose={vi.fn()}
+        books={testBooks}
+        authors={testAuthors}
+        series={testSeries}
+        onNavigate={vi.fn()}
+        onSelectBook={vi.fn()}
+      />
+    );
+
+    expect(screen.getByTestId('palette-item-nav_catalog')).toBeInTheDocument();
+    expect(screen.getByTestId('palette-item-nav_activity')).toBeInTheDocument();
+    expect(screen.queryByTestId('palette-item-nav_settings')).not.toBeInTheDocument();
+  });
+
+  it('shows Settings navigation entry when canAccessSettings is true', async () => {
+    const onNavigate = vi.fn();
+    const user = userEvent.setup({ delay: null });
+    render(
+      <CommandPalette
+        isOpen={true}
+        onClose={vi.fn()}
+        books={testBooks}
+        authors={testAuthors}
+        series={testSeries}
+        canAccessSettings={true}
+        onNavigate={onNavigate}
+        onSelectBook={vi.fn()}
+      />
+    );
+
+    const settingsItem = screen.getByTestId('palette-item-nav_settings');
+    expect(settingsItem).toBeInTheDocument();
+    await user.click(settingsItem);
+    expect(onNavigate).toHaveBeenCalledWith('settings');
+  });
 });
 
 describe('Global Palette Triggers in App', () => {
