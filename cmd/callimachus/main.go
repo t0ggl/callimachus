@@ -46,7 +46,6 @@ type Config struct {
 	LibraryPath         string
 	Host                string
 	Port                int
-	StaticDir           string
 	StaticFS            fs.FS
 	ProwlarrURL         string
 	ProwlarrAPIKey      string
@@ -229,10 +228,6 @@ func NewServer(cfg Config) (*Server, error) {
 	var staticFS fs.FS
 	if cfg.StaticFS != nil {
 		staticFS = cfg.StaticFS
-	} else if cfg.StaticDir != "" {
-		if fi, err := os.Stat(cfg.StaticDir); err == nil && fi.IsDir() {
-			staticFS = os.DirFS(cfg.StaticDir)
-		}
 	}
 	if staticFS == nil {
 		if sub, err := web.FS(); err == nil {
@@ -570,7 +565,6 @@ func run(ctx context.Context, args []string) error {
 	libraryFlag := fs.String("library", "", "Path to root books library directory (default: $CALLIMACHUS_LIBRARY_ROOT, /books, or ./books)")
 	hostFlag := fs.String("host", "", "HTTP host to bind (default: $CALLIMACHUS_HOST or 0.0.0.0)")
 	portFlag := fs.Int("port", 8080, "HTTP port to listen on (default: $CALLIMACHUS_PORT or 8080)")
-	webDirFlag := fs.String("web-dir", "", "Path to custom web distribution directory (default: embedded web/dist)")
 	prowlarrURLFlag := fs.String("prowlarr-url", "", "Prowlarr base URL (default: $CALLIMACHUS_PROWLARR_URL)")
 	prowlarrKeyFlag := fs.String("prowlarr-key", "", "Prowlarr API key (default: $CALLIMACHUS_PROWLARR_API_KEY)")
 
@@ -593,7 +587,6 @@ func run(ctx context.Context, args []string) error {
 		LibraryPath:    *libraryFlag,
 		Host:           boot.Host,
 		Port:           boot.Port,
-		StaticDir:      *webDirFlag,
 		ProwlarrURL:    *prowlarrURLFlag,
 		ProwlarrAPIKey: *prowlarrKeyFlag,
 		Version:        version,
