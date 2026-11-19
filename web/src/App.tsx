@@ -1,12 +1,11 @@
 import { EntityView } from './views/EntityView';
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Layout, NavView } from './components/Layout';
-import { CatalogView, buildCatalogDisplayItems } from './views/CatalogView';
+import { CatalogView } from './views/CatalogView';
 import { ActivityView } from './views/ActivityView';
 import { SettingsView } from './views/SettingsView';
 import { CommandPalette } from './components/CommandPalette';
 import { BookDetailModal } from './components/BookDetailModal';
-import { useKeyboardNav } from './hooks/useKeyboardNav';
 import { useActivityStream } from './hooks/useActivityStream';
 import {
   Book,
@@ -313,36 +312,6 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
 
   const bundleSeriesInLibrary = librarySettings.bundleSeriesInLibrary ?? true;
 
-  const catalogDisplayItems = useMemo(
-    () => buildCatalogDisplayItems(books, series, bundleSeriesInLibrary),
-    [books, series, bundleSeriesInLibrary]
-  );
-
-  // Vim navigation for catalog
-  const { selectedIndex } = useKeyboardNav({
-    itemsCount: catalogDisplayItems.length,
-    enabled:
-      currentView === 'catalog' &&
-      !match &&
-      !isPaletteOpen &&
-      selectedBook === null &&
-      selectedSeries === null,
-    onSelect: (index) => {
-      const item = catalogDisplayItems[index];
-      if (!item) return;
-      if (item.kind === 'series') {
-        setSelectedSeries(item.title);
-      } else {
-        setSelectedBook(item.book);
-      }
-    },
-    onEscape: () => {
-      if (selectedBook) setSelectedBook(null);
-      else if (selectedSeries) setSelectedSeries(null);
-      else if (isPaletteOpen) setIsPaletteOpen(false);
-    },
-  });
-
   // Global key listener for '/' and 'Ctrl+K' / 'Cmd+K'
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -451,7 +420,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
             series={series}
             bundleSeriesInLibrary={bundleSeriesInLibrary}
             onSelectBook={(b) => setSelectedBook(b)}
-            selectedIndex={selectedIndex}
+            keyboardNavigationEnabled={!isPaletteOpen && selectedBook === null}
             selectedSeries={selectedSeries}
             onSelectSeries={setSelectedSeries}
             onScanComplete={fetchCatalog}

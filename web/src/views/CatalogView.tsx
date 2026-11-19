@@ -1,5 +1,5 @@
 import { EntityLink } from '../components/EntityLink';
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Grid,
   List,
@@ -11,10 +11,11 @@ import {
 } from 'lucide-react';
 import { Book, Author, Series, FormatType, FORMAT_TYPES } from '../types';
 
+import { useKeyboardNav } from '../hooks/useKeyboardNav';
 import { SeriesBadge } from '../components/SeriesBadge';
 import { SeriesDetailModal } from '../components/SeriesDetailModal';
 
-export type CatalogDisplayItem =
+type CatalogDisplayItem =
   | { kind: 'book'; book: Book }
   | {
       kind: 'series';
@@ -30,7 +31,7 @@ export type CatalogDisplayItem =
       pendingCount: number;
     };
 
-export function buildCatalogDisplayItems(
+function buildCatalogDisplayItems(
   books: Book[],
   series: Series[],
   bundleSeries: boolean
@@ -160,7 +161,7 @@ interface CatalogViewProps {
   series: Series[];
   bundleSeriesInLibrary?: boolean;
   onSelectBook: (book: Book) => void;
-  selectedIndex: number;
+  keyboardNavigationEnabled?: boolean;
   selectedSeries?: string | null;
   onSelectSeries?: (title: string | null) => void;
   onScanComplete?: () => Promise<void>;
@@ -172,7 +173,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
   series,
   bundleSeriesInLibrary = true,
   onSelectBook,
-  selectedIndex,
+  keyboardNavigationEnabled = true,
   selectedSeries: controlledSelectedSeries,
   onSelectSeries,
   onScanComplete,
@@ -218,6 +219,26 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
     () => buildCatalogDisplayItems(filteredBooks, series, bundleSeriesInLibrary),
     [filteredBooks, series, bundleSeriesInLibrary]
   );
+
+  const selectedItemRef = useRef<HTMLElement | null>(null);
+  const setSelectedItem = (item: HTMLElement | null) => {
+    selectedItemRef.current = item;
+  };
+  const { selectedIndex, setSelectedIndex } = useKeyboardNav({
+    itemsCount: activeTab === 'books' ? displayItems.length : 0,
+    enabled: keyboardNavigationEnabled && activeTab === 'books' && !selectedSeries,
+    onSelect: (index) => {
+      const item = displayItems[index];
+      if (item.kind === 'series') setSelectedSeries(item.title);
+      else onSelectBook(item.book);
+    },
+  });
+
+  useEffect(() => {
+    const item = selectedItemRef.current;
+    item?.querySelector<HTMLButtonElement>('[data-catalog-title]')?.focus({ preventScroll: true });
+    item?.scrollIntoView?.({ block: 'nearest' });
+  }, [selectedIndex]);
 
   // Filtered authors
   const filteredAuthors = useMemo(() => {
@@ -312,7 +333,11 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
           {activeTab === 'books' && (
             <div className="flex bg-zinc-900 border border-zinc-800 rounded-lg p-0.5">
               <button
-                onClick={() => setViewMode('grid')}
+                onClick={() => {
+                  if (viewMode !== 'grid') setSelectedIndex(-1);
+                  setViewMode('grid');
+                }}
+                aria-pressed={viewMode === 'grid'}
                 data-testid="view-grid-btn"
                 className={`p-1.5 rounded-md transition-colors ${
                   viewMode === 'grid'
@@ -324,7 +349,11 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                 <Grid className="w-4 h-4" />
               </button>
               <button
-                onClick={() => setViewMode('list')}
+                onClick={() => {
+                  if (viewMode !== 'list') setSelectedIndex(-1);
+                  setViewMode('list');
+                }}
+                aria-pressed={viewMode === 'list'}
                 data-testid="view-list-btn"
                 className={`p-1.5 rounded-md transition-colors ${
                   viewMode === 'list'
@@ -349,7 +378,10 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
             type="text"
             placeholder={`Filter ${activeTab}...`}
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => {
+              setSelectedIndex(-1);
+              setSearchQuery(e.target.value);
+            }}
             className="w-full pl-9 pr-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-md text-xs text-zinc-100 placeholder-zinc-500 focus:outline-hidden focus:border-zinc-700"
           />
         </div>
@@ -363,7 +395,10 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
               {(['ALL', ...FORMAT_TYPES] as const).map((fmt) => (
                 <button
                   key={fmt}
-                  onClick={() => setFormatFilter(fmt)}
+                  onClick={() => {
+                    if (formatFilter !== fmt) setSelectedIndex(-1);
+                    setFormatFilter(fmt);
+                  }}
                   data-testid={`filter-format-${fmt.toLowerCase()}`}
                   className={`px-2.5 py-1 rounded-sm transition-colors ${
                     formatFilter === fmt
@@ -402,6 +437,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                   return (
                     <div
                       key={`series-${item.key}`}
+                      ref={isSelected ? setSelectedItem : undefined}
                       data-testid={`series-card-${seriesTestId}`}
                       onClick={() => setSelectedSeries(item.title)}
                       className={`group relative bg-zinc-900/90 rounded-lg border overflow-hidden cursor-pointer transition-all duration-150 flex flex-col ${
@@ -455,6 +491,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                           <h3 className="text-xs font-semibold text-zinc-100 group-hover:text-blue-400 transition-colors line-clamp-1">
                             <button
                               type="button"
+                              data-catalog-title
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setSelectedSeries(item.title);
@@ -496,6 +533,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                 return (
                   <div
                     key={book.id}
+                    ref={isSelected ? setSelectedItem : undefined}
                     data-testid={`book-card-${book.id}`}
                     onClick={() => onSelectBook(book)}
                     className={`group relative bg-zinc-900/90 rounded-lg border overflow-hidden cursor-pointer transition-all duration-150 flex flex-col ${
@@ -551,7 +589,17 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                     <div className="p-3 flex-1 flex flex-col justify-between">
                       <div>
                         <h3 className="text-xs font-semibold text-zinc-100 group-hover:text-blue-400 transition-colors line-clamp-1">
-                          {book.title}
+                          <button
+                            type="button"
+                            data-catalog-title
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectBook(book);
+                            }}
+                            className="text-left hover:text-blue-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 rounded-sm truncate max-w-full"
+                          >
+                            {book.title}
+                          </button>
                         </h3>
                         <p className="text-[11px] text-zinc-400 mt-0.5 truncate">
                           <EntityLink kind="authors" name={book.authorName} />
@@ -585,6 +633,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                       return (
                         <tr
                           key={`series-${item.key}`}
+                          ref={isSelected ? setSelectedItem : undefined}
                           data-testid={`series-row-${seriesTestId}`}
                           onClick={() => setSelectedSeries(item.title)}
                           className={`cursor-pointer transition-colors duration-150 ${
@@ -597,6 +646,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                             <Layers className="w-3.5 h-3.5 text-purple-400 shrink-0" aria-hidden="true" />
                             <button
                               type="button"
+                              data-catalog-title
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setSelectedSeries(item.title);
@@ -658,6 +708,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                     return (
                       <tr
                         key={book.id}
+                        ref={isSelected ? setSelectedItem : undefined}
                         data-testid={`book-row-${book.id}`}
                         onClick={() => onSelectBook(book)}
                         className={`cursor-pointer transition-colors duration-150 ${
@@ -668,7 +719,17 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                       >
                         <td className="py-3 px-4 font-medium text-zinc-100 flex items-center gap-2">
                           <BookOpen className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
-                          <span className="truncate">{book.title}</span>
+                          <button
+                            type="button"
+                            data-catalog-title
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectBook(book);
+                            }}
+                            className="truncate text-left hover:text-blue-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 rounded-sm"
+                          >
+                            {book.title}
+                          </button>
                         </td>
                         <td className="py-3 px-4 text-zinc-300"><EntityLink kind="authors" name={book.authorName} /></td>
                         <td className="py-3 px-4">
