@@ -260,6 +260,7 @@ func (p *OpenLibraryProvider) Search(ctx context.Context, query string) ([]BookM
 		}
 		if len(doc.ISBN) > 0 {
 			meta.ISBN13 = doc.ISBN[0]
+			meta.ISBNs = doc.ISBN
 			for _, isbn := range doc.ISBN {
 				if len(isbn) == 13 {
 					meta.ISBN13 = isbn

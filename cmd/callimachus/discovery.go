@@ -283,9 +283,11 @@ func searchGoogleBooks(ctx context.Context, client *http.Client, query, key stri
 			Description: v.Description, Language: v.Language, CoverURL: v.ImageLinks.Thumbnail,
 		}
 		for _, identifier := range v.IndustryIdentifiers {
-			if identifier.Type == "ISBN_13" {
+			if identifier.Type == "ISBN_13" && book.ISBN13 == "" {
 				book.ISBN13 = identifier.Identifier
-				break
+			}
+			if identifier.Type == "ISBN_10" || identifier.Type == "ISBN_13" {
+				book.ISBNs = append(book.ISBNs, identifier.Identifier)
 			}
 		}
 		books = append(books, book)

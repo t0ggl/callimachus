@@ -20,6 +20,61 @@ import (
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
+func TestMetadataCandidateISBNPreference(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	if _, err := db.Exec(`
+		INSERT INTO authors (id, name, sort_name) VALUES ('a', 'Library Author', 'Library Author');
+		INSERT INTO books (id, title, author_id, release_date) VALUES ('b', 'Library Title', 'a', '2024');
+		INSERT INTO book_editions (id, book_id, format) VALUES ('e', 'b', 'epub');
+		INSERT INTO media_assets (id, edition_id, file_path, file_size) VALUES ('asset', 'e', 'book.epub', 0);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CALLIMACHUS_OPENLIBRARY_ENABLED", "true")
+	t.Setenv("CALLIMACHUS_HARDCOVER_API_KEY", "")
+	t.Setenv("CALLIMACHUS_GOOGLE_BOOKS_API_KEY", "")
+	transport := testutil.NewMockTransport()
+	transport.PanicOnUnmocked = true
+	transport.RegisterRegexResponse(regexp.MustCompile(`^https://openlibrary\.org/search\.json\?.*\bq=Library\+Title(?:\+Library\+Author)?$`),
+		200, []byte(`{"docs":[
+			{"title":"Library Title","author_name":["Library Author"],"first_publish_year":2024,"isbn":["9780140328721"]},
+			{"title":"Alternate Title","isbn":["9780804429570","0-8044-2957-x"]},
+			{"title":"Invalid ISBN","isbn":["9780804429570"]},
+			{"title":"Library Title Revised","author_name":["Library Author"],"first_publish_year":2023}
+		]}`), nil)
+	s := &Server{db: db, prowlarrHTTPClient: transport.Client()}
+	for _, test := range []struct {
+		name, localISBN, query, firstTitle, firstISBN string
+	}{
+		{"matching alternate", "URN:ISBN:978-0-8044-2957-3", "", "Alternate Title", "9780804429573"},
+		{"matching stored ISBN-10", "0-8044-2957-X", "", "Alternate Title", "9780804429573"},
+		{"conflicting", "9781234567897", "", "Library Title", "9780140328721"},
+		{"invalid", "9780804429570", "", "Library Title", "9780140328721"},
+		{"absent", "", "", "Library Title", "9780140328721"},
+		{"custom search", "9780804429573", "?q=Library+Title", "Library Title", "9780140328721"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := db.Exec("UPDATE book_editions SET isbn13 = NULLIF(?, '') WHERE id = 'e'", test.localISBN); err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest("GET", "/api/books/b/metadata-candidates"+test.query, nil)
+			req.SetPathValue("id", "b")
+			res := httptest.NewRecorder()
+			s.handleMetadataCandidates(res, req)
+			if res.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", res.Code, res.Body)
+			}
+			var candidates []epub.Metadata
+			if err := json.Unmarshal(res.Body.Bytes(), &candidates); err != nil {
+				t.Fatal(err)
+			}
+			if len(candidates) != 4 || candidates[0].Title != test.firstTitle || candidates[0].ISBN13 != test.firstISBN {
+				t.Fatalf("unexpected candidate ranking: %+v", candidates)
+			}
+		})
+	}
+}
+
 func TestCompareMetadata(t *testing.T) {
 	position := 0.5
 	diffs := compareMetadata(epub.Metadata{Title: "Old", Authors: []string{"A", "B"}},
@@ -68,7 +123,7 @@ func TestBookMetadataRepair(t *testing.T) {
 		VALUES ('b', 'Library Title', 'a', 'Library Subtitle', 's', 0.5, '2024', 'Library synopsis'),
 		       ('empty', 'No EPUB', 'a', NULL, NULL, NULL, NULL, NULL);
 		INSERT INTO book_editions (id, book_id, format, language, publisher, isbn13, publication_date)
-		VALUES ('e', 'b', 'epub', 'fr', 'Library Press', '9781234567890', '2024-05-20'),
+		VALUES ('e', 'b', 'epub', 'fr', 'Library Press', '9781234567897', '2024-05-20'),
 		       ('e2', 'b', 'epub', 'de', 'Other Press', NULL, NULL);
 	`); err != nil {
 		t.Fatal(err)
@@ -89,13 +144,13 @@ func TestBookMetadataRepair(t *testing.T) {
 	}
 	transport.RegisterRegexResponse(openLibraryQuery("Library+Title+Library+Author"), 200, []byte(`{"docs":[
 		{"title":"Unrelated","author_name":["Somebody"]},
-		{"title":"Library Title","author_name":["Library Author"],"first_publish_year":2020,"isbn":["9780000000000"]},
-		{"title":"Library Title","author_name":["Library Author"],"first_publish_year":2024,"isbn":["9781234567890"]},
+		{"title":"Library Title","author_name":["Library Author"],"first_publish_year":2020,"isbn":["9780000000002"]},
+		{"title":"Library Title","author_name":["Library Author"],"first_publish_year":2024,"isbn":["9781234567897"]},
 		{"title":"Different One"}, {"title":"Different Two"}, {"title":"Different Three"}, {"title":"Different Four"}
 	]}`), nil)
 	transport.RegisterRegexResponse(openLibraryQuery("Other+Name"), 200, []byte(`{"docs":[{
 		"title":"Other Name","subtitle":"New Subtitle","author_name":["New Author", "Second Author"],"first_publish_year":2026,
-		"isbn":["9789999999999"],"publisher":["New Press"],"language":["en"]
+		"isbn":["9789999999991"],"publisher":["New Press"],"language":["en"]
 	}]}`), nil)
 	transport.RegisterRegexResponse(openLibraryQuery("Empty"), 200, []byte(`{"docs":[]}`), nil)
 	transport.RegisterRegexResponse(openLibraryQuery("Error"), 503, []byte(`{}`), nil)
@@ -190,7 +245,7 @@ func TestBookMetadataRepair(t *testing.T) {
 	meta := original.Metadata()
 	if meta.Title != "Library Title" || meta.Subtitle != "Library Subtitle" || meta.Series != "Library Series" ||
 		meta.SeriesIndex == nil || *meta.SeriesIndex != 0.5 || meta.PublishDate != "2024-05-20" ||
-		meta.ISBN13 != "9781234567890" || meta.Publisher != "Library Press" ||
+		meta.ISBN13 != "9781234567897" || meta.Publisher != "Library Press" ||
 		meta.Language != "fr" || meta.Description != "Library synopsis" {
 		t.Fatalf("unexpected EPUB metadata: %+v", meta)
 	}
@@ -199,7 +254,7 @@ func TestBookMetadataRepair(t *testing.T) {
 	if err := json.Unmarshal(request("GET", base+"metadata-candidates", nil, admin, 200), &matches); err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != 5 || matches[0].ISBN13 != "9781234567890" || matches[1].ISBN13 != "9780000000000" {
+	if len(matches) != 5 || matches[0].ISBN13 != "9781234567897" || matches[1].ISBN13 != "9780000000002" {
 		t.Fatalf("unexpected suggested matches: %+v", matches)
 	}
 	if got := strings.TrimSpace(string(request("GET", base+"metadata-candidates?q=Empty", nil, admin, 200))); got != "[]" {
@@ -249,7 +304,7 @@ func TestBookMetadataRepair(t *testing.T) {
 			t.Fatal(err)
 		}
 		meta := book.Metadata()
-		if meta.Title != "Other Name" || meta.ISBN13 != "9789999999999" || strings.Join(meta.Authors, ", ") != "New Author, Second Author" {
+		if meta.Title != "Other Name" || meta.ISBN13 != "9789999999991" || strings.Join(meta.Authors, ", ") != "New Author, Second Author" {
 			t.Fatalf("candidate metadata not written: %+v", meta)
 		}
 	}
