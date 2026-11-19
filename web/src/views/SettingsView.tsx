@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { HiddenLibraryReview } from '../components/HiddenLibraryReview';
 import {
   ArrowUp,
   ArrowDown,
@@ -66,6 +67,7 @@ interface SettingsViewProps {
   overrides?: SettingsOverridesMap;
   onSyncIndexers?: () => void | Promise<void>;
   onSaveSettings?: (payload: SettingsUpdatePayload) => Promise<void>;
+  onCatalogChanged?: () => void;
 }
 
 const DEFAULT_LIBRARY: LibrarySettings = {
@@ -101,6 +103,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   overrides = {},
   onSyncIndexers,
   onSaveSettings,
+  onCatalogChanged,
 }) => {
   const [activeTab, setActiveTab] = useState<'indexers' | 'library' | 'quality' | 'logging'>('indexers');
   const [isSyncing, setIsSyncing] = useState(false);
@@ -864,6 +867,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       )}
 
       {/* TAB 3: LIBRARY & STORAGE */}
+      {activeTab === 'library' && <HiddenLibraryReview onCatalogChanged={onCatalogChanged} />}
       {activeTab === 'library' && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 space-y-5 max-w-2xl">
           <div>

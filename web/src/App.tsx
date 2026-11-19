@@ -465,6 +465,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
               overrides={settingsOverrides}
               onSyncIndexers={handleSyncIndexers}
               onSaveSettings={handleSaveSettings}
+              onCatalogChanged={fetchCatalog}
             />
           ) : currentUser ? (
             <div data-testid="settings-access-denied" role="alert" className="py-16 text-center space-y-3">

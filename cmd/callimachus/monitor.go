@@ -55,7 +55,9 @@ func (s *Server) searchMonitoredBook(ctx context.Context, id string) error {
 		SELECT 'catalog-monitor',b.id,b.title,a.name,f.format,'searching',COALESCE(CAST(substr(b.release_date,1,4) AS INTEGER),0)
 		FROM books b JOIN authors a ON a.id=b.author_id
 		CROSS JOIN (SELECT 'epub' AS format UNION ALL SELECT 'm4b') f
-		WHERE b.id=? AND NOT EXISTS(SELECT 1 FROM book_requests r WHERE r.book_id=b.id
+		WHERE b.id=?
+		AND NOT EXISTS(SELECT 1 FROM hidden_library_review review WHERE review.book_id=b.id AND review.kept=0)
+		AND NOT EXISTS(SELECT 1 FROM book_requests r WHERE r.book_id=b.id
 			AND r.status IN ('searching','downloading','available','cancelled'))`, id); err != nil {
 		return err
 	}
