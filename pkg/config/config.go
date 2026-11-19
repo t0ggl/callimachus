@@ -2,9 +2,11 @@ package config
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,6 +24,7 @@ const (
 	KeyGoogleBooksAPIKey      = "google_books_api_key"
 	KeyHardcoverAPIKey        = "hardcover_api_key"
 	KeyCompletedDownloadRoot  = "completed_download_root"
+	KeyLogLevel               = "log_level"
 	KeyLibraryRoot            = "library_root"
 	KeyProwlarrURL            = "prowlarr_url"
 	KeyProwlarrAPIKey         = "prowlarr_api_key"
@@ -79,6 +82,7 @@ var registry = []SettingSpec{
 	{Key: KeyGoogleBooksAPIKey, Kind: KindString, Secret: true},
 	{Key: KeyHardcoverAPIKey, Kind: KindString, Secret: true},
 	{Key: KeyLibraryRoot, Kind: KindString},
+	{Key: KeyLogLevel, Kind: KindString, Default: "info"},
 	{Key: KeyCompletedDownloadRoot, Kind: KindString},
 	{Key: KeyProwlarrURL, Kind: KindString},
 	{Key: KeyProwlarrAPIKey, Kind: KindString, Secret: true},
@@ -123,6 +127,7 @@ type OverrideInfo struct {
 
 // Settings holds the effective resolved application configuration.
 type Settings struct {
+	LogLevel               slog.Level    `json:"logLevel"`
 	ConvertEbooks          bool          `json:"convertEbooks"`
 	EbookTargetFormat      string        `json:"ebookTargetFormat"`
 	GoogleBooksAPIKey      string        `json:"-"`
@@ -256,6 +261,15 @@ func LookupEnvForSetting(key string) (val string, envName string, ok bool) {
 // Load resolves every registered setting using strict precedence:
 // Environment Variable (CALLIMACHUS_{SETTING_NAME}) > Caller/CLI Overrides > SQLite settings table > Defaults.
 func Load(ctx context.Context, db *database.DB, caller Overrides) (*ResolvedSettings, error) {
+	if db == nil {
+		return resolveSettings(ctx, nil, caller)
+	}
+	return resolveSettings(ctx, db, caller)
+}
+
+func resolveSettings(ctx context.Context, db interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, caller Overrides) (*ResolvedSettings, error) {
 	dbValues := make(map[string]string)
 	if db != nil {
 		rows, err := db.QueryContext(ctx, "SELECT key, value FROM settings")
@@ -322,7 +336,12 @@ func Load(ctx context.Context, db *database.DB, caller Overrides) (*ResolvedSett
 	if _, err := validateAndNormalize(specByKey[KeyEbookTargetFormat], resolvedValues[KeyEbookTargetFormat]); err != nil {
 		return nil, err
 	}
+	level, err := parseLogLevel(resolvedValues[KeyLogLevel])
+	if err != nil {
+		return nil, err
+	}
 	settings := materializeSettings(resolvedValues)
+	settings.LogLevel = level
 	return &ResolvedSettings{
 		Settings:  settings,
 		Overrides: overrideMap,
@@ -337,11 +356,6 @@ func SaveNonOverridden(ctx context.Context, db *database.DB, updates map[string]
 		return nil, errors.New("database is required to save settings")
 	}
 
-	current, err := Load(ctx, db, caller)
-	if err != nil {
-		return nil, err
-	}
-
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin settings tx: %w", err)
@@ -353,7 +367,7 @@ func SaveNonOverridden(ctx context.Context, db *database.DB, updates map[string]
 		if !ok {
 			return nil, fmt.Errorf("unknown setting key: %q", key)
 		}
-		if current.Overrides[key].IsOverridden {
+		if _, _, overridden := LookupEnvForSetting(key); overridden {
 			// Enforce absolute precedence: never persist mutations for env-overridden settings.
 			continue
 		}
@@ -374,15 +388,41 @@ func SaveNonOverridden(ctx context.Context, db *database.DB, updates map[string]
 		}
 	}
 
+	resolved, err := resolveSettings(ctx, tx, caller)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit settings tx: %w", err)
 	}
 
-	return Load(ctx, db, caller)
+	return resolved, nil
+}
+
+// ErrInvalidLogLevel indicates a value outside the four supported severities.
+var ErrInvalidLogLevel = errors.New("log_level must be debug, info, warn, or error")
+
+func parseLogLevel(raw string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return slog.LevelInfo, ErrInvalidLogLevel
+	}
 }
 
 func validateAndNormalize(spec SettingSpec, raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
+	if spec.Key == KeyLogLevel {
+		level, err := parseLogLevel(trimmed)
+		return strings.ToLower(level.String()), err
+	}
 	if spec.Key == KeyEbookTargetFormat {
 		target := strings.ToUpper(strings.TrimSpace(raw))
 		if target != "EPUB" && target != "AZW3" {

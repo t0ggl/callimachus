@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -109,6 +110,7 @@ func (h *AuthHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		sess, user, err := h.fallbackAuth.Authenticate(r.Context(), req.Password)
 		if err != nil {
 			if err == ErrInvalidPassword {
+				slog.InfoContext(r.Context(), "password login rejected")
 				writeError(w, http.StatusUnauthorized, "invalid credentials")
 				return
 			}
@@ -116,10 +118,12 @@ func (h *AuthHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, "password authentication is disabled")
 				return
 			}
+			slog.ErrorContext(r.Context(), "password login failed")
 			writeError(w, http.StatusInternalServerError, "authentication failed")
 			return
 		}
 
+		slog.InfoContext(r.Context(), "password login succeeded")
 		h.sessionMgr.SetSessionCookie(w, sess.Token, sess.ExpiresAt)
 		writeJSON(w, http.StatusOK, loginResponse{
 			Token: sess.Token,
@@ -183,6 +187,7 @@ func (h *AuthHandler) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	slog.DebugContext(r.Context(), "OIDC login started")
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
@@ -193,6 +198,7 @@ func (h *AuthHandler) handleOIDCCallback(w http.ResponseWriter, r *http.Request)
 	}
 
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
+		slog.WarnContext(r.Context(), "OIDC provider rejected login")
 		desc := r.URL.Query().Get("error_description")
 		if desc != "" {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("%s: %s", errParam, desc))
@@ -211,12 +217,14 @@ func (h *AuthHandler) handleOIDCCallback(w http.ResponseWriter, r *http.Request)
 
 	stateData, ok := h.oidcClient.StateStore().GetAndRemove(state)
 	if !ok {
+		slog.WarnContext(r.Context(), "OIDC callback rejected", "reason", "invalid or expired state")
 		writeError(w, http.StatusBadRequest, "invalid or expired state")
 		return
 	}
 
 	tokenResp, err := h.oidcClient.Exchange(r.Context(), code, stateData.CodeVerifier)
 	if err != nil {
+		slog.WarnContext(r.Context(), "OIDC token exchange failed")
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("token exchange failed: %v", err))
 		return
 	}
@@ -232,6 +240,7 @@ func (h *AuthHandler) handleOIDCCallback(w http.ResponseWriter, r *http.Request)
 
 	claims, err := h.oidcClient.VerifyToken(r.Context(), tokenToVerify)
 	if err != nil {
+		slog.WarnContext(r.Context(), "OIDC token verification failed")
 		writeError(w, http.StatusUnauthorized, fmt.Sprintf("token verification failed: %v", err))
 		return
 	}
@@ -248,6 +257,7 @@ func (h *AuthHandler) handleOIDCCallback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	slog.InfoContext(r.Context(), "OIDC login succeeded")
 	h.sessionMgr.SetSessionCookie(w, sess.Token, sess.ExpiresAt)
 
 	target := stateData.RedirectTarget
@@ -268,6 +278,7 @@ func (h *AuthHandler) handleLogout(w http.ResponseWriter, r *http.Request) {
 	token := h.sessionMgr.GetSessionToken(r)
 	if token != "" {
 		h.sessionMgr.DeleteSession(token)
+		slog.InfoContext(r.Context(), "session logged out")
 	}
 	h.sessionMgr.ClearSessionCookie(w)
 

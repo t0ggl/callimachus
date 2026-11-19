@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -195,6 +196,7 @@ func (s *RequestService) SubmitRequest(ctx context.Context, input CreateRequestI
 	if err != nil {
 		return nil, fmt.Errorf("failed to get request id: %w", err)
 	}
+	slog.InfoContext(ctx, "book request created", "request_id", requestID, "status", status)
 
 	req, err := s.GetRequest(ctx, requestID)
 	if err != nil {

@@ -179,3 +179,5 @@ export interface QualityProfile {
   maxEbookSizeBytes: number;
 }
 
+
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';

@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -73,7 +73,7 @@ func (s *Server) runCatalogMonitor(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		if err := s.catalogMonitor.Tick(ctx, time.Now()); err != nil && ctx.Err() == nil {
-			log.Printf("[catalog monitor] %v", err)
+			slog.WarnContext(ctx, "catalog monitoring check failed")
 		}
 		select {
 		case <-ctx.Done():

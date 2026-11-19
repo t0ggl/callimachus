@@ -96,6 +96,35 @@ describe('App Integration', () => {
     vi.restoreAllMocks();
   });
 
+  it('loads the effective log level and applies the server response after saving', async () => {
+    const user = userEvent.setup({ delay: null });
+    const fetchMock = vi.mocked(global.fetch);
+    const existingFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url, options) => {
+      if (url !== '/api/settings') return existingFetch(url, options);
+      const envVar = 'CALLIMACHUS_LOG_LEVEL';
+      const data = options?.method === 'PUT'
+        ? { logLevel: 'warn', overrides: { log_level: { isOverridden: true, overriddenBy: envVar, envVar } } }
+        : { logLevel: 'error' };
+      return Promise.resolve(new Response(JSON.stringify(data)));
+    });
+
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: /^Settings/ }));
+    await user.click(await screen.findByRole('button', { name: 'Logging' }));
+    const select = screen.getByRole('combobox', { name: 'Log Level' });
+    await waitFor(() => expect(select).toHaveValue('error'));
+    await user.selectOptions(select, 'debug');
+    await user.click(screen.getByTestId('save-settings-btn'));
+
+    const put = fetchMock.mock.calls.find(([url, options]) => url === '/api/settings' && options?.method === 'PUT');
+    expect(JSON.parse(String(put?.[1]?.body))).toMatchObject({ logLevel: 'debug' });
+    await waitFor(() => {
+      expect(select).toHaveValue('warn');
+      expect(select).toBeDisabled();
+    });
+  });
+
   it('renders Callimachus brand and default catalog view with real data', async () => {
     render(<App />);
 
@@ -262,10 +291,7 @@ describe('App Integration', () => {
       expect(screen.getByTestId('nav-settings')).toBeInTheDocument();
     });
 
-    const calledUrls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.map(
-      (c) => String(c[0])
-    );
-    expect(calledUrls).toContain('/api/settings');
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith('/api/settings'));
 
     // Keyboard shortcut '3' navigates to Settings for admin
     await user.keyboard('3');

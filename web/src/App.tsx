@@ -15,6 +15,7 @@ import {
   BookRequest,
   IndexerConfig,
   LibrarySettings,
+  LogLevel,
   ProwlarrSettings,
   QualityProfile,
   SettingsOverridesMap,
@@ -80,6 +81,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
     maxAudiobookSizeMb: 1536,
     maxEbookSizeBytes: 100 * 1024 * 1024,
   });
+  const [logLevel, setLogLevel] = useState<LogLevel>('info');
   const [settingsOverrides, setSettingsOverrides] = useState<SettingsOverridesMap>({});
 
   // Real-time activity stream for live pipeline updates
@@ -194,6 +196,9 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
 
   const applySettingsResponse = useCallback((data: any) => {
     if (!data || typeof data !== 'object') return;
+    if (data.logLevel === 'debug' || data.logLevel === 'info' || data.logLevel === 'warn' || data.logLevel === 'error') {
+      setLogLevel(data.logLevel);
+    }
     if (Array.isArray(data.indexers)) setIndexers(data.indexers);
     if (data.library) {
       setLibrarySettings((prev) => ({ ...prev, ...data.library }));
@@ -417,6 +422,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
               librarySettings={librarySettings}
               prowlarrSettings={prowlarrSettings}
               qualityProfile={qualityProfile}
+              logLevel={logLevel}
               overrides={settingsOverrides}
               onSyncIndexers={handleSyncIndexers}
               onSaveSettings={handleSaveSettings}

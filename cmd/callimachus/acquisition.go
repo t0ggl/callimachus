@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
+	"net/http"
+
 	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/downloaders"
 	"github.com/t0ggl/callimachus/pkg/indexers"
 	"github.com/t0ggl/callimachus/pkg/requests"
-	"net/http"
 )
 
 func (s *Server) newAcquisition() *requests.Acquisition {
@@ -65,5 +67,6 @@ func (s *Server) handleAcquisitionFailure(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Active acquisition not found", 404)
 		return
 	}
+	slog.WarnContext(r.Context(), "download client reported acquisition failure")
 	w.WriteHeader(http.StatusAccepted)
 }

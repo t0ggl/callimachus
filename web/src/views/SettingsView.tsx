@@ -8,12 +8,14 @@ import {
   RefreshCw,
   CheckCircle2,
   Lock,
+  List,
   Save,
   AlertCircle,
 } from 'lucide-react';
 import {
   IndexerConfig,
   LibrarySettings,
+  LogLevel,
   ProwlarrSettings,
   QualityProfile,
   SettingsOverridesMap,
@@ -23,6 +25,7 @@ import {
 } from '../types';
 
 export interface SettingsUpdatePayload {
+  logLevel?: LogLevel;
  metadata?: Record<string,string>;
   library?: {
     rootPath?: string;
@@ -49,6 +52,7 @@ export interface SettingsUpdatePayload {
 
 interface SettingsViewProps {
   indexers: IndexerConfig[];
+  logLevel?: LogLevel;
   librarySettings?: LibrarySettings;
   prowlarrSettings?: ProwlarrSettings;
   qualityProfile: QualityProfile;
@@ -71,6 +75,7 @@ const DEFAULT_PROWLARR: ProwlarrSettings = {
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   indexers: initialIndexers,
+  logLevel: initialLogLevel = 'info',
   librarySettings: initialLibrary = DEFAULT_LIBRARY,
   prowlarrSettings: initialProwlarr = DEFAULT_PROWLARR,
   qualityProfile: initialQuality,
@@ -78,10 +83,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onSyncIndexers,
   onSaveSettings,
 }) => {
-  const [activeTab, setActiveTab] = useState<'indexers' | 'library' | 'quality'>('indexers');
+  const [activeTab, setActiveTab] = useState<'indexers' | 'library' | 'quality' | 'logging'>('indexers');
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncSuccess, setSyncSuccess] = useState(false);
 
+  const [logLevel, setLogLevel] = useState(initialLogLevel);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -136,6 +142,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setLanguagesInput(langs.join(', '));
   }, [initialQuality]);
 
+  useEffect(() => {
+    setLogLevel(initialLogLevel);
+  }, [initialLogLevel]);
+
   const isOverridden = (key: string): boolean => Boolean(overrides[key]?.isOverridden);
 
   const overriddenCount = Object.values(overrides).filter((o) => o?.isOverridden).length;
@@ -145,6 +155,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     if (!info?.isOverridden) return null;
     return (
       <p
+        id={`override-note-${settingKey}`}
         data-testid={`override-note-${settingKey}`}
         className="mt-1.5 flex items-center gap-1.5 text-[11px] text-amber-300/90"
       >
@@ -184,6 +195,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setSaveError(null);
 
     const payload: SettingsUpdatePayload = {
+      ...(!isOverridden('log_level') && logLevel !== initialLogLevel ? { logLevel } : {}),
  metadata: Object.fromEntries(Object.entries(metadataKeys).filter(([key,value])=>!isOverridden(key)&&value.trim())),
       library: {
         ...(!isOverridden("completed_download_root") ? { completedDownloadRoot: librarySettings.completedDownloadRoot ?? "" } : {}),
@@ -392,7 +404,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <Sliders className="w-3.5 h-3.5 text-purple-400" />
           Quality & Profiles
         </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('logging')}
+          className={`px-3 py-1.5 rounded-md flex items-center gap-2 whitespace-nowrap transition-colors ${
+            activeTab === 'logging' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200'
+          }`}
+        >
+          <List className="w-3.5 h-3.5" />
+          Logging
+        </button>
       </div>
+
+      {activeTab === 'logging' && (
+        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 max-w-2xl">
+          <label htmlFor="log-level" className="block text-xs text-zinc-400 font-medium mb-1">
+            Log Level
+          </label>
+          <select
+            id="log-level"
+            value={logLevel}
+            onChange={(event) => setLogLevel(event.target.value as LogLevel)}
+            disabled={isOverridden('log_level')}
+            aria-describedby={isOverridden('log_level') ? 'log-level-help override-note-log_level' : 'log-level-help'}
+            className={inputClass(isOverridden('log_level'))}
+          >
+            <option value="debug">Debug</option>
+            <option value="info">Info</option>
+            <option value="warn">Warn</option>
+            <option value="error">Error</option>
+          </select>
+          <p id="log-level-help" className="text-xs text-zinc-400 mt-1.5">
+            Minimum severity for server logs. Changes take effect when you save.
+          </p>
+          <OverrideNote settingKey="log_level" />
+        </div>
+      )}
 
       {/* TAB 1: INDEXERS & PROWLARR */}
       {activeTab === 'indexers' && (

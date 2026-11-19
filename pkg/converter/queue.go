@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -88,6 +89,7 @@ func (q *Queue) enqueue(ctx context.Context, editionID, sourcePath, targetPath s
 	if err != nil {
 		return nil, fmt.Errorf("failed to enqueue conversion job: %w", err)
 	}
+	slog.InfoContext(ctx, "conversion job queued", "job_id", id)
 	return item, nil
 }
 

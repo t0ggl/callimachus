@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -158,8 +159,10 @@ func (c *ProwlarrClient) GetIndexers(ctx context.Context) ([]ProwlarrIndexer, er
 
 // SyncIndexers synchronizes indexer configurations from Prowlarr into Callimachus' `indexers` database table.
 func (c *ProwlarrClient) SyncIndexers(ctx context.Context, db DBTX) ([]database.Indexer, error) {
+	slog.DebugContext(ctx, "Prowlarr indexer sync started")
 	prowlarrIndexers, err := c.GetIndexers(ctx)
 	if err != nil {
+		slog.WarnContext(ctx, "Prowlarr indexer sync could not fetch indexers")
 		return nil, fmt.Errorf("prowlarr sync failed: %w", err)
 	}
 
@@ -217,6 +220,7 @@ ON CONFLICT(id) DO UPDATE SET
 			priority,
 		)
 		if err != nil {
+			slog.ErrorContext(ctx, "Prowlarr indexer sync could not save indexer", "indexer_id", pIdx.ID)
 			return nil, fmt.Errorf("prowlarr: failed to upsert indexer %q: %w", pIdx.Name, err)
 		}
 
@@ -232,6 +236,7 @@ ON CONFLICT(id) DO UPDATE SET
 		})
 	}
 
+	slog.InfoContext(ctx, "Prowlarr indexer sync completed", "indexers", len(synced))
 	return synced, nil
 }
 

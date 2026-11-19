@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,7 +20,9 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Enter a title, author, or keywords", 400)
 		return
 	}
-	cfg, err := config.Load(r.Context(), s.db, s.baseOverrides)
+	ctx := r.Context()
+	slog.DebugContext(ctx, "metadata discovery search started")
+	cfg, err := config.Load(ctx, s.db, s.baseOverrides)
 	if err != nil {
 		http.Error(w, "Unable to load metadata settings", 500)
 		return
@@ -34,7 +38,8 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	books := []metadata.BookMetadata{}
 	success := false
 	for _, p := range providers {
-		found, err := p.Search(r.Context(), query)
+		found, err := p.Search(ctx, query)
+		logMetadataResponse(ctx, p.Name(), len(found), err)
 		if err == nil {
 			success = true
 			books = append(found, books...)
@@ -42,12 +47,12 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	}
 	if cfg.Settings.GoogleBooksAPIKey != "" {
 		values := url.Values{"q": {query}, "maxResults": {"20"}}
-		if cfg.Settings.GoogleBooksAPIKey != "" {
-			values.Set("key", cfg.Settings.GoogleBooksAPIKey)
-		}
-		req, _ := http.NewRequestWithContext(r.Context(), "GET", "https://www.googleapis.com/books/v1/volumes?"+values.Encode(), nil)
+		values.Set("key", cfg.Settings.GoogleBooksAPIKey)
+		req, _ := http.NewRequestWithContext(ctx, "GET", "https://www.googleapis.com/books/v1/volumes?"+values.Encode(), nil)
 		resp, err := client.Do(req)
-		if err == nil {
+		if err != nil {
+			logMetadataResponse(ctx, "Google Books", 0, err)
+		} else {
 			defer resp.Body.Close()
 			if resp.StatusCode == 200 {
 				var result struct {
@@ -62,7 +67,9 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
-				if json.NewDecoder(resp.Body).Decode(&result) == nil {
+				err := json.NewDecoder(resp.Body).Decode(&result)
+				logMetadataResponse(ctx, "Google Books", len(result.Items), err)
+				if err == nil {
 					success = true
 					for _, item := range result.Items {
 						v := item.VolumeInfo
@@ -71,6 +78,8 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 						books = append(books, metadata.BookMetadata{Title: v.Title, Authors: v.Authors, Year: year, Description: v.Description, Language: v.Language, CoverURL: v.ImageLinks.Thumbnail})
 					}
 				}
+			} else {
+				slog.WarnContext(ctx, "metadata provider returned an error status", "provider", "Google Books", "status", resp.StatusCode)
 			}
 		}
 	}
@@ -119,8 +128,17 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 			seen[key] = true
 		}
 	}
+	slog.DebugContext(ctx, "metadata discovery search completed", "results", len(out))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out)
+}
+
+func logMetadataResponse(ctx context.Context, provider string, count int, err error) {
+	if err != nil {
+		slog.WarnContext(ctx, "metadata provider search failed", "provider", provider)
+		return
+	}
+	slog.DebugContext(ctx, "metadata provider search completed", "provider", provider, "results", count)
 }
 
 func discoveryKey(title, author string) string {

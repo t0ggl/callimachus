@@ -387,3 +387,42 @@ it('saves independent audiobook and ebook sizes with clear units', async () => {
     qualityProfile: expect.objectContaining({ maxAudiobookSizeMb: 50, maxEbookSizeBytes: 200 * 1024 * 1024 }),
   }));
 });
+
+describe('Log Level', () => {
+  it('displays the four levels and saves a changed selection', async () => {
+    const user = userEvent.setup({ delay: null });
+    const save = vi.fn().mockResolvedValue(undefined);
+    const props = { indexers: [], qualityProfile: baseQuality, onSaveSettings: save };
+    const { rerender } = render(<SettingsView {...props} />);
+
+    await user.click(screen.getByRole('button', { name: 'Logging' }));
+    const select = screen.getByRole('combobox', { name: 'Log Level' });
+    expect(select).toHaveValue('info');
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(['Debug', 'Info', 'Warn', 'Error']);
+    await user.selectOptions(select, 'debug');
+    await user.click(screen.getByTestId('save-settings-btn'));
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ logLevel: 'debug' }));
+
+    rerender(<SettingsView {...props} logLevel="error" />);
+    expect(select).toHaveValue('error');
+  });
+
+  it('shows the effective environment value, disables editing, and omits it from saves', async () => {
+    const user = userEvent.setup({ delay: null });
+    const save = vi.fn().mockResolvedValue(undefined);
+    const envVar = 'CALLIMACHUS_LOG_LEVEL';
+    render(
+      <SettingsView indexers={[]} qualityProfile={baseQuality} logLevel="warn" onSaveSettings={save}
+        overrides={{ log_level: { isOverridden: true, overriddenBy: envVar, envVar } }} />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Logging' }));
+    const select = screen.getByRole('combobox', { name: 'Log Level' });
+    expect(select).toHaveValue('warn');
+    expect(select).toBeDisabled();
+    expect(select).toHaveAccessibleDescription(expect.stringContaining(envVar));
+    await user.click(screen.getByTestId('save-settings-btn'));
+    expect(save).toHaveBeenCalledOnce();
+    expect(save.mock.calls[0][0]).not.toHaveProperty('logLevel');
+  });
+});
