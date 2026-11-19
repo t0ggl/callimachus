@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -73,8 +74,8 @@ func TestServer_StartupHealthAndShutdown(t *testing.T) {
 		Port:                0, // Dynamic port
 		IndexerSyncInterval: 1 * time.Hour,
 		StagingPollInterval: 1 * time.Hour,
-		Version:             "test-1.0.0",
-		Commit:              "testcommit123",
+		Version:             "private-branch",
+		Commit:              "0123456789abcdef0123456789abcdef01234567",
 	}
 
 	srv, err := NewServer(cfg)
@@ -116,6 +117,9 @@ func TestServer_StartupHealthAndShutdown(t *testing.T) {
 	if health.Status != "ok" {
 		t.Errorf("expected health status 'ok', got %q", health.Status)
 	}
+	if health.DisplayVersion != "" {
+		t.Errorf("expected no version on /healthz, got %q", health.DisplayVersion)
+	}
 
 	// 2. Verify /api/health endpoint
 	apiHealthResp, err := noRedirectClient.Get(baseURL + "/api/health")
@@ -125,6 +129,14 @@ func TestServer_StartupHealthAndShutdown(t *testing.T) {
 	defer apiHealthResp.Body.Close()
 	if apiHealthResp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 OK from /api/health, got %d", apiHealthResp.StatusCode)
+	}
+	var apiHealth map[string]string
+	if err := json.NewDecoder(apiHealthResp.Body).Decode(&apiHealth); err != nil {
+		t.Fatalf("decode API health response: %v", err)
+	}
+	wantAPIHealth := map[string]string{"status": "ok", "displayVersion": "01234567"}
+	if !reflect.DeepEqual(apiHealth, wantAPIHealth) {
+		t.Errorf("API health response = %v, want %v", apiHealth, wantAPIHealth)
 	}
 
 	// 3. Unauthenticated web root "/" and SPA subpaths must redirect to /api/auth/oidc/login

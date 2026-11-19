@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -65,6 +66,7 @@ type Server struct {
 	acquisitionCancel  context.CancelFunc
 	acquisitionDone    chan struct{}
 	cfg                Config
+	displayVersion     string
 	baseOverrides      config.Overrides
 	settingsMu         sync.Mutex
 	db                 *database.DB
@@ -227,17 +229,19 @@ func NewServer(cfg Config) (*Server, error) {
 		}
 	}
 
+	buildInfo, _ := debug.ReadBuildInfo()
 	srv := &Server{
-		maintenance:   maintenance,
-		cfg:           cfg,
-		baseOverrides: baseOverrides,
-		db:            db,
-		sessionMgr:    sessionMgr,
-		fallbackAuth:  fallbackAuth,
-		syncer:        syncer,
-		stagingMon:    stagingMon,
-		dispatcher:    dispatcher,
-		staticFS:      staticFS,
+		maintenance:    maintenance,
+		cfg:            cfg,
+		displayVersion: resolveDisplayVersion(cfg.Version, cfg.Commit, buildInfo),
+		baseOverrides:  baseOverrides,
+		db:             db,
+		sessionMgr:     sessionMgr,
+		fallbackAuth:   fallbackAuth,
+		syncer:         syncer,
+		stagingMon:     stagingMon,
+		dispatcher:     dispatcher,
+		staticFS:       staticFS,
 	}
 
 	srv.acquisition = srv.newAcquisition()
@@ -406,7 +410,8 @@ func (s *Server) runProwlarrSync(ctx context.Context) {
 
 // HealthResponse represents the payload returned by health check endpoints.
 type HealthResponse struct {
-	Status string `json:"status"`
+	Status         string `json:"status"`
+	DisplayVersion string `json:"displayVersion,omitempty"`
 }
 
 func (s *Server) withAuthGate(next *http.ServeMux) http.Handler {
@@ -494,7 +499,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(httpStatus)
-	_ = json.NewEncoder(w).Encode(HealthResponse{Status: status})
+	response := HealthResponse{Status: status}
+	if r.URL.Path == "/api/health" {
+		response.DisplayVersion = s.displayVersion
+	}
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
