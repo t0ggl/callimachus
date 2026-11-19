@@ -266,9 +266,10 @@ func (p *HardcoverProvider) Search(ctx context.Context, query string) ([]BookMet
 	}
 	var res hardcoverBookResponse
 	if err := p.doQuery(ctx, `query SearchDetails($ids: [Int!]!) { books(where: {id: {_in: $ids}}) {
- id title release_year release_date image: cached_image
+ id title subtitle description release_year release_date image: cached_image
  contributions { author { name } contribution }
  book_series { series_position: position series { id name books_count } }
+ editions(where: {isbn_13: {_is_null: false}}, order_by: {id: asc}, limit: 1) { isbn_13 }
  } }`, map[string]interface{}{"ids": search.Data.Search.IDs}, &res); err != nil {
 		return nil, err
 	}

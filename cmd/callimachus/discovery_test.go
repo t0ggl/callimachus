@@ -2,16 +2,141 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/t0ggl/callimachus/pkg/auth"
+	"github.com/t0ggl/callimachus/pkg/metadata"
 	"github.com/t0ggl/callimachus/pkg/requests"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
+
+func TestDiscoverMergesMetadataAcrossProviders(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	for _, query := range []string{
+		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','mock'),('google_books_api_key','mock')`,
+		`INSERT INTO authors(id,name,sort_name) VALUES('a','R. F. Kuang','R. F. Kuang')`,
+		`INSERT INTO books(id,author_id,title) VALUES('owned','a','Taipei Story: A Novel')`,
+		`INSERT INTO book_editions(id,book_id,format) VALUES('e','owned','epub')`,
+		`INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES('m','e','book.epub',1)`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mt := testutil.NewMockTransport()
+	mt.RegisterString("/search.json", 200, `{"docs":[
+		{"key":"/works/OL42W","title":"Taipei Story: A Novel","author_name":["R. F. Kuang","A Translator"],
+		 "cover_i":42,"publisher":["A Press"],"isbn":["123456789X"]},
+		{"key":"/works/OL43W","title":"Separate Book","author_name":["Another Author"]}
+	]}`, nil)
+	mt.RegisterHandler("/v1/graphql", func(r *http.Request) (*http.Response, error) {
+		var req struct{ Query string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		body := `{"data":{"search":{"ids":[101]}}}`
+		if strings.Contains(req.Query, "SearchDetails") {
+			for _, field := range []string{"subtitle", "description", "isbn_13"} {
+				if !strings.Contains(req.Query, field) {
+					t.Errorf("Hardcover details query missing %s", field)
+				}
+			}
+			body = `{"data":{"books":[
+				{"id":101,"title":"Taipei Story","subtitle":"A Novel","description":"Hardcover synopsis",
+				 "contributions":[{"author":{"name":"R.F. Kuang"}}],
+				 "editions":[{"isbn_13":"9780140328721"}],
+				 "book_series":[{"series_position":0,"series":{"name":"Taipei Series","books_count":3}}]}
+			]}}`
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	mt.RegisterString("/books/v1/volumes", 200, `{"items":[
+		{"volumeInfo":{"title":"Taipei Story","authors":["Rebecca F. Kuang"],"language":"en",
+		 "publishedDate":"2026-05-06","description":"Google synopsis","imageLinks":{"thumbnail":"https://example.test/thumbnail"}}},
+		{"volumeInfo":{"title":"Alternate Title",
+		 "industryIdentifiers":[{"type":"ISBN_10","identifier":"0140328726"},{"type":"ISBN_13","identifier":"978-0-14-032872-1"}]}}
+	]}`, nil)
+
+	matches := discoverTestMatches(t, &Server{db: db, prowlarrHTTPClient: mt.Client()})
+	if len(matches) != 2 || matches[1].Title != "Separate Book" {
+		t.Fatalf("expected merged book followed by the separate result, got %+v", matches)
+	}
+	book := matches[0]
+	if book.Title != "Taipei Story" || book.Subtitle != "A Novel" || !slices.Equal(book.Authors, []string{"R.F. Kuang"}) ||
+		book.HardcoverID != "101" || book.OpenLibraryID != "OL42W" || book.ISBN13 != "9780140328721" || book.LibraryBookID != "owned" {
+		t.Errorf("wrong identity or library match: %+v", book)
+	}
+	if book.CoverURL != "https://covers.openlibrary.org/b/id/42-L.jpg" || book.Publisher != "A Press" ||
+		book.Description != "Hardcover synopsis" || book.Year != 2026 || book.Language != "en" ||
+		book.Series != "Taipei Series" || book.SeriesTotal != 3 || book.SeriesIndex == nil || *book.SeriesIndex != 0 {
+		t.Errorf("wrong merged metadata: %+v", book)
+	}
+}
+
+func TestDiscoverMergesDuplicatesWithinOpenLibrary(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	mt := testutil.NewMockTransport()
+	mt.RegisterString("/search.json", 200, `{"docs":[
+		{"key":"/works/OL1W","title":"Taipei Story","author_name":["R.F. Kuang"],"cover_i":12},
+		{"key":"/works/OL2W","title":"TAIPEI   Story: A Novel (Paperback Edition)","author_name":["Kuang, R. F. & A Translator"],
+		 "cover_i":13,"first_publish_year":2026,"isbn":["0140328726","9780140328721"]},
+		{"key":"/works/OL2W","title":"Different Catalog Title","author_name":["Pen Name"],"publisher":["A Press"]},
+		{"key":"/works/OL3W","title":"Taipei Story","author_name":["Other Writer"]}
+	]}`, nil)
+	matches := discoverTestMatches(t, &Server{db: db, prowlarrHTTPClient: mt.Client()})
+	if len(matches) != 2 || !slices.Equal(matches[1].Authors, []string{"Other Writer"}) {
+		t.Fatalf("expected only the three equivalent works to merge, got %+v", matches)
+	}
+	book := matches[0]
+	if book.Title != "Taipei Story" || book.Subtitle != "A Novel" || book.CoverURL != "https://covers.openlibrary.org/b/id/12-L.jpg" ||
+		book.Year != 2026 || book.ISBN13 != "9780140328721" || book.OpenLibraryID != "OL1W" || book.Publisher != "A Press" {
+		t.Errorf("wrong merged OpenLibrary metadata: %+v", book)
+	}
+}
+
+func TestGroupDiscoveryBooksRetainsAliasesAndDistinctWorks(t *testing.T) {
+	books := []metadata.BookMetadata{
+		{Title: "Original Title", Authors: []string{"First Writer"}, HardcoverID: "1"},
+		{Title: "Alternate Title", Authors: []string{"Second Writer"}, OpenLibraryID: "2"},
+		{Title: "Alternate Title", Authors: []string{"Second Writer"}, HardcoverID: "1"},
+		{Title: "Another Book", Authors: []string{"Third Writer"}, OpenLibraryID: "1"},
+		{Title: "Wonderful World: Volume One", Authors: []string{"Same Writer"}},
+		{Title: "Wonderful World: Volume Two", Authors: []string{"Same Writer"}},
+		{Title: "Shared Title", Authors: []string{"Jane Writer"}},
+		{Title: "Shared Title", Authors: []string{"John Writer"}},
+	}
+	groups := groupDiscoveryBooks(books)
+	if len(groups) != 6 || len(groups[0]) != 3 || groups[0][0].Title != "Original Title" || groups[1][0].Title != "Another Book" {
+		t.Fatalf("expected the bridging record to combine only the first three books, got %+v", groups)
+	}
+}
+
+type discoverTestMatch struct {
+	metadata.BookMetadata
+	LibraryBookID string `json:"library_book_id"`
+}
+
+func discoverTestMatches(t *testing.T, s *Server) []discoverTestMatch {
+	t.Helper()
+	w := httptest.NewRecorder()
+	s.handleDiscover(w, httptest.NewRequest("GET", "/api/discover?q=taipei+story", nil))
+	if w.Code != 200 {
+		t.Fatalf("discovery returned %d: %s", w.Code, w.Body)
+	}
+	var matches []discoverTestMatch
+	if err := json.Unmarshal(w.Body.Bytes(), &matches); err != nil {
+		t.Fatal(err)
+	}
+	return matches
+}
 
 func TestDiscoveryAndAutomaticAcquisition(t *testing.T) {
 	logs := testutil.CaptureLogs(t)
