@@ -190,7 +190,7 @@ function ActivityDetails({ item, onClose }: { item: ActivityItem; onClose: () =>
 }
 
 export const ActivityView: React.FC<ActivityViewProps> = (props) => {
-  const [manual, setManual] = useState<string | null>(null);
+  const [manual, setManual] = useState<BookRequest | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [removed, setRemoved] = useState<string[]>([]);
   const [pending, setPending] = useState<string[]>([]);
@@ -236,7 +236,8 @@ export const ActivityView: React.FC<ActivityViewProps> = (props) => {
               </button>
               <div className="flex flex-wrap gap-1">
                 {item.request && item.request.status !== 'downloading' && <button type="button"
-                  onClick={() => setManual(item.request!.id)} className={`${actionStyle} text-blue-300`}>Manual Search<span className="sr-only"> for {item.title}</span></button>}
+                  aria-label={`Manual Search for ${item.title}`}
+                  onClick={() => setManual(item.request!)} className={`${actionStyle} text-blue-300`}>Manual Search</button>}
                 {path && <button type="button" disabled={busy} onClick={() => void dismiss(item.id, path)}
                   aria-label={[action, item.title, item.format].filter(Boolean).join(' ')}
                   className={`${actionStyle} ${isFinished(item) ? 'text-zinc-300' : 'text-red-300'}`}>
@@ -257,7 +258,10 @@ export const ActivityView: React.FC<ActivityViewProps> = (props) => {
           </li>;
         })}
       </ul>}
-    {manual && <ManualSearch requestId={manual} onClose={() => setManual(null)} />}
+    {manual && <ManualSearch key={manual.id} requestId={manual.id}
+      requestFormat={manual.requestType === 'audiobook' ? 'm4b' : manual.requestType === 'ebook' ? 'epub' : 'both'}
+      book={manual.bookId ? { id: manual.bookId, title: manual.title, author: manual.author } : undefined}
+      onClose={() => setManual(null)} />}
     {detail && <ActivityDetails key={detail.id} item={detail} onClose={() => setSelected(null)} />}
   </section>;
 };

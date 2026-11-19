@@ -30,42 +30,7 @@ function formatDuration(seconds?: number): string {
 
 export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose, activity }) => {
   const dialog = React.useRef<HTMLDialogElement>(null);
-  const [format, setFormat] = useState('epub');
-  const [requestId, setRequestId] = useState<string | null>(null);
-  const [manualError, setManualError] = useState('');
-  const [manualBusy, setManualBusy] = useState(false);
-  const openManual = async () => {
-    if (!book) return;
-    setManualBusy(true);
-    setManualError('');
-    try {
-      const res = await fetch('/api/requests');
-      if (!res.ok) throw new Error('Unable to load acquisitions');
-      const list = await res.json();
-      const existing = list.find((r: any) => r.book_id === book.id && (r.format === format || r.format === 'both'));
-      if (existing) {
-        setRequestId(String(existing.id));
-        return;
-      }
-      const created = await fetch('/api/requests', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          book_id: book.id,
-          title: book.title,
-          author: book.authorName,
-          format,
-          manual_only: true,
-        }),
-      });
-      if (!created.ok) throw new Error('Unable to open manual search');
-      setRequestId(String((await created.json()).id));
-    } catch (e) {
-      setManualError((e as Error).message);
-    } finally {
-      setManualBusy(false);
-    }
-  };
+  const [showDownloadOptions, setShowDownloadOptions] = useState(false);
   useEffect(() => {
     const element = dialog.current;
     element?.showModal();
@@ -85,17 +50,11 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
     >
       <div className="max-h-[90dvh] flex flex-col">
         {!activity && <div className="px-6 pt-4 flex flex-wrap items-center gap-3">
-          <label className="text-sm text-zinc-300">
-            Format
-            <select value={format} onChange={e => setFormat(e.target.value)} className="ml-2 rounded border border-zinc-700 bg-zinc-950 px-2 py-1">
-              <option value="epub">eBook</option>
-              <option value="m4b">Audiobook</option>
-            </select>
-          </label>
-          <button disabled={manualBusy} onClick={() => void openManual()} className="text-blue-300 disabled:opacity-50">
-            {manualBusy ? 'Loading…' : 'Search Download Options'}
+          <button type="button" onClick={() => setShowDownloadOptions(true)}
+            className="inline-flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300">
+            <Download size={16} aria-hidden="true" />
+            Show Download Options
           </button>
-          {manualError && <p role="alert" className="text-red-300">{manualError}</p>}
         </div>}
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-950/40">
@@ -295,7 +254,9 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
         </div>
       </div>
     </dialog>
-    {requestId && <ManualSearch requestId={requestId} onClose={() => setRequestId(null)} />}
+    {showDownloadOptions && <ManualSearch key={book.id}
+      book={{ id: book.id, title: book.title, author: book.authorName }}
+      onClose={() => setShowDownloadOptions(false)} />}
     </>
   );
 };
