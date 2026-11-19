@@ -73,6 +73,8 @@ Welcome to the **Callimachus** project codebase. These guidelines govern all sub
 9. **Release Rules:**
    - Tag a new version on the merge commit after every merged PR.
    - Increment the minor version for new features and the patch version for bug fixes.
+   - When pushing a new release commit to `main`, create its release tag locally before pushing. With `HEAD` at the release commit and `release_tag` set to the new version (for example, `v0.35.1`), push both refs in one transaction with `git push --atomic origin HEAD:refs/heads/main "refs/tags/$release_tag"`.
+   - If GitHub has already merged the PR into `main`, tag the merge commit and push the tag. That merge has already triggered the `main` workflow.
    - The release preceding issue #21 is `v0.6.0`; this feature releases as `v0.7.0`.
 
 10. **Home Cluster Deployment:**
