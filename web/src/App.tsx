@@ -187,22 +187,31 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
     }
   }, [redirectToOIDC, setRequests]);
 
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState('');
+
   const fetchActivity = useCallback(async () => {
+    setActivityLoading(true);
+    setActivityError('');
     try {
       const res = await fetch('/api/activity');
       if (res.status === 401) {
         redirectToOIDC();
         return;
       }
-      if (res.ok) {
-        const data = await res.json();
-        if (data.conversionJobs) setConversionJobs(data.conversionJobs);
-        if (data.downloads) setDownloads(data.downloads);
-        if (data.logs) setLogs(data.logs);
-        if (Array.isArray(data.requests)) setRequests(data.requests.map(mapBookRequest));
+      if (!res.ok) {
+        throw new Error('Unable to load activity. Try again.');
       }
+      const data = await res.json();
+      if (data.conversionJobs) setConversionJobs(data.conversionJobs);
+      if (data.downloads) setDownloads(data.downloads);
+      if (data.logs) setLogs(data.logs);
+      if (Array.isArray(data.requests)) setRequests(data.requests.map(mapBookRequest));
     } catch (err) {
       console.error('Failed to load activity', err);
+      setActivityError('Unable to load activity. Try again.');
+    } finally {
+      setActivityLoading(false);
     }
   }, [setConversionJobs, setDownloads, setLogs, setRequests, redirectToOIDC]);
 
@@ -459,7 +468,6 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
         )}
 
         {!match && currentView === 'activity' && (
-          <div className="space-y-6">
           <ActivityView
             requests={requests}
             canManageJobs={currentUser?.role === 'admin' || currentUser?.role === 'curator'}
@@ -469,8 +477,10 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
             downloads={downloads}
             logs={logs}
             connectionStatus={connectionStatus}
+            loading={activityLoading}
+            error={activityError}
+            onRetry={() => void fetchActivity()}
           />
-          </div>
         )}
 
         {!match && currentView === 'settings' && (

@@ -659,4 +659,31 @@ describe('App Integration', () => {
     await user.click(screen.getByRole('button', { name: /Return to Library/i }));
     expect(screen.getByRole('heading', { name: /Library/i })).toBeInTheDocument();
   });
+
+  it('shows an error alert and retries when loading activity fails', async () => {
+    const user = userEvent.setup({ delay: null });
+    const fetchMock = vi.mocked(global.fetch);
+    const originalFetch = fetchMock.getMockImplementation()!;
+    let activityAttempts = 0;
+    fetchMock.mockImplementation((url, options) => {
+      if (String(url) === '/api/activity') {
+        activityAttempts += 1;
+        if (activityAttempts === 1) {
+          return Promise.resolve(new Response(null, { status: 500 }));
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({ conversionJobs: testConversionJobs, downloads: testDownloads, logs: [] }))
+        );
+      }
+      return originalFetch(url, options);
+    });
+
+    render(<App />);
+    await user.click(screen.getByTestId('nav-activity'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unable to load activity. Try again.');
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByRole('list', { name: 'Book activity' })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
 });
