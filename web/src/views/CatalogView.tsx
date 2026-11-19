@@ -250,21 +250,27 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
           }}
         />
       )}
-      <div className="flex flex-wrap items-center gap-3">
-        <button disabled={scanning} onClick={() => void scan()} className="px-3 py-2 bg-zinc-800 text-zinc-100 rounded-md disabled:opacity-50">{scanning ? 'Scanning…' : 'Scan Library'}</button>
-        {scanMessage && <p role="status" className="text-sm text-zinc-300">{scanMessage}</p>}
-      </div>
       {/* Top Header & Actions Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-800 pb-4">
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3 border-b border-zinc-800 pb-4">
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-white">Library</h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-xl font-bold tracking-tight text-white">Library</h1>
+            <button
+              type="button"
+              disabled={scanning}
+              onClick={() => void scan()}
+              className="min-h-11 px-3 py-2 text-sm bg-zinc-800 text-zinc-100 rounded-md enabled:hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:opacity-50"
+            >
+              {scanning ? 'Scanning…' : 'Scan Library'}
+            </button>
+          </div>
           <p className="text-xs text-zinc-400 mt-0.5">
             Organized book works, editions, series sequences, and media assets
           </p>
         </div>
 
         {/* View Switcher & Actions */}
-        <div className="flex items-center gap-3">
+        <div className="flex min-h-11 flex-wrap items-center gap-3">
           {/* Tabs */}
           <div className="flex bg-zinc-900 border border-zinc-800 rounded-lg p-0.5 text-xs font-medium">
             <button
@@ -332,6 +338,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
             </div>
           )}
         </div>
+        {scanMessage && <p role="status" className="w-full text-sm text-zinc-300">{scanMessage}</p>}
       </div>
 
       {/* Filter Toolbar */}

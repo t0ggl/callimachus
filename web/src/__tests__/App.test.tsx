@@ -260,7 +260,7 @@ describe('App Integration', () => {
       return originalFetch(...args);
     });
     render(<App />);
-    const metric = await screen.findByRole('button', { name: 'Active Downloads: 4' });
+    const metric = await screen.findByRole('button', { name: 'Activity 4' });
     await user.click(metric);
     expect(screen.getByRole('heading', { name: /Activity/i })).toBeInTheDocument();
   });
