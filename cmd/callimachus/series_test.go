@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/t0ggl/callimachus/pkg/config"
@@ -45,11 +47,11 @@ func TestSeriesReadingOrder(t *testing.T) {
 	}
 	mt := testutil.NewMockTransport()
 	mt.PanicOnUnmocked = true
-	mt.RegisterString("/v1/graphql", 200, `{"data":{"books":[
-		{"id":3,"title":"Companion Tale","contributions":[{"author":{"name":"Co-Author"}}],"book_series":[{"series_position":null,"series":{"name":"Sequence","books_count":4}}]},
-		{"id":2,"title":"Second","subtitle":"Remote Subtitle","description":"Remote description","release_date":"2020-01-01","image":{"url":"https://covers.example/second.jpg"},"contributions":[{"author":{"name":"Author"}}],"book_series":[{"series_position":1,"series":{"name":"Sequence","books_count":4}}]},
-		{"id":1,"title":"First","subtitle":"Origins","description":"The prequel novella.","release_date":"2018-05-01","image":{"url":"https://covers.example/first.jpg"},"contributions":[{"author":{"name":"Author"}}],"book_series":[{"series_position":0.5,"series":{"name":"Sequence","books_count":4}}]}
-	]}}`, nil)
+	mockSeriesLookup(t, mt, `{"data":{"named":[{"id":7,"name":"Sequence","books_count":4}]}}`, `{"data":{"books":[
+		{"id":3,"title":"Companion Tale","contributions":[{"author":{"name":"Co-Author"}}],"book_series":[{"series_position":null,"series":{"id":7}}]},
+		{"id":2,"title":"Second","subtitle":"Remote Subtitle","description":"Remote description","release_date":"2020-01-01","image":{"url":"https://covers.example/second.jpg"},"contributions":[{"author":{"name":"Author"}}],"book_series":[{"series_position":1,"series":{"id":7}}]},
+		{"id":1,"title":"First","subtitle":"Origins","description":"The prequel novella.","release_date":"2018-05-01","image":{"url":"https://covers.example/first.jpg"},"contributions":[{"author":{"name":"Author"}}],"book_series":[{"series_position":0.5,"series":{"id":7}}]}
+	]}}`)
 	s := &Server{
 		db:                 db,
 		prowlarrHTTPClient: mt.Client(),
@@ -160,5 +162,91 @@ func TestSeriesBooksMissingMetadataAndValidation(t *testing.T) {
 	pending := result.Books[0]
 	if pending.State != "Searching" || pending.LibraryBookID != "b_one" || len(pending.Formats) != 0 || result.Books[1].State != "Not in library" {
 		t.Fatalf("unexpected availability: %+v", result.Books)
+	}
+}
+
+func mockSeriesLookup(t *testing.T, mt *testutil.MockTransport, seriesJSON, booksJSON string) {
+	t.Helper()
+	mt.RegisterHandler("/v1/graphql", func(r *http.Request) (*http.Response, error) {
+		var input struct {
+			Query     string `json:"query"`
+			Variables struct {
+				ID       int              `json:"id"`
+				HasKnown bool             `json:"hasKnown"`
+				Known    []map[string]any `json:"known"`
+			} `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		var body string
+		switch {
+		case strings.Contains(input.Query, "query FindSeries"):
+			if !input.Variables.HasKnown || len(input.Variables.Known) == 0 {
+				t.Fatal("series lookup omitted local book evidence")
+			}
+			body = seriesJSON
+		case strings.Contains(input.Query, "query SeriesBooks") && input.Variables.ID == 7 && booksJSON != "":
+			body = booksJSON
+		default:
+			t.Fatalf("unexpected Hardcover request: %+v", input)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+}
+
+func TestSeriesBooksResolvesRenamedSeries(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	for _, sql := range []string{
+		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','test')`,
+		`INSERT INTO authors(id,name,sort_name) VALUES('bennett','Robert Jackson Bennett','Bennett, Robert Jackson')`,
+		`INSERT INTO series(id,title,total_books) VALUES('leviathan','Shadow of the Leviathan',2)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES
+			('cup','bennett','The Tainted Cup','leviathan',1),
+			('drop','bennett','A Drop of Corruption','leviathan',2)`,
+	} {
+		if _, err := db.Exec(sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const matched = `{"data":{"named":[],"linked":[{"id":7,"name":"Ana and Din Mysteries","books_count":2}]}}`
+	for _, tc := range []struct {
+		name, seriesJSON, booksJSON string
+		wantTotal                   int
+		complete                    bool
+	}{
+		{
+			name: "renamed series has three volumes", seriesJSON: matched, wantTotal: 3, complete: true,
+			booksJSON: `{"data":{"books":[
+				{"id":1,"title":"The Tainted Cup","contributions":[{"author":{"name":"Robert Jackson Bennett"}}],"book_series":[{"series_position":1,"series":{"id":7}}]},
+				{"id":2,"title":"A Drop of Corruption","contributions":[{"author":{"name":"Robert Jackson Bennett"}}],"book_series":[{"series_position":2,"series":{"id":7}}]},
+				{"id":3,"title":"A Trade of Blood","release_date":"2099-08-04","contributions":[{"author":{"name":"Robert Jackson Bennett"}}],"book_series":[{"series_position":3,"series":{"id":7}}]}
+			]}}`,
+		},
+		{name: "no match", seriesJSON: `{"data":{"named":[],"linked":[]}}`, wantTotal: 2},
+		{name: "matched series has no qualifying volumes", seriesJSON: matched, booksJSON: `{"data":{"books":[]}}`, wantTotal: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mt := testutil.NewMockTransport()
+			mt.PanicOnUnmocked = true
+			mockSeriesLookup(t, mt, tc.seriesJSON, tc.booksJSON)
+			s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
+			w := httptest.NewRecorder()
+			s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=shadow%20of%20the%20leviathan", nil))
+			var result seriesBooksResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &result); w.Code != http.StatusOK || err != nil {
+				t.Fatalf("unexpected response (%d): %s", w.Code, w.Body.String())
+			}
+			if result.Title != "Shadow of the Leviathan" || result.Complete != tc.complete || result.TotalBooks != tc.wantTotal || len(result.Books) != tc.wantTotal {
+				t.Fatalf("unexpected series response: %+v", result)
+			}
+			if tc.complete {
+				b := result.Books[2]
+				if b.Title != "A Trade of Blood" || b.SeriesIndexDisplay != "Book 3" || b.PublishDate != "2099-08-04" || b.HardcoverID != "3" {
+					t.Fatalf("unexpected forthcoming volume: %+v", b)
+				}
+			}
+		})
 	}
 }
