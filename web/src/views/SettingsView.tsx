@@ -24,7 +24,6 @@ import {
   RequestType,
   SettingsOverridesMap,
   FormatType,
-  FORMAT_TYPES,
   DEFAULT_EBOOK_PREFERENCES,
 } from '../types';
 
@@ -201,6 +200,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const isOverridden = (key: string): boolean => Boolean(overrides[key]?.isOverridden);
   const searchFormatLocked = isOverridden('default_search_format');
+  const allowedFormatsLocked = isOverridden('allowed_formats');
+  const formatPrioritiesLocked = isOverridden('ebook_format_preferences');
+  const formatPreferences = qualityProfile.ebookFormatPreferences ?? [];
+  const ebookFormats = [...new Set([...formatPreferences, ...DEFAULT_EBOOK_PREFERENCES])]
+    .filter((format) => DEFAULT_EBOOK_PREFERENCES.includes(format));
+  const enabledEbookFormats = ebookFormats.filter((format) => qualityProfile.allowedFormats.includes(format));
+  const disabledEbookFormats = ebookFormats.filter((format) => !qualityProfile.allowedFormats.includes(format));
+  const rankedDisabledFormats = disabledEbookFormats.filter((format) => formatPreferences.includes(format));
+
+  const toggleEbookFormat = (format: FormatType, enabled: boolean) => {
+    setQualityProfile((prev) => ({
+      ...prev,
+      allowedFormats: enabled
+        ? prev.allowedFormats.filter((item) => item !== format)
+        : [...prev.allowedFormats, format],
+      ebookFormatPreferences: [
+        ...enabledEbookFormats.filter((item) => item !== format),
+        format,
+        ...rankedDisabledFormats.filter((item) => item !== format),
+      ],
+    }));
+  };
+
+  const moveEbookFormat = (index: number, direction: -1 | 1) => {
+    const next = [...enabledEbookFormats];
+    [next[index], next[index + direction]] = [next[index + direction], next[index]];
+    setQualityProfile((prev) => ({
+      ...prev,
+      ebookFormatPreferences: [...next, ...rankedDisabledFormats],
+    }));
+  };
 
   const overriddenCount = Object.values(overrides).filter((o) => o?.isOverridden).length;
 
@@ -1037,54 +1067,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <p className="text-zinc-400 mb-3">Enable eBook formats to allow downloads. Move formats up to prefer them; disabled eBook formats are never acquired.</p>
               <OverrideBadge settingKey="ebook_format_preferences" />
               <ol aria-label="eBook format priority" className="space-y-2 max-w-lg">
-                {[...(qualityProfile.ebookFormatPreferences ?? []), ...FORMAT_TYPES.filter(
-                  (fmt) => !qualityProfile.ebookFormatPreferences?.includes(fmt)
-                )].filter((fmt) => fmt !== 'MP3' && fmt !== 'M4B').map((fmt, index) => {
-                  const isChecked = qualityProfile.allowedFormats.includes(fmt);
-                  const preferences = qualityProfile.ebookFormatPreferences ?? [];
-                  const ranked = index < preferences.length;
-                  const move = (direction: number) => {
-                    const next = [...preferences];
-                    [next[index], next[index + direction]] = [next[index + direction], next[index]];
-                    setQualityProfile((prev) => ({ ...prev, ebookFormatPreferences: next }));
-                  };
+                {[...enabledEbookFormats, ...disabledEbookFormats].map((fmt, index) => {
+                  const isChecked = index < enabledEbookFormats.length;
                   return (
                     <li key={fmt} className="flex items-center gap-3 rounded-md border border-zinc-800 px-3 py-2">
-                      <span className="w-6 text-zinc-400 tabular-nums">{ranked ? index + 1 : ''}</span>
+                      <span className="w-6 text-zinc-400 tabular-nums">{isChecked ? index + 1 : ''}</span>
+                      <span id={`ebook-format-${fmt}`} className="flex-1 text-zinc-200">{fmt}</span>
                       <button
                         type="button"
-                        disabled={isOverridden('allowed_formats')}
-                        aria-pressed={isChecked}
-                        onClick={() => setQualityProfile((prev) => ({
-                          ...prev,
-                          allowedFormats: isChecked
-                            ? prev.allowedFormats.filter((f) => f !== fmt)
-                            : [...prev.allowedFormats, fmt],
-                        }))}
-                        className="flex-1 text-left text-zinc-200 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-60"
+                        role="switch"
+                        aria-checked={isChecked}
+                        aria-labelledby={`ebook-format-${fmt}`}
+                        aria-describedby={allowedFormatsLocked ? 'override-note-allowed_formats' : undefined}
+                        disabled={allowedFormatsLocked}
+                        onClick={() => toggleEbookFormat(fmt, isChecked)}
+                        className={`inline-flex h-6 w-11 shrink-0 items-center rounded-full p-1 motion-safe:transition-colors
+                          focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:opacity-60
+                          ${isChecked ? 'bg-blue-600 enabled:hover:bg-blue-500' : 'bg-zinc-600 enabled:hover:bg-zinc-500'}`}
                       >
-                        {fmt}<span aria-hidden="true" className="ml-3 text-zinc-400">{isChecked ? 'Enabled' : 'Disabled'}</span>
+                        <span aria-hidden="true" className={`size-4 rounded-full bg-white motion-safe:transition-transform ${isChecked ? 'translate-x-5' : 'translate-x-0'}`} />
                       </button>
-                      {!ranked && DEFAULT_EBOOK_PREFERENCES.includes(fmt) && (
-                        <button type="button" aria-label={`Add ${fmt} to priorities`}
-                          disabled={isOverridden('ebook_format_preferences')}
-                          onClick={() => setQualityProfile((prev) => ({ ...prev, ebookFormatPreferences: [...(prev.ebookFormatPreferences ?? []), fmt] }))}
-                          className="p-2 rounded-sm text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
-                          Prioritize
-                        </button>
-                      )}
-                      {ranked && <>
-                        <button type="button" aria-label={`Move ${fmt} up`}
-                          disabled={isOverridden('ebook_format_preferences') || index === 0}
-                          onClick={() => move(-1)} className="p-2 rounded-sm hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
-                          <ArrowUp size={16} aria-hidden="true" />
-                        </button>
-                        <button type="button" aria-label={`Move ${fmt} down`}
-                          disabled={isOverridden('ebook_format_preferences') || index === preferences.length - 1}
-                          onClick={() => move(1)} className="p-2 rounded-sm hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
-                          <ArrowDown size={16} aria-hidden="true" />
-                        </button>
-                      </>}
+                      <button type="button" aria-label={`Move ${fmt} up`}
+                        disabled={formatPrioritiesLocked || !isChecked || index === 0}
+                        onClick={() => moveEbookFormat(index, -1)} className="p-2 rounded-sm enabled:hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
+                        <ArrowUp size={16} aria-hidden="true" />
+                      </button>
+                      <button type="button" aria-label={`Move ${fmt} down`}
+                        disabled={formatPrioritiesLocked || !isChecked || index === enabledEbookFormats.length - 1}
+                        onClick={() => moveEbookFormat(index, 1)} className="p-2 rounded-sm enabled:hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
+                        <ArrowDown size={16} aria-hidden="true" />
+                      </button>
                     </li>
                   );
                 })}

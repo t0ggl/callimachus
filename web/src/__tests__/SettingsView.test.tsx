@@ -59,6 +59,13 @@ const baseOverrides: SettingsOverridesMap = {
   },
 };
 
+const ebookSwitch = (format: string) => screen.getByRole('switch', { name: format });
+
+const expectEbookOrder = (formats: string[]) => {
+  const list = screen.getByRole('list', { name: 'eBook format priority' });
+  expect(within(list).getAllByRole('switch')).toEqual(formats.map(ebookSwitch));
+};
+
 describe('SettingsView Environment Overrides', () => {
   it('disables overridden controls and displays environment variable lock notes across tabs without auth UI', async () => {
     const user = userEvent.setup({ delay: null });
@@ -108,8 +115,9 @@ describe('SettingsView Environment Overrides', () => {
     expect(screen.getByTestId('override-note-max_audiobook_size_mb')).toHaveTextContent(
       'Managed via environment variable CALLIMACHUS_MAX_AUDIOBOOK_SIZE_MB and cannot be modified here.'
     );
-    for (const format of ['EPUB', 'AZW3', 'MOBI', 'CBR', 'CBZ']) {
-      expect(screen.getByRole('button', { name: format })).toBeDisabled();
+    for (const format of ['EPUB', 'AZW3', 'MOBI', 'PDF', 'CBR', 'CBZ']) {
+      expect(ebookSwitch(format)).toBeDisabled();
+      expect(ebookSwitch(format)).toHaveAccessibleDescription(/CALLIMACHUS_ALLOWED_FORMATS/);
     }
     expect(screen.queryByLabelText('Audio Min Bitrate (kbps)')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Audio Target Bitrate (kbps)')).not.toBeInTheDocument();
@@ -190,13 +198,13 @@ it('offers ebook formats while keeping audiobook handling automatic', async () =
   await user.click(screen.getByTestId('tab-settings-quality'));
   const formats = ['AZW3', 'MOBI', 'CBR', 'CBZ'];
   for (const format of formats) {
-    const button = screen.getByRole('button', { name: format });
-    expect(button).toBeEnabled();
-    await user.click(button);
-    expect(button).toHaveAttribute('aria-pressed', 'true');
+    const toggle = ebookSwitch(format);
+    expect(toggle).toBeEnabled();
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
   }
-  expect(screen.queryByRole('button', { name: /^M4B/ })).not.toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: /^MP3/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('switch', { name: 'M4B' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('switch', { name: 'MP3' })).not.toBeInTheDocument();
   expect(screen.queryByRole('checkbox', { name: /convert audiobooks/i })).not.toBeInTheDocument();
   await user.click(screen.getByTestId('save-settings-btn'));
   expect(onSaveSettings).toHaveBeenCalledWith(expect.objectContaining({
@@ -221,21 +229,66 @@ it('edits and saves the ebook ceiling in bytes while displaying MB', async () =>
   }));
 });
 
-it('reorders ebook priorities in both directions and saves the sequence independently of allowed formats', async () => {
+it('keeps enabled ebook formats first and moves priorities only within the enabled group', async () => {
   const user = userEvent.setup({ delay: null });
   const onSaveSettings = vi.fn().mockResolvedValue(undefined);
-  render(<SettingsView indexers={[]}  librarySettings={baseLibrary}
-    prowlarrSettings={baseProwlarr} qualityProfile={baseQuality} onSaveSettings={onSaveSettings} />);
+  const allowedFormats: QualityProfile['allowedFormats'] = ['EPUB', 'M4B', 'PDF', 'CBZ'];
+  render(<SettingsView indexers={[]} qualityProfile={{ ...baseQuality, allowedFormats }} onSaveSettings={onSaveSettings} />);
   await user.click(screen.getByTestId('tab-settings-quality'));
+  expectEbookOrder(['EPUB', 'PDF', 'CBZ', 'AZW3', 'MOBI', 'CBR']);
   expect(screen.getByRole('button', { name: 'Move EPUB up' })).toBeDisabled();
   expect(screen.getByRole('button', { name: 'Move CBZ down' })).toBeDisabled();
+  for (const format of ['AZW3', 'MOBI', 'CBR']) {
+    expect(screen.getByRole('button', { name: `Move ${format} up` })).toBeDisabled();
+    expect(screen.getByRole('button', { name: `Move ${format} down` })).toBeDisabled();
+  }
   await user.click(screen.getByRole('button', { name: 'Move PDF up' }));
+  expectEbookOrder(['PDF', 'EPUB', 'CBZ', 'AZW3', 'MOBI', 'CBR']);
+  await user.click(screen.getByRole('button', { name: 'Move PDF down' }));
   await user.click(screen.getByRole('button', { name: 'Move EPUB down' }));
-  expect(screen.getByRole('list', { name: 'eBook format priority' }).textContent).toMatch(/AZW3.*EPUB.*PDF.*MOBI.*CBR.*CBZ/);
+  expectEbookOrder(['PDF', 'EPUB', 'CBZ', 'AZW3', 'MOBI', 'CBR']);
+  expect(screen.getByRole('button', { name: 'Move PDF up' })).toBeDisabled();
   await user.click(screen.getByTestId('save-settings-btn'));
   expect(onSaveSettings).toHaveBeenCalledWith(expect.objectContaining({ qualityProfile: expect.objectContaining({
-    ebookFormatPreferences: ['AZW3', 'EPUB', 'PDF', 'MOBI', 'CBR', 'CBZ'],
-    allowedFormats: ['EPUB', 'M4B'],
+    ebookFormatPreferences: ['PDF', 'EPUB', 'CBZ', 'AZW3', 'MOBI', 'CBR'],
+    allowedFormats,
+  }) }));
+});
+
+it('updates the switch track and thumb and appends re-enabled formats to the enabled group', async () => {
+  const user = userEvent.setup({ delay: null });
+  const onSaveSettings = vi.fn().mockResolvedValue(undefined);
+  render(<SettingsView indexers={[]} qualityProfile={{ ...baseQuality, allowedFormats: ['EPUB', 'PDF', 'CBZ', 'M4B'] }}
+    onSaveSettings={onSaveSettings} />);
+  await user.click(screen.getByTestId('tab-settings-quality'));
+  const epub = ebookSwitch('EPUB');
+  expect(epub).toHaveAttribute('aria-checked', 'true');
+  expect(epub).toHaveClass('bg-blue-600');
+  expect(epub.firstElementChild).toHaveClass('translate-x-5');
+
+  await user.click(epub);
+  expect(epub).toHaveAttribute('aria-checked', 'false');
+  expect(epub).toHaveClass('bg-zinc-600');
+  expect(epub.firstElementChild).toHaveClass('translate-x-0');
+  expectEbookOrder(['PDF', 'CBZ', 'EPUB', 'AZW3', 'MOBI', 'CBR']);
+  expect(screen.getByRole('button', { name: 'Move EPUB up' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Move CBZ down' })).toBeDisabled();
+
+  epub.focus();
+  await user.keyboard(' ');
+  expect(epub).toHaveAttribute('aria-checked', 'true');
+  expect(epub).toHaveClass('bg-blue-600');
+  expect(epub.firstElementChild).toHaveClass('translate-x-5');
+  expectEbookOrder(['PDF', 'CBZ', 'EPUB', 'AZW3', 'MOBI', 'CBR']);
+  expect(screen.getByRole('button', { name: 'Move EPUB up' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Move EPUB down' })).toBeDisabled();
+
+  await user.click(ebookSwitch('CBR'));
+  expectEbookOrder(['PDF', 'CBZ', 'EPUB', 'CBR', 'AZW3', 'MOBI']);
+  await user.click(screen.getByTestId('save-settings-btn'));
+  expect(onSaveSettings).toHaveBeenCalledWith(expect.objectContaining({ qualityProfile: expect.objectContaining({
+    ebookFormatPreferences: ['PDF', 'CBZ', 'EPUB', 'CBR', 'AZW3', 'MOBI'],
+    allowedFormats: ['PDF', 'CBZ', 'M4B', 'EPUB', 'CBR'],
   }) }));
 });
 
@@ -247,21 +300,24 @@ it('locks priority arrows and omits preferences from saves when managed by the e
     overrides={{ebook_format_preferences: {isOverridden: true, overriddenBy: 'CALLIMACHUS_EBOOK_FORMAT_PREFERENCES', envVar: 'CALLIMACHUS_EBOOK_FORMAT_PREFERENCES'}}}
     onSaveSettings={onSaveSettings} />);
   await user.click(screen.getByTestId('tab-settings-quality'));
-  expect(screen.getByRole('button', { name: 'Move EPUB up' })).toBeDisabled();
-  expect(screen.getByRole('button', { name: 'Move PDF down' })).toBeDisabled();
+  expect(ebookSwitch('PDF')).toBeEnabled();
+  await user.click(ebookSwitch('PDF'));
+  expectEbookOrder(['EPUB', 'PDF', 'AZW3', 'MOBI', 'CBR', 'CBZ']);
+  expect(screen.getByRole('button', { name: 'Move EPUB down' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Move PDF up' })).toBeDisabled();
   expect(screen.getByTestId('override-note-ebook_format_preferences')).toHaveTextContent('CALLIMACHUS_EBOOK_FORMAT_PREFERENCES');
   await user.click(screen.getByTestId('save-settings-btn'));
   expect(onSaveSettings.mock.calls[0][0].qualityProfile).not.toHaveProperty('ebookFormatPreferences');
+  expect(onSaveSettings.mock.calls[0][0].qualityProfile.allowedFormats).toEqual(['EPUB', 'M4B', 'PDF']);
 });
 
-it('can add an unranked ebook format to a saved partial preference list', async () => {
+it('can move an enabled format missing from a saved partial preference list', async () => {
   const user = userEvent.setup({ delay: null });
   const onSaveSettings = vi.fn().mockResolvedValue(undefined);
   render(<SettingsView indexers={[]}  librarySettings={baseLibrary}
-    prowlarrSettings={baseProwlarr} qualityProfile={{...baseQuality, ebookFormatPreferences: ['PDF']}}
+    prowlarrSettings={baseProwlarr} qualityProfile={{ ...baseQuality, allowedFormats: ['EPUB', 'PDF'], ebookFormatPreferences: ['PDF'] }}
     onSaveSettings={onSaveSettings} />);
   await user.click(screen.getByTestId('tab-settings-quality'));
-  await user.click(screen.getByRole('button', {name: 'Add EPUB to priorities'}));
   await user.click(screen.getByRole('button', {name: 'Move EPUB up'}));
   await user.click(screen.getByTestId('save-settings-btn'));
   expect(onSaveSettings.mock.calls[0][0].qualityProfile.ebookFormatPreferences).toEqual(['EPUB', 'PDF']);
