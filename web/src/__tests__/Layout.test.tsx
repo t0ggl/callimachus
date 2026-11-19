@@ -1,6 +1,6 @@
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { Layout } from '../components/Layout';
 
 const props = {
@@ -11,6 +11,39 @@ const props = {
   onLogout: vi.fn(),
   children: null,
 };
+
+describe('Layout build version badge', () => {
+  const user = { id: '1', username: 'reader', role: 'guest' as const, email: 'reader@example.com' };
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(['v0.7.0', 'v1.2.3-rc.1+build.001', 'abcdef01', 'dev'])(
+    'displays %s from the health API in the sidebar',
+    async (displayVersion) => {
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        Response.json({ status: 'ok', displayVersion }),
+      );
+      render(<Layout {...props} user={user} activeDownloadsCount={0} convertingJobsCount={0} />);
+      const sidebar = within(screen.getByRole('complementary'));
+      expect(await sidebar.findByText(displayVersion)).toHaveAttribute('title', displayVersion);
+      expect(fetchMock).toHaveBeenCalledExactlyOnceWith('/api/health', { signal: expect.any(AbortSignal) });
+      expect(sidebar.queryByText('v0.1')).not.toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    ['unavailable', () => new Response(null, { status: 503 })],
+    ['missing version metadata', () => Response.json({ status: 'ok' })],
+  ] as const)('keeps the sidebar usable when health is %s', async (_, response) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(response());
+    await act(async () => {
+      render(<Layout {...props} user={user} activeDownloadsCount={0} convertingJobsCount={0} />);
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(screen.getByText('Callimachus')).toBeInTheDocument();
+    expect(screen.queryByText(/^(v0\.1|dev)$/)).not.toBeInTheDocument();
+  });
+});
 
 describe('Layout active downloads metric', () => {
   it.each([[0, 0], [3, 0], [0, 2], [3, 2]])(

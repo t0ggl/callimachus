@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Library,
   Activity,
@@ -36,6 +36,28 @@ export const Layout: React.FC<LayoutProps> = ({
 }) => {
   const activeAcquisitionsCount = activeDownloadsCount + convertingJobsCount;
   const isAdmin = user?.role === 'admin';
+  const hasSession = user !== null;
+  const [displayVersion, setDisplayVersion] = useState<string>();
+
+  useEffect(() => {
+    if (!hasSession) return;
+
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch('/api/health', { signal: controller.signal });
+        if (!response.ok) return;
+
+        const health = await response.json();
+        if (!controller.signal.aborted && typeof health?.displayVersion === 'string') {
+          setDisplayVersion(health.displayVersion);
+        }
+      } catch {
+        // The version badge is optional when health metadata is unavailable.
+      }
+    })();
+    return () => controller.abort();
+  }, [hasSession]);
 
   const navItems = [
     {
@@ -79,12 +101,14 @@ export const Layout: React.FC<LayoutProps> = ({
                 <path d="M20.5 3.5C24.5 3.8 27.8 6.6 28.8 10.5" stroke="#38BDF8" strokeWidth="2.2" strokeLinecap="round" />
               </svg>
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="text-sm font-bold tracking-tight text-white flex items-center gap-1.5">
                 Callimachus
-                <span className="text-[10px] font-mono px-1 py-0.2 rounded-sm bg-zinc-800 text-zinc-400 border border-zinc-700">
-                  v0.1
-                </span>
+                {displayVersion && (
+                  <span title={displayVersion} className="truncate text-[10px] font-mono px-1 py-0.2 rounded-sm bg-zinc-800 text-zinc-400 border border-zinc-700">
+                    {displayVersion}
+                  </span>
+                )}
               </div>
             </div>
           </div>
