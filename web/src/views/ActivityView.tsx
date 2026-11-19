@@ -9,6 +9,8 @@ interface ActivityViewProps {
   logs: ImportLog[];
   requests?: BookRequest[];
   canManageJobs?: boolean;
+  isAdmin?: boolean;
+  onMetadataApplied?: () => void;
   connectionStatus: 'connected' | 'connecting' | 'disconnected';
 }
 
@@ -105,8 +107,14 @@ export function activityItems({ conversionJobs, downloads, logs, requests = [] }
   return [...items.values()].sort((a, b) => Number(a.phase === 'Completed') - Number(b.phase === 'Completed'));
 }
 
-function ActivityDetails({ item, onClose }: { item: ActivityItem; onClose: () => void }) {
+function ActivityDetails({ item, onClose, isAdmin, onMetadataApplied }: {
+  item: ActivityItem;
+  onClose: () => void;
+  isAdmin?: boolean;
+  onMetadataApplied?: () => void;
+}) {
   const [book, setBook] = useState<Book | null>(null);
+  const [bookRevision, setBookRevision] = useState(0);
   const [showLog, setShowLog] = useState(false);
   const [events, setEvents] = useState<RequestEvent[] | null>(null);
   const [logError, setLogError] = useState(false);
@@ -123,7 +131,7 @@ function ActivityDetails({ item, onClose }: { item: ActivityItem; onClose: () =>
       })
       .catch(() => {});
     return () => controller.abort();
-  }, [item.bookId, item.stage === 'available']);
+  }, [item.bookId, item.stage === 'available', bookRevision]);
 
   useEffect(() => {
     if (!showLog || !requestId) return;
@@ -158,7 +166,8 @@ function ActivityDetails({ item, onClose }: { item: ActivityItem; onClose: () =>
   };
   const current = stages.findIndex(step => step.id === item.stage);
 
-  return <BookDetailModal book={metadata} onClose={onClose} activity={
+  return <BookDetailModal book={metadata} onClose={onClose} isAdmin={isAdmin}
+    onMetadataApplied={() => { setBookRevision((value) => value + 1); onMetadataApplied?.(); }} activity={
     <section aria-label="Acquisition progress" className="space-y-3 border-t border-zinc-800 pt-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-semibold">{item.format || 'Acquisition'} · {item.phase}</h3>
@@ -262,6 +271,7 @@ export const ActivityView: React.FC<ActivityViewProps> = (props) => {
       requestFormat={manual.requestType === 'audiobook' ? 'm4b' : manual.requestType === 'ebook' ? 'epub' : 'both'}
       book={manual.bookId ? { id: manual.bookId, title: manual.title, author: manual.author } : undefined}
       onClose={() => setManual(null)} />}
-    {detail && <ActivityDetails key={detail.id} item={detail} onClose={() => setSelected(null)} />}
+    {detail && <ActivityDetails key={detail.id} item={detail} isAdmin={props.isAdmin}
+      onMetadataApplied={props.onMetadataApplied} onClose={() => setSelected(null)} />}
   </section>;
 };

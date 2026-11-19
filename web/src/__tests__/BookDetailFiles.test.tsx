@@ -1,6 +1,6 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { expect, it, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { BookDetailModal } from '../components/BookDetailModal';
 import { CatalogView } from '../views/CatalogView';
 import { testBooks } from './testFixtures';
@@ -20,6 +20,87 @@ const book: Book = {
     ] },
   ],
 };
+
+afterEach(() => vi.unstubAllGlobals());
+
+it('offers metadata repair only to admins with an EPUB asset', () => {
+  const { rerender } = render(<BookDetailModal book={book} onClose={vi.fn()} />);
+  expect(screen.queryByRole('button', { name: 'Fix Metadata' })).toBeNull();
+  rerender(<BookDetailModal book={{ ...book, editions: [book.editions[1]] }} onClose={vi.fn()} isAdmin />);
+  expect(screen.queryByRole('button', { name: 'Fix Metadata' })).toBeNull();
+  rerender(<BookDetailModal book={book} onClose={vi.fn()} isAdmin />);
+  expect(screen.getByRole('button', { name: 'Fix Metadata' })).toBeVisible();
+});
+
+it('searches, previews the selected candidate and applies only on confirmation', async () => {
+  const user = userEvent.setup({ delay: null });
+  const candidate = {
+    title: 'Different Title', authors: ['New Author'], publisher: 'Example Press',
+    publish_date: '2025', language: 'en', isbn13: '9781234567890',
+  };
+  const base = '/api/books/book%2Fwith%20spaces';
+  let applyAttempts = 0;
+  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+    if (url.endsWith('/metadata-candidates')) {
+      return Response.json([{ title: 'Suggested title', authors: ['Suggested author'] }]);
+    }
+    if (url.endsWith('?q=Missing')) return Response.json([]);
+    if (url.endsWith('?q=Unavailable')) return new Response('Metadata sources are unavailable.', { status: 502 });
+    if (url.endsWith('?q=Different%20Title')) return Response.json([candidate]);
+    if (url.endsWith('/metadata-diff')) {
+      const selected = options?.method === 'POST';
+      return Response.json({
+        preview: selected ? 'candidate-preview' : 'library-preview',
+        ...(selected ? { bookDiffs: [
+          { field: 'title', fileValue: 'Library title', libraryValue: candidate.title, changed: true },
+        ] } : {}),
+        files: [{
+          id: 'e1', filename: 'Book.epub',
+          diffs: [{ field: 'title', fileValue: 'Old EPUB title', libraryValue: selected ? candidate.title : 'Library title', changed: true }],
+        }],
+      });
+    }
+    if (url.endsWith('/fix-metadata')) {
+      applyAttempts++;
+      if (applyAttempts === 1) return new Response('Metadata changed. Review a fresh preview.', { status: 409 });
+      return Response.json({ updated: 1 });
+    }
+    throw new Error(`Unexpected request ${url}`);
+  });
+  const applied = vi.fn();
+  vi.stubGlobal('fetch', fetchMock);
+  render(<BookDetailModal book={book} onClose={vi.fn()} isAdmin onMetadataApplied={applied} />);
+  await user.click(screen.getByRole('button', { name: 'Fix Metadata' }));
+  expect(await screen.findByText('Old EPUB title')).toBeVisible();
+  expect(screen.getByText('Library title')).toBeVisible();
+  expect(await screen.findByRole('radio', { name: /Suggested title/ })).toBeVisible();
+  const input = screen.getByRole('searchbox', { name: 'Search metadata by title' });
+  await user.type(input, 'Missing');
+  await user.click(screen.getByRole('button', { name: 'Search' }));
+  expect(await screen.findByText('No matches found. Try another title.')).toBeVisible();
+  await user.clear(input);
+  await user.type(input, 'Unavailable{enter}');
+  expect(await screen.findByRole('alert')).toHaveTextContent('Metadata sources are unavailable.');
+  await user.clear(input);
+  await user.type(input, 'Different Title{enter}');
+  const option = await screen.findByRole('radio', { name: /Different Title.*Example Press.*9781234567890/ });
+  await user.click(option);
+  expect(await screen.findByRole('columnheader', { name: 'Current library' })).toBeVisible();
+  expect(screen.getAllByRole('cell', { name: 'Different Title' })).toHaveLength(2);
+  expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/fix-metadata'))).toHaveLength(0);
+
+  await user.click(screen.getByRole('button', { name: 'Apply Metadata' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Metadata changed. Review a fresh preview.');
+  expect(applied).not.toHaveBeenCalled();
+  expect(await screen.findByRole('columnheader', { name: 'Current library' })).toBeVisible();
+  await user.click(screen.getByRole('button', { name: 'Apply Metadata' }));
+  expect(await screen.findByText('Metadata applied to the library and EPUB files.')).toBeVisible();
+  expect(fetchMock).toHaveBeenCalledWith(base + '/fix-metadata', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ candidate, preview: 'candidate-preview' }),
+  });
+  expect(applied).toHaveBeenCalledOnce();
+});
 
 it('links every ebook and audiobook file by ID and shows its format, size and language', () => {
   render(<BookDetailModal book={book} onClose={vi.fn()} />);

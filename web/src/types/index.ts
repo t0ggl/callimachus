@@ -49,6 +49,37 @@ export interface BookEdition {
   assets: MediaAsset[];
 }
 
+export interface MetadataCandidate {
+  title: string;
+  subtitle?: string;
+  authors?: string[];
+  series?: string;
+  series_index?: number;
+  publish_date?: string;
+  publisher?: string;
+  language?: string;
+  isbn13?: string;
+  description?: string;
+}
+
+export interface MetadataDiff {
+  field: string;
+  fileValue: string;
+  libraryValue: string;
+  changed: boolean;
+}
+
+export interface MetadataPreview {
+  preview: string;
+  bookDiffs?: MetadataDiff[];
+  files: {
+    id: string;
+    filename: string;
+    diffs: MetadataDiff[];
+    libraryDiffs?: MetadataDiff[];
+  }[];
+}
+
 export type BookState = 'In library' | 'Downloading' | 'Searching' | 'Requested' | 'Scheduled' | 'Not in library';
 
 export interface Book {

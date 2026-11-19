@@ -152,7 +152,9 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
       }
       if (booksRes.ok) {
         const data = await booksRes.json();
-        setBooks(Array.isArray(data) ? data : []);
+        const nextBooks: Book[] = Array.isArray(data) ? data : [];
+        setBooks(nextBooks);
+        setSelectedBook((current) => nextBooks.find((book) => book.id === current?.id) ?? current);
       }
       if (authorsRes.ok) {
         const data = await authorsRes.json();
@@ -439,6 +441,8 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
             kind={match[1] as 'authors' | 'series'}
             name={entityName}
             canManage={currentUser?.role === 'admin' || currentUser?.role === 'curator'}
+            isAdmin={isAdmin}
+            onMetadataApplied={fetchCatalog}
           />
         ) : currentView === 'catalog' && (
           <CatalogView
@@ -459,6 +463,8 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
           <ActivityView
             requests={requests}
             canManageJobs={currentUser?.role === 'admin' || currentUser?.role === 'curator'}
+            isAdmin={isAdmin}
+            onMetadataApplied={fetchCatalog}
             conversionJobs={conversionJobs}
             downloads={downloads}
             logs={logs}
@@ -528,6 +534,8 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
       {selectedBook && (
         <BookDetailModal
           book={selectedBook}
+          isAdmin={isAdmin}
+          onMetadataApplied={fetchCatalog}
           onClose={() => setSelectedBook(null)}
         />
       )}
