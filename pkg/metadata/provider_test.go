@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/t0ggl/callimachus/pkg/metadata"
@@ -347,10 +350,15 @@ func TestHardcoverCatalogPagination(t *testing.T) {
 			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var input struct {
+					Query     string                 `json:"query"`
 					Variables map[string]interface{} `json:"variables"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 					t.Error(err)
+					return
+				}
+				if strings.Contains(input.Query, "query FindSeries") {
+					_, _ = w.Write([]byte(`{"data":{"named":[{"id":7,"name":"Sequence"}]}}`))
 					return
 				}
 				if int(input.Variables["offset"].(float64)) != calls*100 {
@@ -360,7 +368,7 @@ func TestHardcoverCatalogPagination(t *testing.T) {
 				books := []map[string]interface{}{}
 				if calls == 1 {
 					for i := 0; i < 100; i++ {
-						books = append(books, map[string]interface{}{"id": i + 1, "title": "Book", "release_date": "2028-01-01", "book_series": []map[string]any{{"series": map[string]string{"name": "Sequence"}}}, "contributions": []map[string]interface{}{{"author": map[string]string{"name": "Author"}}}})
+						books = append(books, map[string]interface{}{"id": i + 1, "title": "Book", "release_date": "2028-01-01", "book_series": []map[string]any{{"series": map[string]any{"id": 7, "name": "Sequence"}}}, "contributions": []map[string]interface{}{{"author": map[string]string{"name": "Author"}}}})
 					}
 				}
 				json.NewEncoder(w).Encode(map[string]interface{}{"data": map[string]interface{}{"books": books}})
@@ -384,21 +392,21 @@ func TestHardcoverCatalogPagination(t *testing.T) {
 func TestHardcoverSeriesCanonicalEnglishVolumes(t *testing.T) {
 	mt := testutil.NewMockTransport()
 	mt.PanicOnUnmocked = true
-	mt.RegisterString("/v1/graphql", 200, `{"data":{"books":[
-  {"id":1,"title":"Cour de roses","default_cover_edition":{"language":{"code2":"fr"}},"book_series":[{"series_position":1,"series":{"name":"Court"}}]},
-  {"id":2,"title":"Court: Alternate Edition","canonical_id":5,"book_series":[{"series_position":1,"series":{"name":"Court"}}]},
-  {"id":3,"title":"Court Books 1-4","book_series":[{"series_position":4,"series":{"name":"Court"}}]},
-  {"id":4,"title":"Court Books 1–5","book_series":[{"series":{"name":"Court"}}]},
-  {"id":5,"title":"Court of Roses","image":{"url":"https://example.com/cover.jpg"},"default_cover_edition":{"language":{"code3":"eng"}},"book_series":[{"series_position":1,"series":{"name":"Another Series"}},{"series_position":1,"series":{"name":"Court"}}]},
-  {"id":6,"title":"Court Three Book Set","book_series":[{"series_position":1.5,"series":{"name":"Court"}}]},
-  {"id":7,"title":"Court Saga","compilation":true,"book_series":[{"series_position":7,"series":{"name":"Court"}}]},
-  {"id":8,"title":"Corte de rosas","default_cover_edition":{"language":{"code2":"es"}},"book_series":[{"series_position":8,"series":{"name":"Court"}}]},
+	registerHardcoverSeries(t, mt, `{"data":{"named":[{"id":7,"name":"Court"}]}}`, `{"data":{"books":[
+  {"id":1,"title":"Cour de roses","default_cover_edition":{"language":{"code2":"fr"}},"book_series":[{"series_position":1,"series":{"id":7,"name":"Court"}}]},
+  {"id":2,"title":"Court: Alternate Edition","canonical_id":5,"book_series":[{"series_position":1,"series":{"id":7,"name":"Court"}}]},
+  {"id":3,"title":"Court Books 1-4","book_series":[{"series_position":4,"series":{"id":7,"name":"Court"}}]},
+  {"id":4,"title":"Court Books 1–5","book_series":[{"series":{"id":7,"name":"Court"}}]},
+  {"id":5,"title":"Court of Roses","image":{"url":"https://example.com/cover.jpg"},"default_cover_edition":{"language":{"code3":"eng"}},"book_series":[{"series_position":1,"series":{"name":"Another Series"}},{"series_position":1,"series":{"id":7,"name":"Court"}}]},
+  {"id":6,"title":"Court Three Book Set","book_series":[{"series_position":1.5,"series":{"id":7,"name":"Court"}}]},
+  {"id":7,"title":"Court Saga","compilation":true,"book_series":[{"series_position":7,"series":{"id":7,"name":"Court"}}]},
+  {"id":8,"title":"Corte de rosas","default_cover_edition":{"language":{"code2":"es"}},"book_series":[{"series_position":8,"series":{"id":7,"name":"Court"}}]},
   {"id":9,"title":"Wrong Series","book_series":[{"series_position":9,"series":{"name":"Another Series"}}]},
-  {"id":10,"title":"Court variant","users_count":1000,"book_series":[{"series_position":1,"series":{"name":"Court"}}]},
-  {"id":11,"title":"Court Novella","book_series":[{"series_position":2.5,"series":{"name":"Court"}}]},
-  {"id":12,"title":"Court Companion","book_series":[{"series":{"name":"Court"}}]},
-  {"id":13,"title":"Court","subtitle":"Boxed Set","book_series":[{"series":{"name":"Court"}}]}
- ]}}`, nil)
+  {"id":10,"title":"Court variant","users_count":1000,"book_series":[{"series_position":1,"series":{"id":7,"name":"Court"}}]},
+  {"id":11,"title":"Court Novella","book_series":[{"series_position":2.5,"series":{"id":7,"name":"Court"}}]},
+  {"id":12,"title":"Court Companion","book_series":[{"series":{"id":7,"name":"Court"}}]},
+  {"id":13,"title":"Court","subtitle":"Boxed Set","book_series":[{"series":{"id":7,"name":"Court"}}]}
+ ]}}`)
 	p := metadata.NewHardcoverProvider("mock", metadata.WithHardcoverClient(mt.Client()))
 	books, err := p.SeriesBooks(context.Background(), "Court")
 	if err != nil || len(books) != 3 {
@@ -413,7 +421,8 @@ func TestHardcoverSeriesCanonicalEnglishVolumes(t *testing.T) {
 func TestHardcoverSeriesExcludesDerivatives(t *testing.T) {
 	mt := testutil.NewMockTransport()
 	mt.PanicOnUnmocked = true
-	mt.RegisterFixture("/v1/graphql", http.StatusOK, "testdata/metadata/hardcover_series_acotar.json", nil)
+	fixture := strings.ReplaceAll(string(testutil.LoadFixture(t, "testdata/metadata/hardcover_series_acotar.json")), `"series":{"name":`, `"series":{"id":7,"name":`)
+	registerHardcoverSeries(t, mt, `{"data":{"named":[{"id":7,"name":"A Court of Thorns and Roses"}]}}`, fixture)
 	p := metadata.NewHardcoverProvider("mock", metadata.WithHardcoverClient(mt.Client()))
 	books, err := p.SeriesBooks(context.Background(), "A Court of Thorns and Roses")
 	if err != nil {
@@ -429,5 +438,109 @@ func TestHardcoverSeriesExcludesDerivatives(t *testing.T) {
 	}
 	if novella := books[3]; novella.Title != "A Court of Frost and Starlight" || novella.SeriesIndex == nil || *novella.SeriesIndex != 3.5 {
 		t.Fatalf("unexpected novella: %+v", novella)
+	}
+}
+
+func registerHardcoverSeries(t *testing.T, mt *testutil.MockTransport, seriesJSON, booksJSON string) {
+	t.Helper()
+	mt.RegisterHandler("/v1/graphql", func(r *http.Request) (*http.Response, error) {
+		var input struct {
+			Query     string `json:"query"`
+			Variables struct {
+				Name string `json:"name"`
+				ID   int    `json:"id"`
+			} `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		var body string
+		switch {
+		case strings.Contains(input.Query, "query FindSeries"):
+			body = seriesJSON
+		case strings.Contains(input.Query, "query SeriesBooks") && input.Variables.ID == 7 && booksJSON != "":
+			body = booksJSON
+		default:
+			t.Fatalf("unexpected Hardcover request: %+v", input)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+}
+
+func TestHardcoverSeriesNameVariantsAndForthcomingVolumes(t *testing.T) {
+	mt := testutil.NewMockTransport()
+	mt.PanicOnUnmocked = true
+	mt.RegisterHandler("/v1/graphql", func(r *http.Request) (*http.Response, error) {
+		var input struct {
+			Query     string `json:"query"`
+			Variables struct {
+				Name string `json:"name"`
+				ID   int    `json:"id"`
+			} `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		var body string
+		switch {
+		case strings.Contains(input.Query, "query FindSeries"):
+			match := regexp.MustCompile("(?i)" + input.Variables.Name)
+			if !match.MatchString("The Shadow of the Leviathan") || match.MatchString("Shadow of the Leviathan Companion") {
+				t.Fatalf("unexpected series name pattern %q", input.Variables.Name)
+			}
+			body = `{"data":{"named":[{"id":8,"name":"The Shadow of the Leviathan","canonical":{"id":7,"name":"Ana and Din Mysteries","books_count":2}}]}}`
+		case strings.Contains(input.Query, "query SeriesBooks") && input.Variables.ID == 7:
+			body = `{"data":{"books":[
+				{"id":1,"title":"The Tainted Cup","book_series":[{"series":{"id":55},"series_position":3},{"series":{"id":7},"series_position":1}]},
+				{"id":2,"title":"A Drop of Corruption","default_cover_edition":{"language":{"code2":"de"}},"english_editions":[{"id":12}],"book_series":[{"series":{"id":7},"series_position":2}]},
+				{"id":30,"title":"Advance listing","canonical_id":3,"book_series":[{"series":{"id":8,"canonical_id":7},"series_position":3}],
+				 "canonical":{"id":3,"title":"A Trade of Blood","subtitle":"2089–2099","release_date":"2099-08-04"}},
+				{"id":4,"title":"A separate book","book_series":[{"series":{"id":55},"series_position":4}]},
+				{"id":5,"title":"Series sampler","book_series":[{"series":{"id":7},"series_position":4,"compilation":true}]}
+			]}}`
+		default:
+			t.Fatalf("unexpected Hardcover request: %+v", input)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	p := metadata.NewHardcoverProvider("mock", metadata.WithHardcoverClient(mt.Client()))
+	books, err := p.SeriesBooks(context.Background(), "shadow of the—leviathan")
+	if err != nil || len(books) != 3 {
+		t.Fatalf("expected three volumes, got %+v: %v", books, err)
+	}
+	for i, b := range books {
+		if b.Series != "shadow of the—leviathan" || b.SeriesIndex == nil || *b.SeriesIndex != float64(i+1) {
+			t.Fatalf("book %d has unexpected membership: %+v", i+1, b)
+		}
+	}
+	if b := books[2]; b.HardcoverID != "3" || b.Title != "A Trade of Blood" || b.PublishDate != "2099-08-04" {
+		t.Fatalf("unexpected canonical forthcoming volume: %+v", b)
+	}
+}
+
+func TestHardcoverSeriesAmbiguousNames(t *testing.T) {
+	const named = `"named":[{"id":7,"name":"Court"},{"id":9,"name":"Court"}]`
+	for _, tc := range []struct {
+		name, linked string
+		wantBook     bool
+	}{
+		{name: "ambiguous", linked: "[]"},
+		{name: "conflicting evidence", linked: `[{"id":8,"name":"Court Universe"}]`},
+		{name: "known book disambiguates", linked: `[{"id":7,"name":"Court"},{"id":8,"name":"Court Universe"}]`, wantBook: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mt := testutil.NewMockTransport()
+			mt.PanicOnUnmocked = true
+			var booksJSON string
+			if tc.wantBook {
+				booksJSON = `{"data":{"books":[{"id":1,"title":"First","book_series":[{"series":{"id":7}},{"series":{"id":9}}]}]}}`
+			}
+			registerHardcoverSeries(t, mt, `{"data":{`+named+`,"linked":`+tc.linked+`}}`, booksJSON)
+			p := metadata.NewHardcoverProvider("mock", metadata.WithHardcoverClient(mt.Client()))
+			books, err := p.SeriesBooks(context.Background(), "Court", metadata.BookMetadata{Title: "First", Authors: []string{"Author"}})
+			if err != nil || (len(books) == 1) != tc.wantBook {
+				t.Fatalf("unexpected lookup result: %+v, %v", books, err)
+			}
+		})
 	}
 }
