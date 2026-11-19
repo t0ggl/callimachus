@@ -153,6 +153,54 @@ describe('App Integration', () => {
     });
   });
 
+  it('loads stored API keys from /api/settings masked by default and saves changes cleanly', async () => {
+    const user = userEvent.setup({ delay: null });
+    const fetchMock = vi.mocked(global.fetch);
+    const existingFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url, options) => {
+      if (url !== '/api/settings') return existingFetch(url, options);
+      const data = options?.method === 'PUT'
+        ? {
+            prowlarr: { url: 'http://prowlarr:9696', apiKey: 'new-prowlarr-key', apiKeyConfigured: true, syncInterval: '1h0m0s' },
+            metadata: { google_books_api_key: '', hardcover_api_key: 'saved-hardcover-key', openlibrary_enabled: true },
+          }
+        : {
+            prowlarr: { url: 'http://prowlarr:9696', apiKey: 'saved-prowlarr-key', apiKeyConfigured: true, syncInterval: '1h0m0s' },
+            metadata: { google_books_api_key: 'saved-google-key', hardcover_api_key: 'saved-hardcover-key', openlibrary_enabled: true },
+          };
+      return Promise.resolve(new Response(JSON.stringify(data)));
+    });
+
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: /^Settings/ }));
+
+    const prowlarrInput = await screen.findByLabelText('Prowlarr API Key');
+    const googleInput = screen.getByLabelText('Google Books API key (optional)');
+    const hardcoverInput = screen.getByLabelText('Hardcover API key');
+
+    await waitFor(() => expect(prowlarrInput).toHaveValue('saved-prowlarr-key'));
+    expect(prowlarrInput).toHaveAttribute('type', 'password');
+    expect(googleInput).toHaveValue('saved-google-key');
+    expect(googleInput).toHaveAttribute('type', 'password');
+    expect(hardcoverInput).toHaveValue('saved-hardcover-key');
+    expect(hardcoverInput).toHaveAttribute('type', 'password');
+
+    await user.clear(prowlarrInput);
+    await user.type(prowlarrInput, 'new-prowlarr-key');
+    await user.clear(googleInput);
+    await user.click(screen.getByTestId('save-settings-btn'));
+
+    const put = fetchMock.mock.calls.find(([url, options]) => url === '/api/settings' && options?.method === 'PUT');
+    const sent = JSON.parse(String(put?.[1]?.body));
+    expect(sent.prowlarr.apiKey).toBe('new-prowlarr-key');
+    expect(sent.metadata.google_books_api_key).toBe('');
+    expect(sent.metadata).not.toHaveProperty('hardcover_api_key');
+
+    await waitFor(() => expect(prowlarrInput).toHaveValue('new-prowlarr-key'));
+    expect(googleInput).toHaveValue('');
+    expect(hardcoverInput).toHaveValue('saved-hardcover-key');
+  });
+
   it('renders Callimachus brand and default catalog view with real data', async () => {
     render(<App />);
 

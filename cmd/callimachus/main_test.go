@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/t0ggl/callimachus/internal/logging"
 	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/database"
@@ -575,7 +577,7 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 		t.Fatalf("unauthenticated GET /api/settings status = %d, want 401", unauthRec.Code)
 	}
 
-	// 3. Authenticated GET /api/settings returns resolved values + override metadata + no raw secrets
+	// 3. Authenticated admin GET /api/settings returns resolved values + override metadata + Cache-Control: no-store
 	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
 	req.AddCookie(sessionCookie)
 	rec := httptest.NewRecorder()
@@ -583,9 +585,8 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/settings status = %d, want 200", rec.Code)
 	}
-
-	if strings.Contains(rec.Body.String(), "secret-prowlarr-key") {
-		t.Fatalf("GET /api/settings leaked raw prowlarr API key in response")
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("GET /api/settings Cache-Control = %q, want no-store", cc)
 	}
 
 	for _, removed := range []string{"audioMinBitrateKbps", "audioTargetBitrateKbps", "audio_min_bitrate_kbps", "audio_target_bitrate_kbps"} {
@@ -601,8 +602,8 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 	if got.Library.RootPath != "/env/books" {
 		t.Errorf("Library.RootPath = %q, want /env/books", got.Library.RootPath)
 	}
-	if got.Prowlarr.URL != "http://env-prowlarr:9696" || !got.Prowlarr.APIKeyConfigured {
-		t.Errorf("Prowlarr = %+v, want url=http://env-prowlarr:9696 and apiKeyConfigured=true", got.Prowlarr)
+	if got.Prowlarr.URL != "http://env-prowlarr:9696" || got.Prowlarr.APIKey != "secret-prowlarr-key" || !got.Prowlarr.APIKeyConfigured {
+		t.Errorf("Prowlarr = %+v, want url=http://env-prowlarr:9696, apiKey=secret-prowlarr-key and apiKeyConfigured=true", got.Prowlarr)
 	}
 	if got.QualityProfile.MaxAudiobookSizeMb != 4096 {
 		t.Errorf("QualityProfile.MaxAudiobookSizeMb = %d, want 4096", got.QualityProfile.MaxAudiobookSizeMb)
@@ -614,11 +615,14 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 	if ov := got.Overrides["prowlarr_url"]; !ov.IsOverridden || ov.OverriddenBy != "CALLIMACHUS_PROWLARR_URL" {
 		t.Errorf("overrides[prowlarr_url] = %+v, want IsOverridden=true OverriddenBy=CALLIMACHUS_PROWLARR_URL", ov)
 	}
+	if ov := got.Overrides["prowlarr_api_key"]; !ov.IsOverridden || ov.OverriddenBy != "CALLIMACHUS_PROWLARR_API_KEY" {
+		t.Errorf("overrides[prowlarr_api_key] = %+v, want IsOverridden=true OverriddenBy=CALLIMACHUS_PROWLARR_API_KEY", ov)
+	}
 
 	// 4. Authenticated PUT /api/settings persists non-overridden fields and protects overridden ones
 	putBody := `{
 		"library": {"rootPath": "/ui/attempted-override", "stagingPollInterval": "10s"},
-		"prowlarr": {"url": "http://ui-attempted:9696"},
+		"prowlarr": {"url": "http://ui-attempted:9696", "apiKey": "attempted-key-override"},
 		"qualityProfile": {"allowedFormats": ["EPUB", "M4B", "MP3"], "maxAudiobookSizeMb": 1024}
 	}`
 	putReq := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(putBody))
@@ -628,6 +632,9 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 	srv.httpServer.Handler.ServeHTTP(putRec, putReq)
 	if putRec.Code != http.StatusOK {
 		t.Fatalf("PUT /api/settings status = %d, want 200: %s", putRec.Code, putRec.Body.String())
+	}
+	if cc := putRec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("PUT /api/settings Cache-Control = %q, want no-store", cc)
 	}
 
 	var updated APISettingsResponse
@@ -639,8 +646,8 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 	if updated.Library.RootPath != "/env/books" {
 		t.Errorf("after PUT, Library.RootPath = %q, want /env/books", updated.Library.RootPath)
 	}
-	if updated.Prowlarr.URL != "http://env-prowlarr:9696" {
-		t.Errorf("after PUT, Prowlarr.URL = %q, want http://env-prowlarr:9696", updated.Prowlarr.URL)
+	if updated.Prowlarr.URL != "http://env-prowlarr:9696" || updated.Prowlarr.APIKey != "secret-prowlarr-key" {
+		t.Errorf("after PUT, Prowlarr = %+v, want url=http://env-prowlarr:9696 and apiKey=secret-prowlarr-key", updated.Prowlarr)
 	}
 	if updated.QualityProfile.MaxAudiobookSizeMb != 4096 {
 		t.Errorf("after PUT, MaxAudiobookSizeMb = %d, want 4096", updated.QualityProfile.MaxAudiobookSizeMb)
@@ -654,13 +661,13 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 		t.Errorf("after PUT, AllowedFormats = %v, want 3 entries", updated.QualityProfile.AllowedFormats)
 	}
 
-	// Verify DB row for prowlarr_url was not created
+	// Verify DB row for prowlarr_url and prowlarr_api_key were not created
 	var prowlarrCount int
-	if err := srv.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM settings WHERE key = 'prowlarr_url'`).Scan(&prowlarrCount); err != nil {
-		t.Fatalf("query prowlarr_url count: %v", err)
+	if err := srv.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM settings WHERE key IN ('prowlarr_url', 'prowlarr_api_key')`).Scan(&prowlarrCount); err != nil {
+		t.Fatalf("query prowlarr count: %v", err)
 	}
 	if prowlarrCount != 0 {
-		t.Errorf("expected overridden prowlarr_url not persisted to DB, got %d rows", prowlarrCount)
+		t.Errorf("expected overridden prowlarr settings not persisted to DB, got %d rows", prowlarrCount)
 	}
 }
 
@@ -1279,19 +1286,19 @@ func TestOpenLibrarySettingsAPI(t *testing.T) {
 
 	// Default is enabled=true
 	initial := getSettings()
-	if enabled, ok := initial.Metadata[config.KeyOpenLibraryEnabled]; !ok || !enabled {
+	if !initial.Metadata.OpenLibraryEnabled {
 		t.Fatalf("expected metadata.openlibrary_enabled=true by default, got %+v", initial.Metadata)
 	}
 
 	// Disable via boolean payload
 	updated := putSettings(`{"metadata":{"openlibrary_enabled":false}}`, http.StatusOK)
-	if updated.Metadata[config.KeyOpenLibraryEnabled] {
+	if updated.Metadata.OpenLibraryEnabled {
 		t.Fatalf("expected metadata.openlibrary_enabled=false after boolean PUT, got %+v", updated.Metadata)
 	}
 
 	// Re-enable via string payload
 	updated = putSettings(`{"metadata":{"openlibrary_enabled":"true"}}`, http.StatusOK)
-	if !updated.Metadata[config.KeyOpenLibraryEnabled] {
+	if !updated.Metadata.OpenLibraryEnabled {
 		t.Fatalf("expected metadata.openlibrary_enabled=true after string PUT, got %+v", updated.Metadata)
 	}
 
@@ -1303,7 +1310,7 @@ func TestOpenLibrarySettingsAPI(t *testing.T) {
 	// Env override takes precedence and prevents DB mutation
 	t.Setenv("CALLIMACHUS_OPENLIBRARY_ENABLED", "true")
 	overridden := putSettings(`{"metadata":{"openlibrary_enabled":false}}`, http.StatusOK)
-	if !overridden.Metadata[config.KeyOpenLibraryEnabled] {
+	if !overridden.Metadata.OpenLibraryEnabled {
 		t.Fatalf("expected env override true to win")
 	}
 	ov := overridden.Overrides[config.KeyOpenLibraryEnabled]
@@ -1313,7 +1320,219 @@ func TestOpenLibrarySettingsAPI(t *testing.T) {
 
 	// Clearing env override restores persisted false
 	t.Setenv("CALLIMACHUS_OPENLIBRARY_ENABLED", "")
-	if getSettings().Metadata[config.KeyOpenLibraryEnabled] {
+	if getSettings().Metadata.OpenLibraryEnabled {
 		t.Fatal("expected persisted false after clearing env override")
+	}
+}
+
+func TestSettingsAPIKeys_AdminVisibilitySaveClearAndLogRedaction(t *testing.T) {
+	for _, env := range []string{
+		"CALLIMACHUS_PROWLARR_API_KEY",
+		"CALLIMACHUS_HARDCOVER_API_KEY",
+		"CALLIMACHUS_GOOGLE_BOOKS_API_KEY",
+	} {
+		t.Setenv(env, "")
+	}
+
+	previousLogger, previousLevel := slog.Default(), logging.Level.Level()
+	var logBuf bytes.Buffer
+	slog.SetDefault(logging.New(&logBuf))
+	logging.Level.Set(slog.LevelDebug)
+	t.Cleanup(func() {
+		slog.SetDefault(previousLogger)
+		logging.Level.Set(previousLevel)
+	})
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "api_keys_settings.db")
+	testutil.PrepareTestDBFile(t, dbPath)
+
+	srv, err := NewServer(Config{
+		ConfigDir:           tempDir,
+		DBPath:              dbPath,
+		LibraryPath:         tempDir,
+		Host:                "127.0.0.1",
+		Port:                0,
+		IndexerSyncInterval: 1 * time.Hour,
+		StagingPollInterval: 1 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	// Seed initial stored API keys in SQLite
+	for k, v := range map[string]string{
+		config.KeyProwlarrURL:        "http://prowlarr.local:9696",
+		config.KeyProwlarrAPIKey:     "prowlarr-secret-1",
+		config.KeyHardcoverAPIKey:    "hardcover-secret-1",
+		config.KeyGoogleBooksAPIKey:  "google-secret-1",
+	} {
+		if _, err := srv.db.ExecContext(context.Background(), `INSERT INTO settings (key, value) VALUES (?, ?)`, k, v); err != nil {
+			t.Fatalf("seed %s: %v", k, err)
+		}
+	}
+
+	adminCookie := createTestSessionCookie(t, srv, "keys-admin", "keysadmin", auth.RoleAdmin)
+	curatorCookie := createTestSessionCookie(t, srv, "keys-curator", "keyscurator", auth.RoleCurator)
+	requesterCookie := createTestSessionCookie(t, srv, "keys-requester", "keysrequester", auth.RoleRequester)
+	guestCookie := createTestSessionCookie(t, srv, "keys-guest", "keysguest", auth.RoleGuest)
+
+	// 1. Unauthenticated and non-admin callers must never receive API keys
+	for name, ck := range map[string]*http.Cookie{
+		"unauthenticated": nil,
+		"curator":         curatorCookie,
+		"requester":       requesterCookie,
+		"guest":           guestCookie,
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+		if ck != nil {
+			req.AddCookie(ck)
+		}
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		wantCode := http.StatusForbidden
+		if ck == nil {
+			wantCode = http.StatusUnauthorized
+		}
+		if rec.Code != wantCode {
+			t.Fatalf("%s GET /api/settings = %d, want %d", name, rec.Code, wantCode)
+		}
+		for _, secret := range []string{"prowlarr-secret-1", "hardcover-secret-1", "google-secret-1"} {
+			if strings.Contains(rec.Body.String(), secret) {
+				t.Fatalf("%s response leaked secret %q", name, secret)
+			}
+		}
+	}
+
+	getSettings := func() APISettingsResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+		req.AddCookie(adminCookie)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/settings = %d: %s", rec.Code, rec.Body.String())
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Fatalf("GET /api/settings Cache-Control = %q, want no-store", cc)
+		}
+		var out APISettingsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	putSettings := func(body string) APISettingsResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(adminCookie)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT /api/settings = %d: %s", rec.Code, rec.Body.String())
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Fatalf("PUT /api/settings Cache-Control = %q, want no-store", cc)
+		}
+		var out APISettingsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// 2. Admin GET /api/settings returns actual configured API keys
+	got := getSettings()
+	if got.Prowlarr.APIKey != "prowlarr-secret-1" || !got.Prowlarr.APIKeyConfigured {
+		t.Fatalf("Prowlarr = %+v, want apiKey=prowlarr-secret-1", got.Prowlarr)
+	}
+	if got.Metadata.HardcoverAPIKey != "hardcover-secret-1" {
+		t.Fatalf("HardcoverAPIKey = %q, want hardcover-secret-1", got.Metadata.HardcoverAPIKey)
+	}
+	if got.Metadata.GoogleBooksAPIKey != "google-secret-1" {
+		t.Fatalf("GoogleBooksAPIKey = %q, want google-secret-1", got.Metadata.GoogleBooksAPIKey)
+	}
+
+	// 3. Partial PUT preserves omitted keys, updates modified keys, and clears empty-string keys
+	updated := putSettings(`{
+		"prowlarr": {"url": "http://prowlarr.local:9696", "apiKey": "prowlarr-secret-2"},
+		"metadata": {"google_books_api_key": ""}
+	}`)
+	if updated.Prowlarr.APIKey != "prowlarr-secret-2" || !updated.Prowlarr.APIKeyConfigured {
+		t.Fatalf("expected updated prowlarr key, got %+v", updated.Prowlarr)
+	}
+	if updated.Metadata.GoogleBooksAPIKey != "" {
+		t.Fatalf("expected cleared google books key, got %q", updated.Metadata.GoogleBooksAPIKey)
+	}
+	if updated.Metadata.HardcoverAPIKey != "hardcover-secret-1" {
+		t.Fatalf("expected unmodified hardcover key preserved, got %q", updated.Metadata.HardcoverAPIKey)
+	}
+
+	// Clearing Prowlarr and Hardcover keys via explicit empty string works cleanly while preserving omitted Google Books
+	updated = putSettings(`{
+		"prowlarr": {"apiKey": ""},
+		"metadata": {"hardcover_api_key": ""}
+	}`)
+	if updated.Prowlarr.APIKey != "" || updated.Prowlarr.APIKeyConfigured {
+		t.Fatalf("expected cleared prowlarr key, got %+v", updated.Prowlarr)
+	}
+	if updated.Metadata.HardcoverAPIKey != "" {
+		t.Fatalf("expected cleared hardcover key, got %q", updated.Metadata.HardcoverAPIKey)
+	}
+
+	// Restore DB keys, then verify env overrides win and cannot be overwritten in DB
+	putSettings(`{
+		"prowlarr": {"apiKey": "prowlarr-db-keep"},
+		"metadata": {"hardcover_api_key": "hardcover-db-keep", "google_books_api_key": "google-db-keep"}
+	}`)
+
+	t.Setenv("CALLIMACHUS_PROWLARR_API_KEY", "prowlarr-env-override")
+	t.Setenv("CALLIMACHUS_HARDCOVER_API_KEY", "hardcover-env-override")
+	t.Setenv("CALLIMACHUS_GOOGLE_BOOKS_API_KEY", "google-env-override")
+
+	envResp := putSettings(`{
+		"prowlarr": {"apiKey": "attacker-overwrite"},
+		"metadata": {"hardcover_api_key": "attacker-overwrite", "google_books_api_key": ""}
+	}`)
+	if envResp.Prowlarr.APIKey != "prowlarr-env-override" || !envResp.Overrides[config.KeyProwlarrAPIKey].IsOverridden {
+		t.Fatalf("expected prowlarr env override, got %+v", envResp.Prowlarr)
+	}
+	if envResp.Metadata.HardcoverAPIKey != "hardcover-env-override" || !envResp.Overrides[config.KeyHardcoverAPIKey].IsOverridden {
+		t.Fatalf("expected hardcover env override, got %+v", envResp.Metadata)
+	}
+	if envResp.Metadata.GoogleBooksAPIKey != "google-env-override" || !envResp.Overrides[config.KeyGoogleBooksAPIKey].IsOverridden {
+		t.Fatalf("expected google books env override, got %+v", envResp.Metadata)
+	}
+
+	// Unsetting env vars restores the untouched DB values
+	for _, env := range []string{
+		"CALLIMACHUS_PROWLARR_API_KEY",
+		"CALLIMACHUS_HARDCOVER_API_KEY",
+		"CALLIMACHUS_GOOGLE_BOOKS_API_KEY",
+	} {
+		t.Setenv(env, "")
+	}
+	restored := getSettings()
+	if restored.Prowlarr.APIKey != "prowlarr-db-keep" ||
+		restored.Metadata.HardcoverAPIKey != "hardcover-db-keep" ||
+		restored.Metadata.GoogleBooksAPIKey != "google-db-keep" {
+		t.Fatalf("expected DB values preserved across env override, got prowlarr=%q hardcover=%q google=%q",
+			restored.Prowlarr.APIKey, restored.Metadata.HardcoverAPIKey, restored.Metadata.GoogleBooksAPIKey)
+	}
+
+	// 4. Verify none of the API keys ever appeared in server logs (even at debug level)
+	allLogs := logBuf.String()
+	for _, secret := range []string{
+		"prowlarr-secret-1", "prowlarr-secret-2", "prowlarr-db-keep", "prowlarr-env-override",
+		"hardcover-secret-1", "hardcover-db-keep", "hardcover-env-override",
+		"google-secret-1", "google-db-keep", "google-env-override",
+		"attacker-overwrite",
+	} {
+		if strings.Contains(allLogs, secret) {
+			t.Fatalf("API key %q leaked into server logs:\n%s", secret, allLogs)
+		}
 	}
 }

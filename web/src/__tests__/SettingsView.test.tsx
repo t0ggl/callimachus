@@ -613,3 +613,178 @@ describe('Bundle series in Library view setting', () => {
   });
 });
 
+describe('Stored API key visibility and persistence', () => {
+  it('populates Prowlarr, Google Books, and Hardcover API keys masked by default and toggles visibility accessibly', async () => {
+    const user = userEvent.setup({ delay: null });
+
+    render(
+      <SettingsView
+        indexers={[]}
+        prowlarrSettings={{ ...baseProwlarr, apiKey: 'prowlarr-stored-secret' }}
+        metadata={{
+          openlibrary_enabled: true,
+          google_books_api_key: 'google-stored-secret',
+          hardcover_api_key: 'hardcover-stored-secret',
+        }}
+        qualityProfile={baseQuality}
+      />
+    );
+
+    const fields = [
+      {
+        label: 'Prowlarr API Key',
+        toggleBase: 'Prowlarr API Key',
+        value: 'prowlarr-stored-secret',
+        id: 'prowlarr-api-key',
+      },
+      {
+        label: 'Google Books API key (optional)',
+        toggleBase: 'Google Books API key',
+        value: 'google-stored-secret',
+        id: 'google_books_api_key',
+      },
+      {
+        label: 'Hardcover API key',
+        toggleBase: 'Hardcover API key',
+        value: 'hardcover-stored-secret',
+        id: 'hardcover_api_key',
+      },
+    ];
+
+    for (const field of fields) {
+      const input = screen.getByLabelText(field.label) as HTMLInputElement;
+      expect(input).toHaveValue(field.value);
+      expect(input).toHaveAttribute('type', 'password');
+
+      const showBtn = screen.getByRole('button', { name: `Show ${field.toggleBase}` });
+      expect(showBtn).toHaveAttribute('aria-pressed', 'false');
+      expect(showBtn).toHaveAttribute('aria-controls', field.id);
+
+      await user.click(showBtn);
+      expect(input).toHaveAttribute('type', 'text');
+      const hideBtn = screen.getByRole('button', { name: `Hide ${field.toggleBase}` });
+      expect(hideBtn).toHaveAttribute('aria-pressed', 'true');
+
+      await user.click(hideBtn);
+      expect(input).toHaveAttribute('type', 'password');
+      expect(screen.getByRole('button', { name: `Show ${field.toggleBase}` })).toHaveAttribute('aria-pressed', 'false');
+    }
+  });
+
+  it('preserves unmodified keys, updates modified keys, and clears emptied keys on save', async () => {
+    const user = userEvent.setup({ delay: null });
+    const onSaveSettings = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <SettingsView
+        indexers={[]}
+        prowlarrSettings={{ ...baseProwlarr, apiKey: 'prowlarr-initial' }}
+        metadata={{
+          openlibrary_enabled: true,
+          google_books_api_key: 'google-initial',
+          hardcover_api_key: 'hardcover-initial',
+        }}
+        qualityProfile={baseQuality}
+        onSaveSettings={onSaveSettings}
+      />
+    );
+
+    // Save immediately without editing -> all three API keys omitted (preserved on server)
+    await user.click(screen.getByTestId('save-settings-btn'));
+    expect(onSaveSettings).toHaveBeenCalledTimes(1);
+    const firstPayload = onSaveSettings.mock.calls[0][0];
+    expect(firstPayload.prowlarr).not.toHaveProperty('apiKey');
+    expect(firstPayload.metadata).not.toHaveProperty('google_books_api_key');
+    expect(firstPayload.metadata).not.toHaveProperty('hardcover_api_key');
+
+    // Modify Prowlarr key, clear Google Books key, leave Hardcover key untouched
+    const prowlarrInput = screen.getByLabelText('Prowlarr API Key');
+    await user.clear(prowlarrInput);
+    await user.type(prowlarrInput, 'prowlarr-updated');
+
+    const googleInput = screen.getByLabelText('Google Books API key (optional)');
+    await user.clear(googleInput);
+
+    await user.click(screen.getByTestId('save-settings-btn'));
+    expect(onSaveSettings).toHaveBeenCalledTimes(2);
+    const secondPayload = onSaveSettings.mock.calls[1][0];
+    expect(secondPayload.prowlarr.apiKey).toBe('prowlarr-updated');
+    expect(secondPayload.metadata.google_books_api_key).toBe('');
+    expect(secondPayload.metadata).not.toHaveProperty('hardcover_api_key');
+
+    // Displayed values remain accurate after save, and a subsequent no-op save omits them again
+    expect(prowlarrInput).toHaveValue('prowlarr-updated');
+    expect(googleInput).toHaveValue('');
+    expect(screen.getByLabelText('Hardcover API key')).toHaveValue('hardcover-initial');
+
+    await user.click(screen.getByTestId('save-settings-btn'));
+    const thirdPayload = onSaveSettings.mock.calls[2][0];
+    expect(thirdPayload.prowlarr).not.toHaveProperty('apiKey');
+    expect(thirdPayload.metadata).not.toHaveProperty('google_books_api_key');
+    expect(thirdPayload.metadata).not.toHaveProperty('hardcover_api_key');
+  });
+
+  it('keeps env-overridden API keys masked and disabled while allowing visibility inspection and omitting from saves', async () => {
+    const user = userEvent.setup({ delay: null });
+    const onSaveSettings = vi.fn().mockResolvedValue(undefined);
+    const overrides: SettingsOverridesMap = {
+      prowlarr_api_key: {
+        isOverridden: true,
+        overriddenBy: 'CALLIMACHUS_PROWLARR_API_KEY',
+        envVar: 'CALLIMACHUS_PROWLARR_API_KEY',
+      },
+      google_books_api_key: {
+        isOverridden: true,
+        overriddenBy: 'CALLIMACHUS_GOOGLE_BOOKS_API_KEY',
+        envVar: 'CALLIMACHUS_GOOGLE_BOOKS_API_KEY',
+      },
+      hardcover_api_key: {
+        isOverridden: true,
+        overriddenBy: 'CALLIMACHUS_HARDCOVER_API_KEY',
+        envVar: 'CALLIMACHUS_HARDCOVER_API_KEY',
+      },
+    };
+
+    render(
+      <SettingsView
+        indexers={[]}
+        prowlarrSettings={{ ...baseProwlarr, apiKey: 'env-prowlarr-secret' }}
+        metadata={{
+          openlibrary_enabled: true,
+          google_books_api_key: 'env-google-secret',
+          hardcover_api_key: 'env-hardcover-secret',
+        }}
+        overrides={overrides}
+        qualityProfile={baseQuality}
+        onSaveSettings={onSaveSettings}
+      />
+    );
+
+    const prowlarrInput = screen.getByLabelText('Prowlarr API Key');
+    const googleInput = screen.getByLabelText('Google Books API key (optional)');
+    const hardcoverInput = screen.getByLabelText('Hardcover API key');
+
+    for (const [input, val, env] of [
+      [prowlarrInput, 'env-prowlarr-secret', 'CALLIMACHUS_PROWLARR_API_KEY'],
+      [googleInput, 'env-google-secret', 'CALLIMACHUS_GOOGLE_BOOKS_API_KEY'],
+      [hardcoverInput, 'env-hardcover-secret', 'CALLIMACHUS_HARDCOVER_API_KEY'],
+    ] as const) {
+      expect(input).toBeDisabled();
+      expect(input).toHaveValue(val);
+      expect(input).toHaveAttribute('type', 'password');
+      expect(input).toHaveAccessibleDescription(expect.stringContaining(env));
+    }
+
+    // Admin can still inspect an env-overridden key via the visibility toggle without unlocking edits
+    await user.click(screen.getByRole('button', { name: 'Show Hardcover API key' }));
+    expect(hardcoverInput).toHaveAttribute('type', 'text');
+    expect(hardcoverInput).toBeDisabled();
+
+    await user.click(screen.getByTestId('save-settings-btn'));
+    expect(onSaveSettings).toHaveBeenCalledOnce();
+    const payload = onSaveSettings.mock.calls[0][0];
+    expect(payload.prowlarr).not.toHaveProperty('apiKey');
+    expect(payload.metadata).not.toHaveProperty('google_books_api_key');
+    expect(payload.metadata).not.toHaveProperty('hardcover_api_key');
+  });
+});

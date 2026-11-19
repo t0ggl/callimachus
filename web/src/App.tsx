@@ -17,6 +17,7 @@ import {
   IndexerConfig,
   LibrarySettings,
   LogLevel,
+  MetadataSettings,
   ProwlarrSettings,
   QualityProfile,
   SettingsOverridesMap,
@@ -71,6 +72,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
   });
   const [prowlarrSettings, setProwlarrSettings] = useState<ProwlarrSettings>({
     url: '',
+    apiKey: '',
     apiKeyConfigured: false,
     syncInterval: '1h0m0s',
   });
@@ -85,7 +87,9 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
   });
   const [logLevel, setLogLevel] = useState<LogLevel>('info');
   const [defaultSearchFormat, setDefaultSearchFormat] = useState<RequestType>('ebook');
-  const [metadataSettings, setMetadataSettings] = useState<Record<string, boolean>>({
+  const [metadataSettings, setMetadataSettings] = useState<MetadataSettings>({
+    google_books_api_key: '',
+    hardcover_api_key: '',
     openlibrary_enabled: true,
   });
   const [settingsOverrides, setSettingsOverrides] = useState<SettingsOverridesMap>({});

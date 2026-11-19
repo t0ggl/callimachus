@@ -185,8 +185,16 @@ export interface LibrarySettings {
 
 export interface ProwlarrSettings {
   url: string;
+  apiKey?: string;
   apiKeyConfigured: boolean;
   syncInterval: string;
+}
+
+export interface MetadataSettings {
+  google_books_api_key?: string;
+  hardcover_api_key?: string;
+  openlibrary_enabled?: boolean;
+  [key: string]: boolean | string | undefined;
 }
 
 export interface QualityProfile {
