@@ -62,14 +62,12 @@ docker run -d \
 
 ## Building from Source
 
-**Prerequisites:** Go 1.26+ and Node.js 26+.
+**Prerequisites:** GNU Make, Go 1.26+, and Node.js 26+ with npm.
+
+From the repository root, `make build` installs the locked frontend dependencies, builds the frontend, and compiles `bin/callimachus` and `bin/callimachus-worker`.
 
 ```bash
-# Build frontend assets (run `npm install` first on a fresh checkout)
-(cd web && npm run build)
-
-# Build server
-go build -o bin/callimachus ./cmd/callimachus
+make build
 
 # Start server
 CALLIMACHUS_ADMIN_PASSWORD="change-me" ./bin/callimachus --config ./config --library ./books
@@ -143,13 +141,11 @@ Callimachus organizes imported and converted media into a deterministic, symlink
 
 ## Development
 
-All unit and integration tests run 100% offline using mocked HTTP transports and subprocess runners.
+Tests mock external HTTP services and subprocesses. The backend race tests require a C compiler, and the SAST target uses Semgrep (directly or through `uvx` or `pipx`).
+`make test` runs Semgrep SAST first, then the backend and frontend tests. The frontend target installs dependencies automatically.
 
 ```bash
-make test           # Run backend tests, frontend tests, and Semgrep SAST
-make test-backend   # Run go vet and go test -race ./...
-make test-frontend  # Run Vitest component suite in web/
-make sast           # Run Semgrep static security analysis
+make test
 ```
 
 ## Reporting Issues
