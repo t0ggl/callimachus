@@ -403,3 +403,65 @@ func TestScanAndUpgradeNoncanonicalInventory(t *testing.T) {
 		t.Fatalf("duplicate inventory: %d", count)
 	}
 }
+
+func TestScanLibrary_IgnoresHiddenEntries(t *testing.T) {
+	t.Parallel()
+
+	// A hidden directory is still scanned when explicitly selected as the library root.
+	root := filepath.Join(t.TempDir(), ".library")
+	const visibleBook = "Visible Author/Visible Book (2024)/Visible Book (2024) - Visible Author.epub"
+	for _, rel := range []string{
+		visibleBook,
+		".agents/Agent Book (2024)/Agent Book (2024) - .agents.epub",
+		".git/Git Book.epub",
+		".Trash/Trashed Book.m4b",
+		".callimachus-staging/Staged Book.epub",
+		"Visible Author/.archive/Archived Book.epub",
+		".DS_Store",
+		"Visible Author/Visible Book (2024)/._book.epub",
+		"Visible Author/Visible Book (2024)/.hidden.opf",
+		"Visible Author/Visible Book (2024)/.hidden.jpg",
+	} {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("fixture"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	report, err := ScanLibrary(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.TotalFiles != 1 || report.MediaCount != 1 || len(report.Books) != 1 {
+		t.Fatalf("expected one visible file, media asset, and book, got files=%d, media=%d, books=%v",
+			report.TotalFiles, report.MediaCount, getBookTitles(report.Books))
+	}
+	book := report.Books[0]
+	if book.Author != "Visible Author" || book.Title != "Visible Book" {
+		t.Errorf("unexpected scanned book %q by %q", book.Title, book.Author)
+	}
+	if len(book.MediaFiles) != 1 || book.MediaFiles[0].Path != filepath.Join(root, visibleBook) {
+		t.Errorf("unexpected scanned media: %+v", book.MediaFiles)
+	}
+	if book.SidecarPath != "" || book.CoverPath != "" {
+		t.Errorf("unexpected sidecars: OPF=%q, cover=%q", book.SidecarPath, book.CoverPath)
+	}
+
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	if _, err := New(db).ReconcileScanReport(ctx, report); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{"SELECT COUNT(*) FROM authors", "SELECT COUNT(*) FROM books"} {
+		var count int
+		if err := db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Errorf("%s = %d, want 1", query, count)
+		}
+	}
+}
