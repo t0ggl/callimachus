@@ -7,6 +7,7 @@ import { Book } from '../types';
 interface BookDetailModalProps {
   book: Book | null;
   onClose: () => void;
+  activity?: React.ReactNode;
 }
 
 function formatBytes(bytes?: number): string {
@@ -27,7 +28,9 @@ function formatDuration(seconds?: number): string {
   return `${mins}m`;
 }
 
-export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose }) => {
+export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose, activity }) => {
+  const dialog = React.useRef<HTMLDialogElement>(null);
+  const [format, setFormat] = useState('epub');
   const [requestId, setRequestId] = useState<string | null>(null);
   const [manualError, setManualError] = useState('');
   const [manualBusy, setManualBusy] = useState(false);
@@ -39,7 +42,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
       const res = await fetch('/api/requests');
       if (!res.ok) throw new Error('Unable to load acquisitions');
       const list = await res.json();
-      const existing = list.find((r: any) => r.book_id === book.id);
+      const existing = list.find((r: any) => r.book_id === book.id && (r.format === format || r.format === 'both'));
       if (existing) {
         setRequestId(String(existing.id));
         return;
@@ -51,7 +54,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
           book_id: book.id,
           title: book.title,
           author: book.authorName,
-          format: 'both',
+          format,
           manual_only: true,
         }),
       });
@@ -64,36 +67,36 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
     }
   };
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !requestId) {
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, requestId]);
+    const element = dialog.current;
+    element?.showModal();
+    return () => element?.close();
+  }, [Boolean(book)]);
 
   if (!book) return null;
 
   return (
     <>
-    <div
-      role="dialog"
-      aria-modal="true"
+    <dialog
+      ref={dialog}
       aria-label={`Details for ${book.title}`}
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150"
-      onClick={onClose}
+      className="m-auto w-[calc(100%-2rem)] max-w-3xl max-h-[90dvh] bg-zinc-900 text-zinc-100 border border-zinc-700 rounded-xl overflow-hidden backdrop:bg-black/75"
+      onCancel={onClose}
+      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
-      <div
-        className="w-full max-w-3xl max-h-[90vh] bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl overflow-hidden flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="px-6 pt-4">
+      <div className="max-h-[90dvh] flex flex-col">
+        {!activity && <div className="px-6 pt-4 flex flex-wrap items-center gap-3">
+          <label className="text-sm text-zinc-300">
+            Format
+            <select value={format} onChange={e => setFormat(e.target.value)} className="ml-2 rounded border border-zinc-700 bg-zinc-950 px-2 py-1">
+              <option value="epub">eBook</option>
+              <option value="m4b">Audiobook</option>
+            </select>
+          </label>
           <button disabled={manualBusy} onClick={() => void openManual()} className="text-blue-300 disabled:opacity-50">
             {manualBusy ? 'Loading…' : 'Search Download Options'}
           </button>
           {manualError && <p role="alert" className="text-red-300">{manualError}</p>}
-        </div>
+        </div>}
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-950/40">
           <div className="flex items-center gap-3">
@@ -116,6 +119,8 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
           <button
             onClick={onClose}
             data-testid="close-book-detail"
+            aria-label="Close details"
+            autoFocus
             className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-lg transition-colors"
             title="Close modal (Esc)"
           >
@@ -132,6 +137,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
                 {book.coverUrl ? (
                   <img
                     src={book.coverUrl}
+                    referrerPolicy="no-referrer"
                     alt={book.title}
                     className="w-full h-full object-cover"
                   />
@@ -165,7 +171,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
                     <Layers className="w-4 h-4 text-purple-400 shrink-0" />
                     <span className="text-zinc-500">Series:</span>
                     <span className="font-medium text-zinc-200">
-                      <EntityLink kind="series" name={book.seriesTitle} /> ({book.seriesIndexDisplay || `#${book.seriesIndex}`})
+                      <EntityLink kind="series" name={book.seriesTitle} />{book.seriesIndex != null && ` (${book.seriesIndexDisplay || `#${book.seriesIndex}`})`}
                     </span>
                   </div>
                 )}
@@ -190,6 +196,8 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
               )}
             </div>
           </div>
+
+          {activity}
 
           {/* Editions & File Assets */}
           <div className="space-y-4 border-t border-zinc-800 pt-5">
@@ -286,7 +294,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
           </button>
         </div>
       </div>
-    </div>
+    </dialog>
     {requestId && <ManualSearch requestId={requestId} onClose={() => setRequestId(null)} />}
     </>
   );

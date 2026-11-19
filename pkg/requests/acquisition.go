@@ -60,10 +60,56 @@ func ScoreCandidate(r indexers.ProwlarrRelease, year int, formats []string) Cand
 // ponytail: one lock serializes all acquisitions; use per-request locks if source latency limits throughput.
 type Acquisition struct {
 	DB       *database.DB
-	Search   func(context.Context, string) ([]indexers.ProwlarrRelease, error)
+	Search   func(context.Context, string, string) ([]indexers.ProwlarrRelease, error)
 	Grab     func(context.Context, indexers.ProwlarrRelease) error
 	Evaluate func(context.Context, indexers.ProwlarrRelease) (bool, []string, error)
 	mu       sync.Mutex
+	activeMu sync.Mutex
+	activeID int64
+	cancel   context.CancelFunc
+}
+
+// run serializes acquisition operations while letting dismissal interrupt active I/O.
+func (a *Acquisition) run(ctx context.Context, id int64, work func(context.Context, int64) error) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	ctx, cancel := context.WithCancel(ctx)
+	a.activeMu.Lock()
+	a.activeID, a.cancel = id, cancel
+	a.activeMu.Unlock()
+	defer func() {
+		a.activeMu.Lock()
+		a.cancel = nil
+		a.activeMu.Unlock()
+		cancel()
+	}()
+	err := work(ctx, id)
+	if err != nil && ctx.Err() == nil && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, ErrNotFound) {
+		// External errors can contain URLs or credentials. Persist a safe summary.
+		_, logErr := a.DB.ExecContext(ctx, `INSERT INTO request_events(request_id,kind,message)
+			SELECT id,'error','Acquisition could not continue. Check indexer or download settings.'
+			FROM book_requests WHERE id=? AND dismissed=0 AND COALESCE((
+				SELECT kind FROM request_events WHERE request_id=book_requests.id ORDER BY id DESC LIMIT 1
+			),'') NOT IN ('error','search_error')`, id)
+		if logErr != nil {
+			return errors.Join(err, logErr)
+		}
+	}
+	return err
+}
+
+func (a *Acquisition) stop(id int64) {
+	a.activeMu.Lock()
+	defer a.activeMu.Unlock()
+	if a.activeID == id && a.cancel != nil {
+		a.cancel()
+	}
+}
+
+func (a *Acquisition) logEvent(ctx context.Context, id int64, kind, stage, message string) error {
+	_, err := a.DB.ExecContext(ctx, `INSERT INTO request_events(request_id,kind,stage,message)
+		SELECT id,?,?,? FROM book_requests WHERE id=? AND dismissed=0`, kind, stage, message, id)
+	return err
 }
 
 func (a *Acquisition) Candidates(ctx context.Context, id int64) ([]Candidate, error) {
@@ -91,21 +137,41 @@ func (a *Acquisition) Candidates(ctx context.Context, id int64) ([]Candidate, er
 	return out, rows.Err()
 }
 
+func formatMatchesRequest(requestFormat, releaseFormat string) bool {
+	audio := releaseFormat == "m4b" || releaseFormat == "mp3"
+	switch requestFormat {
+	case FormatEPUB:
+		return !audio
+	case FormatM4B:
+		return audio
+	default:
+		return true
+	}
+}
+
 func (a *Acquisition) refresh(ctx context.Context, id int64) error {
 	var title, author, format string
 	var year int
-	if err := a.DB.QueryRowContext(ctx, `SELECT title,author,format,year FROM book_requests WHERE id=?`, id).Scan(&title, &author, &format, &year); err != nil {
+	if err := a.DB.QueryRowContext(ctx, `SELECT title,author,format,year FROM book_requests WHERE id=? AND dismissed=0`, id).Scan(&title, &author, &format, &year); err != nil {
 		return err
 	}
 	slog.DebugContext(ctx, "acquisition search started", "request_id", id)
-	releases, err := a.Search(ctx, title+" "+author)
+	if err := a.logEvent(ctx, id, "search_started", "searching", "Querying enabled Prowlarr indexers"); err != nil {
+		return err
+	}
+	releases, err := a.Search(ctx, title+" "+author, format)
 	if err != nil {
 		slog.WarnContext(ctx, "acquisition search failed", "request_id", id)
+		return errors.Join(err, a.logEvent(ctx, id, "search_error", "searching", "Indexer search failed. Automatic searches retry in one minute."))
+	}
+	if err := a.logEvent(ctx, id, "indexers_queried", "evaluating", fmt.Sprintf("Prowlarr returned %d releases", len(releases))); err != nil {
 		return err
 	}
 	candidates := []Candidate{}
+	invalid := 0
 	for _, r := range releases {
 		if r.GUID == "" || r.IndexerID <= 0 {
+			invalid++
 			continue
 		}
 		ok, formats, err := a.Evaluate(ctx, r)
@@ -113,12 +179,17 @@ func (a *Acquisition) refresh(ctx context.Context, id int64) error {
 			return err
 		}
 		c := ScoreCandidate(r, year, formats)
-		if !ok || (format != "both" && ((format == "m4b" && c.Format != "m4b" && c.Format != "mp3") || (format == "epub" && (c.Format == "m4b" || c.Format == "mp3")))) {
+		if !ok || !formatMatchesRequest(format, c.Format) {
 			c.Breakdown["quality"] = -1000
 			c.Score -= 1000
 		}
 		slog.DebugContext(ctx, "acquisition candidate scored", "request_id", id, "indexer_id", r.IndexerID, "score", c.Score)
 		candidates = append(candidates, c)
+	}
+	if invalid > 0 {
+		if err := a.logEvent(ctx, id, "candidate_rejected", "", fmt.Sprintf("%d releases lacked an indexer or release identifier", invalid)); err != nil {
+			return err
+		}
 	}
 	tx, err := a.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -131,13 +202,21 @@ func (a *Acquisition) refresh(ctx context.Context, id int64) error {
 	}
 	for _, c := range candidates {
 		r := c.Release
+		kind, message := "candidate_scored", fmt.Sprintf("%s (indexer %d) scored %d", r.Title, r.IndexerID, c.Score)
+		if c.Breakdown["quality"] < 0 {
+			kind, message = "candidate_rejected", fmt.Sprintf("%s (indexer %d) excluded by format or quality requirements", r.Title, r.IndexerID)
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO request_events(request_id,kind,message)
+			SELECT id,?,? FROM book_requests WHERE id=? AND dismissed=0`, kind, message, id); err != nil {
+			return err
+		}
 		data, _ := json.Marshal(r)
 		scores, _ := json.Marshal(c.Breakdown)
 		if _, err = tx.ExecContext(ctx, `INSERT INTO acquisition_candidates(request_id,release_key,release_json,score_json,score,format) VALUES(?,?,?,?,?,?) ON CONFLICT(request_id,release_key) DO UPDATE SET release_json=excluded.release_json,score_json=excluded.score_json,score=excluded.score,format=excluded.format`, id, c.Key, string(data), string(scores), c.Score, c.Format); err != nil {
 			return err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE book_requests SET searched_at=CURRENT_TIMESTAMP WHERE id=?`, id); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE book_requests SET searched_at=CURRENT_TIMESTAMP WHERE id=? AND dismissed=0`, id); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -148,9 +227,7 @@ func (a *Acquisition) refresh(ctx context.Context, id int64) error {
 }
 
 func (a *Acquisition) Refresh(ctx context.Context, id int64) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.refresh(ctx, id)
+	return a.run(ctx, id, a.refresh)
 }
 
 func (a *Acquisition) fail(ctx context.Context, key string) error {
@@ -172,13 +249,19 @@ func (a *Acquisition) dispatch(ctx context.Context, id int64, c Candidate) error
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO download_queue(id,download_client_task_id,title,protocol,size_bytes,status,edition_id) VALUES(?,?,?,?,?,'dispatching',(SELECT e.id FROM book_editions e JOIN book_requests r ON r.book_id=e.book_id WHERE r.id=? ORDER BY (e.format=?) DESC LIMIT 1))`, qid, c.Release.GUID, c.Release.Title, c.Release.Protocol, c.Release.Size, id, c.Format); err != nil {
+	result, err := tx.ExecContext(ctx, `UPDATE book_requests SET status='downloading',attempts=attempts+1,completed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND dismissed=0`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO download_queue(id,request_id,download_client_task_id,title,protocol,size_bytes,status,edition_id)
+		VALUES(?,?,?,?,?,?,'dispatching',(SELECT e.id FROM book_editions e JOIN book_requests r ON r.book_id=e.book_id WHERE r.id=? AND e.format=? LIMIT 1))`,
+		qid, id, c.Release.GUID, c.Release.Title, c.Release.Protocol, c.Release.Size, id, c.Format); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE acquisition_candidates SET queue_id=? WHERE request_id=? AND release_key=?`, qid, id, c.Key); err != nil {
-		return err
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE book_requests SET status='downloading',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE id=?`, id); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -186,24 +269,34 @@ func (a *Acquisition) dispatch(ctx context.Context, id int64, c Candidate) error
 	}
 	slog.InfoContext(ctx, "requesting Prowlarr grab", "request_id", id, "queue_id", qid, "indexer_id", c.Release.IndexerID)
 	if err = a.Grab(ctx, c.Release); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		slog.WarnContext(ctx, "Prowlarr grab failed", "request_id", id, "queue_id", qid, "indexer_id", c.Release.IndexerID)
-		if _, e := a.DB.ExecContext(ctx, `UPDATE download_queue SET status='failed',error_message=? WHERE id=?`, err.Error(), qid); e != nil {
+		if _, e := a.DB.ExecContext(ctx, `UPDATE download_queue SET status='failed',error_message=? WHERE id=? AND status='dispatching'`, "Prowlarr could not grab this release", qid); e != nil {
 			return e
 		}
 		return fmt.Errorf("%w: %v", errTransferFailed, err)
 	}
-	_, err = a.DB.ExecContext(ctx, `UPDATE download_queue SET status='queued' WHERE id=?`, qid)
+	_, err = a.DB.ExecContext(ctx, `UPDATE download_queue SET status='queued' WHERE id=? AND status='dispatching'`, qid)
 	if err == nil {
 		slog.InfoContext(ctx, "acquisition dispatched", "request_id", id, "queue_id", qid)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return a.logEvent(ctx, id, "release_grabbed", "downloading", "Grabbed "+c.Release.Title)
 }
 
 func (a *Acquisition) Download(ctx context.Context, id int64, key string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	return a.run(ctx, id, func(ctx context.Context, id int64) error {
+		return a.download(ctx, id, key)
+	})
+}
+
+func (a *Acquisition) download(ctx context.Context, id int64, key string) error {
 	var status string
-	if err := a.DB.QueryRowContext(ctx, `SELECT status FROM book_requests WHERE id=?`, id).Scan(&status); err != nil {
+	if err := a.DB.QueryRowContext(ctx, `SELECT status FROM book_requests WHERE id=? AND dismissed=0`, id).Scan(&status); err != nil {
 		return err
 	}
 	if status == StatusDownloading {
@@ -215,6 +308,9 @@ func (a *Acquisition) Download(ctx context.Context, id int64, key string) error 
 	}
 	for _, c := range candidates {
 		if c.Key == key {
+			if c.Breakdown["quality"] < 0 {
+				return fmt.Errorf("release excluded by format or quality requirements")
+			}
 			err = a.dispatch(ctx, id, c)
 			if errors.Is(err, errTransferFailed) {
 				if e := a.fail(ctx, key); e != nil {
@@ -231,30 +327,30 @@ func (a *Acquisition) process(ctx context.Context, id int64) error {
 	var attempts int
 	var searched *time.Time
 	var status string
-	if err := a.DB.QueryRowContext(ctx, `SELECT attempts,searched_at,status FROM book_requests WHERE id=?`, id).Scan(&attempts, &searched, &status); err != nil {
+	if err := a.DB.QueryRowContext(ctx, `SELECT attempts,searched_at,status FROM book_requests WHERE id=? AND dismissed=0`, id).Scan(&attempts, &searched, &status); err != nil {
 		return err
 	}
-	candidates, err := a.Candidates(ctx, id)
-	if err != nil {
+	// Reconcile the current attempt by its queue link. Older completed downloads
+	// can coexist with a manual upgrade, so candidate rank cannot identify it.
+	var state, key string
+	err := a.DB.QueryRowContext(ctx, `SELECT q.status, COALESCE(c.release_key,'')
+		FROM download_queue q LEFT JOIN acquisition_candidates c ON c.queue_id=q.id
+		WHERE q.request_id=? ORDER BY q.created_at DESC,q.rowid DESC LIMIT 1`, id).Scan(&state, &key)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	for _, c := range candidates {
-		var state string
-		err := a.DB.QueryRowContext(ctx, `SELECT q.status FROM download_queue q JOIN acquisition_candidates c ON c.queue_id=q.id WHERE c.request_id=? AND c.release_key=?`, id, c.Key).Scan(&state)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		switch state {
-		case "queued", "downloading", "dispatching":
-			return nil
-		case "completed":
-			_, err = a.DB.ExecContext(ctx, `UPDATE book_requests SET status='available',completed_at=COALESCE(completed_at,CURRENT_TIMESTAMP),book_id=COALESCE(book_id,(SELECT e.book_id FROM acquisition_candidates c JOIN download_queue q ON q.id=c.queue_id JOIN book_editions e ON e.id=q.edition_id WHERE c.request_id=book_requests.id AND q.status='completed' LIMIT 1)),updated_at=CURRENT_TIMESTAMP WHERE id=?`, id)
-			return err
-		case "failed", "error":
-			if err = a.fail(ctx, c.Key); err != nil {
+	switch state {
+	case "queued", "downloading", "dispatching", "importing", "converting", "staged":
+		return nil
+	case "completed":
+		_, err = a.DB.ExecContext(ctx, `UPDATE book_requests SET status='available',
+			completed_at=CURRENT_TIMESTAMP, book_id=COALESCE(book_id,(SELECT e.book_id FROM download_queue q
+				JOIN book_editions e ON e.id=q.edition_id WHERE q.request_id=book_requests.id AND q.status='completed'
+				ORDER BY q.created_at DESC,q.rowid DESC LIMIT 1)),updated_at=CURRENT_TIMESTAMP WHERE id=? AND dismissed=0`, id)
+		return err
+	case "failed", "error":
+		if key != "" {
+			if err := a.fail(ctx, key); err != nil {
 				return err
 			}
 		}
@@ -263,15 +359,23 @@ func (a *Acquisition) process(ctx context.Context, id int64) error {
 		return nil
 	}
 	if attempts >= 3 {
-		_, err = a.DB.ExecContext(ctx, `UPDATE book_requests SET status='error' WHERE id=?`, id)
+		_, err = a.DB.ExecContext(ctx, `UPDATE book_requests SET status='error' WHERE id=? AND dismissed=0`, id)
 		return err
 	}
 	if searched == nil || time.Since(*searched) >= 24*time.Hour {
+		var backingOff bool
+		if err := a.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM request_events
+			WHERE request_id=? AND kind='search_error' AND occurred_at > datetime('now','-1 minute'))`, id).Scan(&backingOff); err != nil {
+			return err
+		}
+		if backingOff {
+			return nil
+		}
 		if err = a.refresh(ctx, id); err != nil {
 			return err
 		}
 	}
-	candidates, err = a.Candidates(ctx, id)
+	candidates, err := a.Candidates(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -283,6 +387,11 @@ func (a *Acquisition) process(ctx context.Context, id int64) error {
 			continue
 		}
 		attempts++
+		if attempts > 1 {
+			if err := a.logEvent(ctx, id, "retry", "evaluating", fmt.Sprintf("Trying release %d of 3", attempts)); err != nil {
+				return err
+			}
+		}
 		if err = a.dispatch(ctx, id, c); err == nil {
 			return nil
 		}
@@ -297,7 +406,7 @@ func (a *Acquisition) process(ctx context.Context, id int64) error {
 	if attempts >= 3 {
 		status = StatusError
 	}
-	_, err = a.DB.ExecContext(ctx, `UPDATE book_requests SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`, status, id)
+	_, err = a.DB.ExecContext(ctx, `UPDATE book_requests SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND dismissed=0 AND status != ?`, status, id, status)
 	return err
 }
 
@@ -307,12 +416,10 @@ func (a *Acquisition) Purge(ctx context.Context) error {
 }
 
 func (a *Acquisition) Tick(ctx context.Context) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	if err := a.Purge(ctx); err != nil {
 		return err
 	}
-	rows, err := a.DB.QueryContext(ctx, `SELECT id FROM book_requests WHERE status IN ('searching','downloading')`)
+	rows, err := a.DB.QueryContext(ctx, `SELECT id FROM book_requests WHERE dismissed=0 AND status IN ('searching','downloading')`)
 	if err != nil {
 		return err
 	}
@@ -332,7 +439,7 @@ func (a *Acquisition) Tick(ctx context.Context) error {
 	}
 	var first error
 	for _, id := range ids {
-		if err := a.process(ctx, id); err != nil {
+		if err := a.run(ctx, id, a.process); err != nil && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, context.Canceled) {
 			slog.WarnContext(ctx, "book request processing failed", "request_id", id)
 			if first == nil {
 				first = err

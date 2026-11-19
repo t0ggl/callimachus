@@ -72,6 +72,7 @@ func (h *Handler) registerEndpoints(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc("GET "+prefix, h.handleListRequests)
 	mux.HandleFunc("GET "+prefix+"/", h.handleListRequests)
 	mux.HandleFunc("GET "+prefix+"/{id}", h.handleGetRequest)
+	mux.HandleFunc("DELETE "+prefix+"/{id}", h.handleGetRequest)
 	mux.HandleFunc("GET "+prefix+"/{id}/candidates", h.handleCandidates)
 	mux.HandleFunc("POST "+prefix+"/{id}/refresh", h.handleCandidates)
 	mux.HandleFunc("POST "+prefix+"/{id}/download", h.handleCandidates)
@@ -169,11 +170,6 @@ func (h *Handler) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleListRequests(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
 	user := h.getUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -213,11 +209,6 @@ func (h *Handler) handleListRequests(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGetRequest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
 	user := h.getUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -246,7 +237,30 @@ func (h *Handler) handleGetRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, req)
+	if r.Method == http.MethodDelete {
+		err := h.service.dismiss(r.Context(), id)
+		switch {
+		case errors.Is(err, ErrImportFinishing):
+			writeError(w, http.StatusConflict, err.Error())
+		case err != nil:
+			writeError(w, http.StatusInternalServerError, "unable to remove activity")
+		default:
+			if h.acquisition != nil {
+				h.acquisition.stop(id)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}
+		return
+	}
+	events, err := h.service.events(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "unable to load search log")
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		*BookRequest
+		Events []Event `json:"events"`
+	}{req, events})
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

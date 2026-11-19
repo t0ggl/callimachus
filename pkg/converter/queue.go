@@ -50,11 +50,11 @@ func NewQueue(db *database.DB) *Queue {
 }
 
 // Enqueue creates and inserts a new conversion job into the queue, returning the created item.
-func (q *Queue) Enqueue(ctx context.Context, editionID, sourcePath, targetPath string, priority int) (*database.ConversionQueueItem, error) {
-	return q.enqueue(ctx, editionID, sourcePath, targetPath, priority, "")
+func (q *Queue) Enqueue(ctx context.Context, editionID, sourcePath, targetPath string, priority int, downloadID ...string) (*database.ConversionQueueItem, error) {
+	return q.enqueue(ctx, editionID, sourcePath, targetPath, priority, "", downloadID)
 }
 
-func (q *Queue) enqueue(ctx context.Context, editionID, sourcePath, targetPath string, priority int, ebookContext string) (*database.ConversionQueueItem, error) {
+func (q *Queue) enqueue(ctx context.Context, editionID, sourcePath, targetPath string, priority int, ebookContext string, downloadIDs []string) (*database.ConversionQueueItem, error) {
 	if strings.TrimSpace(editionID) == "" {
 		return nil, errors.New("editionID cannot be empty")
 	}
@@ -65,6 +65,10 @@ func (q *Queue) enqueue(ctx context.Context, editionID, sourcePath, targetPath s
 		return nil, errors.New("targetPath cannot be empty")
 	}
 
+	var downloadID *string
+	if len(downloadIDs) > 0 {
+		downloadID = &downloadIDs[0]
+	}
 	id := uuid.NewString()
 	now := time.Now().UTC()
 
@@ -72,8 +76,9 @@ func (q *Queue) enqueue(ctx context.Context, editionID, sourcePath, targetPath s
 		INSERT INTO conversion_queue (
 			id, edition_id, source_path, target_path, status,
 			progress_percent, current_stage, priority, attempts, max_attempts,
-			created_at, updated_at, ebook_context
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			created_at, updated_at, ebook_context, download_id
+		) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE ? IS NULL OR EXISTS(SELECT 1 FROM download_queue WHERE id=? AND status='importing')
 		RETURNING id, edition_id, source_path, target_path, status, progress_percent,
 		          current_stage, error_message, worker_id, attempts, max_attempts,
 		          priority, created_at, updated_at, started_at, completed_at;
@@ -82,7 +87,7 @@ func (q *Queue) enqueue(ctx context.Context, editionID, sourcePath, targetPath s
 	row := q.db.QueryRowContext(ctx, query,
 		id, editionID, sourcePath, targetPath, StatusPending,
 		0.0, StageQueued, priority, 0, DefaultMaxAttempts,
-		now, now, ebookContext,
+		now, now, ebookContext, downloadID, downloadID, downloadID,
 	)
 
 	item, err := scanQueueItem(row)
@@ -145,7 +150,7 @@ func (q *Queue) UpdateProgress(ctx context.Context, jobID string, stage string, 
 		    progress_percent = ?,
 		    error_message = ?,
 		    updated_at = ?
-		WHERE id = ?;
+		WHERE id = ? AND status != 'cancelled';
 	`
 
 	res, err := q.db.ExecContext(ctx, query, stage, percent, errorMsg, now, jobID)
@@ -176,7 +181,7 @@ func (q *Queue) CompleteJob(ctx context.Context, jobID string) error {
 		    current_stage = ?,
 		    completed_at = ?,
 		    updated_at = ?
-		WHERE id = ?;
+		WHERE id = ? AND status != 'cancelled';
 	`
 
 	res, err := q.db.ExecContext(ctx, query, StatusCompleted, StageCompleted, now, now, jobID)
@@ -207,7 +212,7 @@ func (q *Queue) FailJob(ctx context.Context, jobID string, jobErr error) error {
 	defer tx.Rollback()
 
 	var attempts, maxAttempts int
-	err = tx.QueryRowContext(ctx, "SELECT attempts, max_attempts FROM conversion_queue WHERE id = ?", jobID).Scan(&attempts, &maxAttempts)
+	err = tx.QueryRowContext(ctx, "SELECT attempts, max_attempts FROM conversion_queue WHERE id = ? AND status != 'cancelled'", jobID).Scan(&attempts, &maxAttempts)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrJobNotFound
@@ -232,7 +237,7 @@ func (q *Queue) FailJob(ctx context.Context, jobID string, jobErr error) error {
 			    error_message = ?,
 			    completed_at = ?,
 			    updated_at = ?
-			WHERE id = ?;
+			WHERE id = ? AND status != 'cancelled';
 		`, StatusFailed, newAttempts, errMsg, now, now, jobID)
 	} else {
 		// Retryable: return to pending and clear worker lease
@@ -244,7 +249,7 @@ func (q *Queue) FailJob(ctx context.Context, jobID string, jobErr error) error {
 			    attempts = ?,
 			    error_message = ?,
 			    updated_at = ?
-			WHERE id = ?;
+			WHERE id = ? AND status != 'cancelled';
 		`, StatusPending, newAttempts, errMsg, now, jobID)
 	}
 

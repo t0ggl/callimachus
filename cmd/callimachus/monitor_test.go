@@ -94,17 +94,17 @@ func TestCatalogMonitoringReusesAcquisitionRequest(t *testing.T) {
 		}
 	}
 	calls := 0
-	s := &Server{db: db, acquisition: &requests.Acquisition{DB: db, Search: func(context.Context, string) ([]indexers.ProwlarrRelease, error) { calls++; return nil, nil }}}
+	s := &Server{db: db, acquisition: &requests.Acquisition{DB: db, Search: func(context.Context, string, string) ([]indexers.ProwlarrRelease, error) { calls++; return nil, nil }}}
 	for i := 0; i < 2; i++ {
 		if err := s.searchMonitoredBook(context.Background(), "b"); err != nil {
 			t.Fatal(err)
 		}
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM book_requests WHERE book_id='b'`).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("duplicate requests: %d %v", count, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM book_requests WHERE book_id='b'`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("unexpected format request count: %d %v", count, err)
 	}
-	if calls != 2 {
+	if calls != 4 {
 		t.Fatal("manual refresh did not search immediately")
 	}
 	if _, err := db.Exec(`UPDATE book_requests SET status='downloading'`); err != nil {
@@ -113,7 +113,7 @@ func TestCatalogMonitoringReusesAcquisitionRequest(t *testing.T) {
 	if err := s.searchMonitoredBook(context.Background(), "b"); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 {
+	if calls != 4 {
 		t.Fatal("active acquisition searched again")
 	}
 }

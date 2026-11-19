@@ -69,11 +69,11 @@ func (s *Server) handleGrabRelease(w http.ResponseWriter, r *http.Request) {
 	slog.InfoContext(r.Context(), "requesting manual Prowlarr grab", "queue_id", id, "indexer_id", release.IndexerID)
 	if err := client.Grab(r.Context(), release); err != nil {
 		slog.WarnContext(r.Context(), "manual Prowlarr grab failed", "queue_id", id, "indexer_id", release.IndexerID)
-		_, _ = s.db.ExecContext(r.Context(), `UPDATE download_queue SET status = 'failed', error_message = ? WHERE id = ?`, err.Error(), id)
+		_, _ = s.db.ExecContext(r.Context(), `UPDATE download_queue SET status = 'failed', error_message = ? WHERE id = ? AND status = 'dispatching'`, err.Error(), id)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	if _, err := s.db.ExecContext(r.Context(), `UPDATE download_queue SET status = 'queued' WHERE id = ?`, id); err != nil {
+	if _, err := s.db.ExecContext(r.Context(), `UPDATE download_queue SET status = 'queued' WHERE id = ? AND status = 'dispatching'`, id); err != nil {
 		http.Error(w, "Release dispatched but queue update failed", http.StatusInternalServerError)
 		return
 	}

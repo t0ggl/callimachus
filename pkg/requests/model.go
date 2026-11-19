@@ -13,6 +13,7 @@ const (
 	StatusDownloading = "downloading"
 	StatusAvailable   = "available"
 	StatusError       = "error"
+	StatusCancelled   = "cancelled"
 )
 
 // Request format constants
@@ -24,6 +25,9 @@ const (
 
 // BookRequest represents an Overseerr-style media acquisition request.
 type BookRequest struct {
+	Stage     string    `json:"stage"`
+	Year      int       `json:"year,omitempty"`
+	CoverURL  string    `json:"cover_url,omitempty"`
 	ID        int64     `json:"id" db:"id"`
 	UserID    string    `json:"user_id" db:"user_id"`
 	Username  string    `json:"username" db:"username"`
@@ -39,14 +43,18 @@ type BookRequest struct {
 
 // CreateRequestInput holds parameters for submitting a book request.
 type CreateRequestInput struct {
-	ManualOnly bool    `json:"manual_only"`
-	Year       int     `json:"year"`
-	UserID     string  `json:"user_id"`
-	BookID     *string `json:"book_id,omitempty"`
-	Title      string  `json:"title"`
-	Author     string  `json:"author"`
-	Format     string  `json:"format"`
-	UserRole   string  `json:"user_role,omitempty"`
+	Synopsis    string   `json:"synopsis"`
+	Series      string   `json:"series"`
+	SeriesIndex *float64 `json:"series_index"`
+	CoverURL    string   `json:"cover_url"`
+	ManualOnly  bool     `json:"manual_only"`
+	Year        int      `json:"year"`
+	UserID      string   `json:"user_id"`
+	BookID      *string  `json:"book_id,omitempty"`
+	Title       string   `json:"title"`
+	Author      string   `json:"author"`
+	Format      string   `json:"format"`
+	UserRole    string   `json:"user_role,omitempty"`
 }
 
 // RequestFilter defines search, filtering, and pagination parameters.
@@ -76,12 +84,13 @@ var validTransitions = map[string]map[string]bool{
 	StatusDownloading: {StatusAvailable: true, StatusSearching: true, StatusError: true},
 	StatusError:       {StatusSearching: true, StatusDownloading: true},
 	StatusAvailable:   {},
+	StatusCancelled:   {},
 }
 
 // IsValidStatus returns true if the status string is a recognized request status.
 func IsValidStatus(status string) bool {
 	switch strings.ToLower(status) {
-	case StatusSearching, StatusDownloading, StatusAvailable, StatusError:
+	case StatusSearching, StatusDownloading, StatusAvailable, StatusError, StatusCancelled:
 		return true
 	default:
 		return false

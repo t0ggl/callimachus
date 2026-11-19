@@ -4,7 +4,6 @@ import { it, expect, vi, afterEach } from 'vitest';
 import { ManualSearch } from '../components/ManualSearch';
 afterEach(() => vi.unstubAllGlobals());
 it('shows cached score breakdown, refreshes, and manually retries a penalized release', async () => {
-  HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
   const candidate = {
     key: '1:g',
     release: { title: 'Dune EPUB', size: 1048576, seeders: 60 },

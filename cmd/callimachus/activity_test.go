@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
@@ -68,5 +70,67 @@ func TestActivityDatabaseFailureIsVisible(t *testing.T) {
 	(&Server{db: db}).handleGetActivity(recorder, httptest.NewRequest("GET", "/api/activity", nil))
 	if recorder.Code != 500 {
 		t.Fatalf("expected visible failure, got %d", recorder.Code)
+	}
+}
+
+func TestActivityScopeAndStandaloneDismissal(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	_, err := db.Exec(`
+		INSERT INTO users(id,username,email,role,auth_source) VALUES('owner','owner','owner@example.test','requester','local');
+		INSERT INTO authors(id,name,sort_name) VALUES('a','Author','Author');
+		INSERT INTO books(id,title,author_id) VALUES('b','Book','a');
+		INSERT INTO book_editions(id,book_id,format) VALUES('e','b','epub');
+		INSERT INTO book_requests(id,user_id,book_id,title,author,format,status)
+			VALUES(1,'owner','b','Book','Author','epub','downloading');
+		INSERT INTO download_queue(id,request_id,download_client_task_id,title,protocol,status)
+			VALUES('owned',1,'task','Book EPUB','torrent','importing'),('standalone',NULL,'task2','Other Book','torrent','completed');
+		INSERT INTO conversion_queue(id,download_id,edition_id,source_path,target_path,status)
+			VALUES('owned-job','owned','e','/source','/target','pending'),
+			('standalone-job',NULL,'e','/other','/target2','pending');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{db: db}
+	mux := http.NewServeMux()
+	s.registerAPIRoutes(mux)
+	call := func(method, path, user, role string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, nil)
+		r = r.WithContext(auth.ContextWithUser(r.Context(), &auth.User{ID: user, Role: role}))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w
+	}
+	for _, tc := range []struct {
+		user, role string
+		requests   int
+	}{{"other", auth.RoleRequester, 0}, {"owner", auth.RoleRequester, 1}, {"curator", auth.RoleCurator, 1}} {
+		w := call(http.MethodGet, "/api/activity", tc.user, tc.role)
+		var snapshot APIActivityResponse
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &snapshot) != nil ||
+			len(snapshot.Requests) != tc.requests || len(snapshot.ConversionJobs) != 1+tc.requests ||
+			len(snapshot.Downloads) != 1+tc.requests {
+			t.Fatalf("%s snapshot: %d %s", tc.user, w.Code, w.Body)
+		}
+		if tc.requests == 1 && (snapshot.Requests[0].Stage != "importing" || snapshot.Requests[0].BookID == nil || *snapshot.Requests[0].BookID != "b") {
+			t.Fatalf("request linkage: %+v", snapshot.Requests[0])
+		}
+	}
+	for _, tc := range []struct {
+		path, role string
+		want       int
+	}{
+		{"/api/activity/downloads/standalone", auth.RoleRequester, 403},
+		{"/api/activity/downloads/owned", auth.RoleCurator, 409},
+		{"/api/activity/downloads/standalone", auth.RoleCurator, 204},
+		{"/api/activity/conversions/standalone-job", auth.RoleCurator, 204},
+	} {
+		w := call(http.MethodDelete, tc.path, "curator", tc.role)
+		if w.Code != tc.want {
+			t.Fatalf("DELETE %s: %d %s", tc.path, w.Code, w.Body)
+		}
+	}
+	var status string
+	if err := db.QueryRow("SELECT status FROM conversion_queue WHERE id='standalone-job'").Scan(&status); err != nil || status != "cancelled" {
+		t.Fatalf("cancelled state: %s %v", status, err)
 	}
 }

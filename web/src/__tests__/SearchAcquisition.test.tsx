@@ -28,7 +28,7 @@ it.each(['Frank Herbert', 'Dune', 'Herbert desert planet'])('discovers and queue
   // Keyboard activation must not run the palette's navigation action.
   add.focus();
   await user.keyboard('{Enter}');
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/requests', expect.objectContaining({ method: 'POST', body: JSON.stringify({ title: 'Dune', author: 'Frank Herbert', format: 'epub', year: 1965 }) })));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/requests', expect.objectContaining({ method: 'POST', body: JSON.stringify({ title: 'Dune', author: 'Frank Herbert', format: 'epub', year: 1965, cover_url: '/cover.jpg', series: 'Dune series', series_index: 1 }) })));
   expect(await screen.findByRole('button', { name: 'Added Dune' })).toBeDisabled();
   expect(screen.getByRole('dialog', { name: 'Search books and commands' })).toBeInTheDocument();
   expect(screen.getByRole('heading', { name: /Library/ })).toBeInTheDocument();

@@ -19,7 +19,7 @@ type ebookContext struct {
 }
 
 // EnqueueEbook persists the ingestion context with the job before a worker can lease it.
-func (q *Queue) EnqueueEbook(ctx context.Context, editionID, source, root string, book catalog.BookDetails) (*database.ConversionQueueItem, error) {
+func (q *Queue) EnqueueEbook(ctx context.Context, editionID, source, root string, book catalog.BookDetails, downloadID ...string) (*database.ConversionQueueItem, error) {
 	book.Format = strings.ToLower(book.Format)
 	if book.Format != "epub" && book.Format != "azw3" {
 		return nil, fmt.Errorf("unsupported ebook target %q", book.Format)
@@ -32,7 +32,7 @@ func (q *Queue) EnqueueEbook(ctx context.Context, editionID, source, root string
 	if err != nil {
 		return nil, err
 	}
-	return q.enqueue(ctx, editionID, source, target, 0, string(payload))
+	return q.enqueue(ctx, editionID, source, target, 0, string(payload), downloadID)
 }
 
 func (w *Worker) processEbook(ctx context.Context, job *database.ConversionQueueItem) error {
@@ -82,7 +82,9 @@ func (w *Worker) processEbook(ctx context.Context, job *database.ConversionQueue
 			return err
 		}
 	}
-	w.reportStage(ctx, job.ID, StageMoving, 95)
+	if err := w.reportStage(ctx, job.ID, StageMoving, 95); err != nil {
+		return err
+	}
 	_, err = catalog.New(w.queue.db).IngestBook(ctx, info.LibraryRoot, info.Book, output, cover)
 	if err != nil {
 		return fmt.Errorf("ingest converted ebook: %w", err)

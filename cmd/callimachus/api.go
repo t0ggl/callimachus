@@ -16,6 +16,7 @@ import (
 	"github.com/t0ggl/callimachus/internal/logging"
 	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/config"
+	"github.com/t0ggl/callimachus/pkg/requests"
 )
 
 type APIMediaAsset struct {
@@ -74,6 +75,8 @@ type APISeries struct {
 }
 
 type APIConversionJob struct {
+	RequestID        string  `json:"requestId,omitempty"`
+	DownloadID       string  `json:"downloadId,omitempty"`
 	EditionID        string  `json:"editionId"`
 	ID               string  `json:"id"`
 	BookID           string  `json:"bookId"`
@@ -91,6 +94,7 @@ type APIConversionJob struct {
 }
 
 type APIDownloadItem struct {
+	BookID              string  `json:"bookId,omitempty"`
 	EditionID           string  `json:"editionId,omitempty"`
 	RequestID           string  `json:"requestId,omitempty"`
 	ErrorMessage        string  `json:"errorMessage,omitempty"`
@@ -107,9 +111,10 @@ type APIDownloadItem struct {
 }
 
 type APIActivityResponse struct {
-	ConversionJobs []APIConversionJob `json:"conversionJobs"`
-	Downloads      []APIDownloadItem  `json:"downloads"`
-	Logs           []any              `json:"logs"`
+	Requests       []requests.BookRequest `json:"requests"`
+	ConversionJobs []APIConversionJob     `json:"conversionJobs"`
+	Downloads      []APIDownloadItem      `json:"downloads"`
+	Logs           []any                  `json:"logs"`
 }
 
 type APIIndexerConfig struct {
@@ -205,6 +210,7 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/series", s.handleGetSeries)
 	mux.HandleFunc("GET /api/series/", s.handleGetSeries)
 	mux.HandleFunc("GET /api/activity", s.handleGetActivity)
+	mux.Handle("DELETE /api/activity/{kind}/{id}", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleDismissActivity)))
 	adminOnly := auth.RequireRole(auth.RoleAdmin)
 	mux.Handle("GET /api/settings", adminOnly(http.HandlerFunc(s.handleGetSettings)))
 	mux.Handle("PUT /api/settings", adminOnly(http.HandlerFunc(s.handleUpdateSettings)))
@@ -233,9 +239,11 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 		FROM books b
 		LEFT JOIN authors a ON b.author_id = a.id
 		LEFT JOIN series s ON b.series_id = s.id
+		WHERE (? = '' OR b.id = ?)
 		ORDER BY b.title ASC
 	`
-	rows, err := s.db.QueryContext(r.Context(), query)
+	id := r.URL.Query().Get("id")
+	rows, err := s.db.QueryContext(r.Context(), query, id, id)
 	if err != nil {
 		slog.Error("get books query failed")
 		_ = json.NewEncoder(w).Encode([]APIBook{})
@@ -437,24 +445,38 @@ func (s *Server) activityResponse(ctx context.Context) (APIActivityResponse, err
 		ConversionJobs: make([]APIConversionJob, 0),
 		Downloads:      make([]APIDownloadItem, 0),
 		Logs:           make([]any, 0),
+		Requests:       []requests.BookRequest{},
 	}
 
 	if s.db == nil {
 		return resp, nil
 	}
 
+	var owner string
+	if user, ok := auth.UserFromContext(ctx); ok && !auth.HasRole(user.Role, auth.RoleCurator) {
+		owner = user.ID
+	}
+	var err error
+	resp.Requests, err = requests.NewRequestService(s.db).ListRequests(ctx, requests.RequestFilter{UserID: owner})
+	if err != nil {
+		return resp, err
+	}
+
 	// Query conversion queue
 	tqQuery := `
 		SELECT t.id, t.edition_id, COALESCE(be.book_id, ''), COALESCE(b.title, ''), COALESCE(a.name, ''),
-		       t.status, t.progress_percent, t.current_stage, COALESCE(t.error_message, ''), t.target_path
+		       t.status, t.progress_percent, t.current_stage, COALESCE(t.error_message, ''), t.target_path, COALESCE(q.request_id,''), COALESCE(t.download_id,'')
 		FROM conversion_queue t
 		LEFT JOIN book_editions be ON t.edition_id = be.id
 		LEFT JOIN books b ON be.book_id = b.id
 		LEFT JOIN authors a ON b.author_id = a.id
-		WHERE t.status != 'cancelled'
-		ORDER BY t.created_at DESC, t.id DESC
+		LEFT JOIN download_queue q ON t.download_id=q.id
+		LEFT JOIN book_requests r ON q.request_id=r.id
+		WHERE t.status != 'cancelled' AND t.dismissed=0 AND COALESCE(q.dismissed,0)=0
+			AND (r.id IS NULL OR (r.dismissed=0 AND (?='' OR r.user_id=?)))
+		ORDER BY t.created_at DESC, t.rowid DESC
 	`
-	rows, err := s.db.QueryContext(ctx, tqQuery)
+	rows, err := s.db.QueryContext(ctx, tqQuery, owner, owner)
 	if err != nil {
 		return resp, err
 	}
@@ -465,7 +487,7 @@ func (s *Server) activityResponse(ctx context.Context) (APIActivityResponse, err
 			var targetPath string
 			if err := rows.Scan(
 				&job.ID, &job.EditionID, &job.BookID, &job.BookTitle, &job.AuthorName,
-				&job.Status, &job.ProgressPercent, &job.Stage, &job.ErrorMessage, &targetPath,
+				&job.Status, &job.ProgressPercent, &job.Stage, &job.ErrorMessage, &targetPath, &job.RequestID, &job.DownloadID,
 			); err != nil {
 				return resp, err
 			} else {
@@ -494,12 +516,14 @@ func (s *Server) activityResponse(ctx context.Context) (APIActivityResponse, err
 	// Query download queue
 	dqQuery := `
 		SELECT q.id, q.title, q.status, q.progress_percent, q.size_bytes,
-        COALESCE(q.edition_id, ''), COALESCE((SELECT request_id FROM acquisition_candidates WHERE queue_id=q.id LIMIT 1), ''),
-        COALESCE(q.error_message, ''), COALESCE(e.format, '')
+        COALESCE(q.edition_id, ''), COALESCE(q.request_id, ''),
+        COALESCE(q.error_message, ''), COALESCE(r.format, e.format, ''), COALESCE(r.book_id,e.book_id,'')
         FROM download_queue q LEFT JOIN book_editions e ON e.id=q.edition_id
-        ORDER BY q.created_at DESC, q.id DESC
+        LEFT JOIN book_requests r ON q.request_id=r.id
+        WHERE q.dismissed=0 AND q.status!='cancelled' AND (r.id IS NULL OR (r.dismissed=0 AND (?='' OR r.user_id=?)))
+        ORDER BY q.created_at DESC, q.rowid DESC
 	`
-	rows, err = s.db.QueryContext(ctx, dqQuery)
+	rows, err = s.db.QueryContext(ctx, dqQuery, owner, owner)
 	if err != nil {
 		return resp, err
 	}
@@ -511,7 +535,7 @@ func (s *Server) activityResponse(ctx context.Context) (APIActivityResponse, err
 			item.Category = "callimachus-audiobooks"
 			item.ClientType = "Prowlarr"
 			if err := rows.Scan(
-				&item.ID, &item.Title, &item.Status, &item.ProgressPercent, &item.TotalSizeBytes, &item.EditionID, &item.RequestID, &item.ErrorMessage, &format,
+				&item.ID, &item.Title, &item.Status, &item.ProgressPercent, &item.TotalSizeBytes, &item.EditionID, &item.RequestID, &item.ErrorMessage, &format, &item.BookID,
 			); err != nil {
 				return resp, err
 			} else {
@@ -520,6 +544,9 @@ func (s *Server) activityResponse(ctx context.Context) (APIActivityResponse, err
 				}
 				if item.Status == "failed" {
 					item.Status = "error"
+				}
+				if item.Status == "converting" {
+					item.Status = "importing"
 				}
 				if item.Status == "dispatching" || item.Status == "staged" {
 					item.Status = "queued"

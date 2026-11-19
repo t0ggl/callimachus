@@ -21,3 +21,7 @@ if (!globalThis.fetch || typeof globalThis.fetch !== 'function') {
     return originalFetch(url, ...args);
   }) as any;
 }
+
+// jsdom exposes the element but does not implement the native dialog methods.
+HTMLDialogElement.prototype.showModal ??= function () { this.setAttribute('open', ''); };
+HTMLDialogElement.prototype.close ??= function () { this.removeAttribute('open'); };

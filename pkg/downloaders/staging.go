@@ -151,12 +151,26 @@ func (sm *StagingMonitor) PollOnce(ctx context.Context) error {
 			title = strings.TrimSuffix(title, filepath.Ext(title))
 		}
 		var item database.DownloadQueueItem
+		var requestFormat string
 		// Match selected releases by their exact release name, never fuzzy-match books.
-		err = sm.db.QueryRowContext(ctx, `SELECT id, title, edition_id, status FROM download_queue WHERE staging_path = ? OR (title = ? AND status IN ('queued', 'downloading')) ORDER BY created_at LIMIT 1`, path, title).Scan(&item.ID, &item.Title, &item.EditionID, &item.Status)
+		err = sm.db.QueryRowContext(ctx, `SELECT q.id, q.title, q.edition_id, q.status, COALESCE(r.format, '')
+			FROM download_queue q LEFT JOIN book_requests r ON r.id=q.request_id
+			WHERE q.staging_path = ? OR (q.title = ? AND q.status IN ('queued','downloading','dispatching'))
+			ORDER BY (q.status IN ('queued','downloading','dispatching')) DESC,
+				(r.format IS NULL OR r.format='both' OR (r.format='epub' AND ?) OR (r.format='m4b' AND ?)) DESC,
+				q.created_at LIMIT 1`,
+			path, title, len(ebooks) > 0, len(audio) > 0).Scan(&item.ID, &item.Title, &item.EditionID, &item.Status, &requestFormat)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		if errors.Is(err, sql.ErrNoRows) {
+			var blocked bool
+			if err := sm.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM cancelled_download_releases WHERE title=?)`, title).Scan(&blocked); err != nil {
+				return err
+			}
+			if blocked {
+				continue
+			}
 			item.ID = fmt.Sprintf("staging-%x", sha256.Sum256([]byte(path)))
 			item.Title = title
 			_, err = sm.db.ExecContext(ctx, `INSERT OR IGNORE INTO download_queue (id, download_client_task_id, title, protocol, staging_path) VALUES (?, ?, ?, 'prowlarr', ?)`, item.ID, item.ID, title, path)
@@ -164,22 +178,34 @@ func (sm *StagingMonitor) PollOnce(ctx context.Context) error {
 				return err
 			}
 		}
-		if item.Status == "completed" {
+		if item.Status == "completed" || item.Status == "cancelled" || item.Status == "converting" || item.Status == "failed" {
 			continue
 		}
-		if _, err := sm.db.ExecContext(ctx, `UPDATE download_queue SET staging_path = ?, status = 'importing', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, path, item.ID); err != nil {
+		claim, err := sm.db.ExecContext(ctx, `UPDATE download_queue SET staging_path = ?, status = 'importing', updated_at = CURRENT_TIMESTAMP
+			WHERE id = ? AND status IN ('queued','downloading','dispatching','importing')`, path, item.ID)
+		if err != nil {
 			return err
 		}
+		if n, _ := claim.RowsAffected(); n == 0 {
+			continue
+		}
+		if (requestFormat == "epub" && len(ebooks) == 0) || (requestFormat == "m4b" && len(audio) == 0) {
+			if _, err := sm.db.ExecContext(ctx, `UPDATE download_queue SET status='failed',error_message='Release did not contain the requested format',
+				updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='importing'`, item.ID); err != nil {
+				return err
+			}
+			continue
+		}
 		slog.InfoContext(ctx, "staged download processing started", "queue_id", item.ID)
-		if err := sm.dispatchPostProcessing(ctx, item, path); err != nil {
+		if err := sm.dispatchPostProcessing(ctx, item, path, requestFormat); err != nil {
 			slog.WarnContext(ctx, "staged download processing failed", "queue_id", item.ID)
-			if _, resetErr := sm.db.ExecContext(ctx, `UPDATE download_queue SET status = 'queued' WHERE id = ?`, item.ID); resetErr != nil {
+			if _, resetErr := sm.db.ExecContext(ctx, `UPDATE download_queue SET status = 'queued' WHERE id = ? AND status = 'importing'`, item.ID); resetErr != nil {
 				return resetErr
 			}
 			sm.recordError(ctx, item.ID, fmt.Sprintf("post-processing: %v", err))
 			continue // Leave queued so a later pass retries failed ingestion.
 		}
-		if _, err := sm.db.ExecContext(ctx, `UPDATE download_queue SET status = 'completed', progress_percent = 100, error_message = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, item.ID); err != nil {
+		if _, err := sm.db.ExecContext(ctx, `UPDATE download_queue SET status = 'completed', progress_percent = 100, error_message = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'importing'`, item.ID); err != nil {
 			return err
 		}
 		slog.InfoContext(ctx, "staged download processing completed", "queue_id", item.ID)
@@ -187,7 +213,7 @@ func (sm *StagingMonitor) PollOnce(ctx context.Context) error {
 	return nil
 }
 
-func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item database.DownloadQueueItem, stagingPath string) error {
+func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item database.DownloadQueueItem, stagingPath string, requestFormats ...string) error {
 	if strings.TrimSpace(stagingPath) == "" {
 		return errors.New("empty staging path for completed task")
 	}
@@ -203,6 +229,16 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 		return fmt.Errorf("scan staging media files: %w", err)
 	}
 
+	var downloadIDs []string
+	if len(requestFormats) > 0 {
+		downloadIDs = []string{item.ID}
+		switch requestFormats[0] {
+		case "epub":
+			audioFiles = nil
+		case "m4b":
+			ebookFiles = nil
+		}
+	}
 	bookDetails := sm.resolveBookDetails(ctx, item)
 
 	// 1. Process recognized eBooks
@@ -264,7 +300,7 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 					if err != nil {
 						return err
 					}
-					_, err = sm.converter.EnqueueEbook(ctx, edition.ID, primaryEbook, sm.libraryRoot, bookDetails)
+					_, err = sm.converter.EnqueueEbook(ctx, edition.ID, primaryEbook, sm.libraryRoot, bookDetails, downloadIDs...)
 					return err
 				}
 			}
@@ -275,7 +311,7 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 			if err != nil {
 				return fmt.Errorf("ingest ebook: %w", err)
 			}
-			if item.EditionID == nil && res != nil && res.Edition != nil {
+			if res != nil && res.Edition != nil {
 				_, _ = sm.db.ExecContext(ctx, "UPDATE download_queue SET edition_id = ? WHERE id = ?", res.Edition.ID, item.ID)
 			}
 		} else if sm.libraryRoot != "" {
@@ -309,7 +345,7 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 				if err != nil {
 					return fmt.Errorf("ingest m4b: %w", err)
 				}
-				if item.EditionID == nil && res != nil && res.Edition != nil {
+				if res != nil && res.Edition != nil {
 					_, _ = sm.db.ExecContext(ctx, "UPDATE download_queue SET edition_id = ? WHERE id = ?", res.Edition.ID, item.ID)
 				}
 			} else if sm.libraryRoot != "" {
@@ -366,7 +402,7 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 				sourceDir = filepath.Dir(stagingPath)
 			}
 
-			_, err = sm.converter.Enqueue(ctx, editionID, sourceDir, targetM4BPath, 0)
+			_, err = sm.converter.Enqueue(ctx, editionID, sourceDir, targetM4BPath, 0, downloadIDs...)
 			if err != nil {
 				return fmt.Errorf("enqueue conversion: %w", err)
 			}
@@ -403,7 +439,7 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 				if editionID != "" {
 					targetM4BPath, _, _, err := catalog.ResolveCanonicalPath(sm.libraryRoot, bookDetails, ".m4b")
 					if err == nil {
-						_, err = sm.converter.Enqueue(ctx, editionID, singleMP3, targetM4BPath, 0)
+						_, err = sm.converter.Enqueue(ctx, editionID, singleMP3, targetM4BPath, 0, downloadIDs...)
 						if err == nil {
 							return nil
 						}
@@ -422,31 +458,31 @@ func (sm *StagingMonitor) resolveBookDetails(ctx context.Context, item database.
 	var details catalog.BookDetails
 	foundInDB := false
 
-	if item.EditionID != nil && *item.EditionID != "" && sm.db != nil {
+	if sm.db != nil {
 		query := `
-			SELECT b.title, COALESCE(b.subtitle, ''), a.name,
+			SELECT b.id, b.title, COALESCE(b.subtitle, ''), a.name,
 			       COALESCE(s.title, ''), b.series_index,
 			       COALESCE(strftime('%Y', b.release_date), '0'),
 			       COALESCE(b.synopsis, ''),
 			       COALESCE(ed.isbn13, ''), COALESCE(ed.asin, ''),
-			       ed.format
-			FROM book_editions ed
-			JOIN books b ON ed.book_id = b.id
+			       COALESCE(ed.format, '')
+			FROM books b
+			LEFT JOIN book_editions ed ON ed.book_id=b.id AND ed.id=?
 			JOIN authors a ON b.author_id = a.id
 			LEFT JOIN series s ON b.series_id = s.id
-			WHERE ed.id = ? LIMIT 1;
+			WHERE b.id = COALESCE((SELECT r.book_id FROM book_requests r JOIN download_queue q ON q.request_id=r.id WHERE q.id=?),
+				(SELECT book_id FROM book_editions WHERE id=?)) LIMIT 1;
 		`
 		var yearStr string
-		row := sm.db.QueryRowContext(ctx, query, *item.EditionID)
+		row := sm.db.QueryRowContext(ctx, query, item.EditionID, item.ID, item.EditionID)
 		err := row.Scan(
-			&details.Title, &details.Subtitle, &details.Author,
+			&details.BookID, &details.Title, &details.Subtitle, &details.Author,
 			&details.Series, &details.SeriesIndex, &yearStr,
 			&details.Description, &details.ISBN13, &details.ASIN,
 			&details.Format,
 		)
 		if err == nil {
 			foundInDB = true
-			_ = sm.db.QueryRowContext(ctx, "SELECT book_id FROM book_editions WHERE id=?", *item.EditionID).Scan(&details.BookID)
 			if y, yErr := strconv.Atoi(yearStr); yErr == nil && y > 0 {
 				details.Year = y
 			}

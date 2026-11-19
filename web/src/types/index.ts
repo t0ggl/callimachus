@@ -70,6 +70,8 @@ export type ConversionStage = 'queued' | 'preparing' | 'converting' | 'muxing' |
 export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'paused';
 
 export interface ConversionJob {
+  requestId?: string;
+  downloadId?: string;
   id: string;
   bookId: string;
   editionId?: string;
@@ -89,6 +91,7 @@ export interface ConversionJob {
 export type DownloadCategory = 'callimachus-ebooks' | 'callimachus-audiobooks';
 
 export interface DownloadItem {
+  bookId?: string;
   editionId?: string;
   requestId?: string;
   errorMessage?: string;
@@ -117,7 +120,20 @@ export interface ImportLog {
 export type RequestStatus = 'searching' | 'downloading' | 'available' | 'error';
 export type RequestType = 'ebook' | 'audiobook' | 'both';
 
+export type AcquisitionStage = 'queued' | 'searching' | 'evaluating' | 'downloading' | 'importing' | 'available';
+
+export interface RequestEvent {
+  id: number;
+  kind: string;
+  message: string;
+  occurred_at: string;
+}
+
 export interface BookRequest {
+  bookId?: string;
+  coverUrl?: string;
+  year?: number;
+  stage?: AcquisitionStage;
   id: string;
   title: string;
   author: string;
@@ -187,3 +203,39 @@ export interface QualityProfile {
 
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+export interface APIBookRequest {
+  id: number;
+  title: string;
+  author: string;
+  username: string;
+  format: 'epub' | 'm4b' | 'both';
+  status: RequestStatus;
+  stage: AcquisitionStage;
+  created_at: string;
+  book_id?: string;
+  cover_url?: string;
+  year?: number;
+}
+
+export const mapBookRequest = (r: APIBookRequest): BookRequest => ({
+  id: String(r.id),
+  title: r.title,
+  author: r.author,
+  requestedBy: r.username || 'Anonymous',
+  requestType: r.format === 'epub' ? 'ebook' : r.format === 'm4b' ? 'audiobook' : 'both',
+  status: r.status,
+  stage: r.stage,
+  requestedAt: r.created_at,
+  bookId: r.book_id,
+  coverUrl: r.cover_url,
+  year: r.year,
+});
+
+export interface RequestMetadata {
+  book_id?: string;
+  cover_url?: string;
+  series?: string;
+  series_index?: number;
+  synopsis?: string;
+}
