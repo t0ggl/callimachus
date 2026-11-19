@@ -78,7 +78,7 @@ it('removes logo subtitle, mode badge and legacy labels', () => {
 });
 
 describe('Layout Settings nav visibility', () => {
-  it('shows Settings nav link for admin users', () => {
+  it('puts all three admin destinations in one mobile row and keeps desktop navigation stacked', () => {
     render(
       <Layout
         {...props}
@@ -87,9 +87,13 @@ describe('Layout Settings nav visibility', () => {
         convertingJobsCount={0}
       />
     );
-    expect(screen.getByTestId('nav-catalog')).toBeInTheDocument();
-    expect(screen.getByTestId('nav-activity')).toBeInTheDocument();
-    expect(screen.getByTestId('nav-settings')).toBeInTheDocument();
+    const nav = within(screen.getByRole('navigation'));
+    expect(screen.getByRole('navigation')).toHaveClass('flex', 'flex-nowrap', 'md:block');
+    expect(nav.getAllByRole('button')).toEqual([
+      nav.getByTestId('nav-catalog'),
+      nav.getByTestId('nav-activity'),
+      nav.getByTestId('nav-settings'),
+    ]);
   });
 
   it.each(['curator', 'requester', 'guest'] as const)(
@@ -112,5 +116,30 @@ describe('Layout Settings nav visibility', () => {
   it('hides Settings nav link when user is null', () => {
     render(<Layout {...props} user={null} activeDownloadsCount={0} convertingJobsCount={0} />);
     expect(screen.queryByTestId('nav-settings')).not.toBeInTheDocument();
+    expect(screen.getByTestId('auth-verifying')).toHaveClass('sr-only', 'md:not-sr-only');
+    expect(screen.queryByTestId('logout-button')).not.toBeInTheDocument();
   });
+});
+
+it('keeps the profile desktop-only and provides one accessible sign-out control', async () => {
+  const viewer = userEvent.setup({ delay: null });
+  const onLogout = vi.fn();
+  render(
+    <Layout
+      {...props}
+      user={{ id: '1', username: 'reader', role: 'guest', email: 'reader@example.com' }}
+      onLogout={onLogout}
+      activeDownloadsCount={0}
+      convertingJobsCount={0}
+    />
+  );
+  const profile = screen.getByText('reader').closest('.md\\:flex');
+  expect(profile).toHaveClass('hidden', 'md:flex');
+  expect(profile).toContainElement(screen.getByText('guest'));
+  const logout = screen.getByRole('button', { name: 'Sign Out' });
+  expect(logout).toBe(screen.getByTestId('logout-button'));
+  expect(profile).not.toContainElement(logout);
+  expect(logout).toHaveClass('absolute', 'md:static');
+  await viewer.click(logout);
+  expect(onLogout).toHaveBeenCalledOnce();
 });
