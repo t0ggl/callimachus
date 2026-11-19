@@ -2,6 +2,7 @@ package epub
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -85,15 +86,16 @@ func parseOPF(data []byte) (*parsedOPF, error) {
 	}
 
 	var (
-		titles        []rawTitle
-		creators      []rawCreator
-		identifiers   []rawIdentifier
-		metaTags      []rawMetaTag
-		inMetadata    bool
-		inManifest    bool
-		currentElem   string
-		currentAttrs  []xml.Attr
-		textBuffer    bytes.Buffer
+		titles       []rawTitle
+		creators     []rawCreator
+		identifiers  []rawIdentifier
+		metaTags     []rawMetaTag
+		inMetadata   bool
+		inManifest   bool
+		depth        int
+		currentElem  string
+		currentAttrs []xml.Attr
+		textBuffer   bytes.Buffer
 	)
 
 	for {
@@ -107,9 +109,13 @@ func parseOPF(data []byte) (*parsedOPF, error) {
 
 		switch el := tok.(type) {
 		case xml.StartElement:
+			depth++
 			local := el.Name.Local
 			switch local {
 			case "package":
+				if depth != 1 {
+					break
+				}
 				for _, attr := range el.Attr {
 					switch attr.Name.Local {
 					case "version":
@@ -122,7 +128,9 @@ func parseOPF(data []byte) (*parsedOPF, error) {
 					}
 				}
 			case "metadata":
-				inMetadata = true
+				if depth == 2 && (el.Name.Space == opfNamespace || el.Name.Space == "") {
+					inMetadata = true
+				}
 			case "manifest":
 				inManifest = true
 			case "item":
@@ -144,19 +152,22 @@ func parseOPF(data []byte) (*parsedOPF, error) {
 				}
 			}
 
-			if inMetadata {
-				currentElem = local
+			if inMetadata && depth == 3 {
+				currentElem = ""
+				if el.Name.Space == "" || el.Name.Space == dcNamespace || (local == "meta" && el.Name.Space == opfNamespace) {
+					currentElem = local
+				}
 				currentAttrs = el.Attr
 				textBuffer.Reset()
 			}
 
 		case xml.EndElement:
 			local := el.Name.Local
-			if inMetadata {
+			if inMetadata && depth == 2 {
+				inMetadata = false
+			} else if inMetadata && depth == 3 && currentElem != "" {
 				elemText := strings.TrimSpace(textBuffer.String())
-				switch local {
-				case "metadata":
-					inMetadata = false
+				switch currentElem {
 				case "title":
 					t := rawTitle{Value: elemText}
 					for _, attr := range currentAttrs {
@@ -201,7 +212,8 @@ func parseOPF(data []byte) (*parsedOPF, error) {
 						res.metadata.Publisher = elemText
 					}
 				case "date":
-					if res.metadata.PublishDate == "" && elemText != "" {
+					event := opfAttribute(currentAttrs, "event")
+					if res.metadata.PublishDate == "" && (event == "" || event == "publication") {
 						res.metadata.PublishDate = elemText
 					}
 				case "description":
@@ -232,6 +244,7 @@ func parseOPF(data []byte) (*parsedOPF, error) {
 			} else if inManifest && local == "manifest" {
 				inManifest = false
 			}
+			depth--
 
 		case xml.CharData:
 			if inMetadata && currentElem != "" {
@@ -256,29 +269,24 @@ func parseOPF(data []byte) (*parsedOPF, error) {
 	}
 
 	// 1. Title and Subtitle resolution
+	var fallbackTitle string
 	for _, t := range titles {
-		if t.ID != "" {
-			if props, ok := refinesProperty[t.ID]; ok {
-				if props["title-type"] == "subtitle" {
-					res.metadata.Subtitle = t.Value
-					continue
-				}
-				if props["title-type"] == "main" && res.metadata.Title == "" {
-					res.metadata.Title = t.Value
-					continue
-				}
-			}
-		}
-		if res.metadata.Title == "" && t.Value != "" {
-			res.metadata.Title = t.Value
+		switch refinesProperty[t.ID]["title-type"] {
+		case "subtitle":
+			res.metadata.Subtitle = t.Value
+		case "main":
+			res.metadata.Title = cmp.Or(res.metadata.Title, t.Value)
+		default:
+			fallbackTitle = cmp.Or(fallbackTitle, t.Value)
 		}
 	}
+	res.metadata.Title = cmp.Or(res.metadata.Title, fallbackTitle)
 
 	// Check Calibre / extra subtitle meta
 	for _, m := range metaTags {
 		if m.Name == "calibre:subtitle" && m.Content != "" {
 			res.metadata.Subtitle = m.Content
-		} else if m.Property == "subtitle" && m.TextValue != "" {
+		} else if m.Property == "subtitle" && m.Refines == "" && m.TextValue != "" {
 			res.metadata.Subtitle = m.TextValue
 		}
 	}
@@ -342,33 +350,29 @@ func parseOPF(data []byte) (*parsedOPF, error) {
 	}
 
 	// EPUB 3 belongs-to-collection check:
+	foundCollection := false
 	for _, m := range metaTags {
 		if m.Property == "belongs-to-collection" {
 			seriesVal := m.TextValue
 			if seriesVal == "" {
 				seriesVal = m.Content
 			}
-			if seriesVal != "" {
-				isSeries := true
-				if m.ID != "" {
-					if props, ok := refinesProperty[m.ID]; ok {
-						if ct, exists := props["collection-type"]; exists && ct != "series" {
-							isSeries = false
-						}
-						if gp, exists := props["group-position"]; exists && res.metadata.SeriesIndex == nil {
-							if f, err := strconv.ParseFloat(gp, 64); err == nil {
-								res.metadata.SeriesIndex = &f
-							}
-						}
-					}
-				}
-				if isSeries && res.metadata.Series == "" {
+			props := refinesProperty[m.ID]
+			kind := props["collection-type"]
+			if !foundCollection && seriesVal != "" && m.Refines == "" && (kind == "" || kind == "series") {
+				foundCollection = true
+				if res.metadata.Series == "" {
 					res.metadata.Series = seriesVal
+				}
+				if pos, err := strconv.ParseFloat(props["group-position"], 64); err == nil && res.metadata.SeriesIndex == nil {
+					res.metadata.SeriesIndex = &pos
 				}
 			}
 		}
-		// Also support simple EPUB 3 group-position without refines
-		if m.Property == "group-position" && res.metadata.SeriesIndex == nil {
+	}
+	// Also support simple EPUB 3 group-position without refines.
+	for _, m := range metaTags {
+		if m.Property == "group-position" && m.Refines == "" && res.metadata.SeriesIndex == nil {
 			val := m.TextValue
 			if val == "" {
 				val = m.Content
@@ -380,6 +384,7 @@ func parseOPF(data []byte) (*parsedOPF, error) {
 	}
 
 	// 4. Identifiers and ISBN13
+	var packageISBN string
 	for _, id := range identifiers {
 		val := id.Value
 		if val == "" {
@@ -399,20 +404,18 @@ func parseOPF(data []byte) (*parsedOPF, error) {
 			}
 		}
 		// Check for ISBN
-		cleanVal := reOnlyDigits.ReplaceAllString(val, "")
-		if scheme == "isbn" || scheme == "isbn13" || strings.Contains(strings.ToLower(id.ID), "isbn") {
-			if res.metadata.ISBN13 == "" && len(cleanVal) == 13 {
-				res.metadata.ISBN13 = cleanVal
-			}
+		if scheme != "uri" && (scheme == "isbn" || scheme == "isbn13" || strings.Contains(strings.ToLower(id.ID), "isbn")) {
 			if _, exists := res.metadata.Identifiers["isbn"]; !exists {
 				res.metadata.Identifiers["isbn"] = val
 			}
-		} else if len(cleanVal) == 13 && (strings.HasPrefix(cleanVal, "978") || strings.HasPrefix(cleanVal, "979")) {
-			if res.metadata.ISBN13 == "" {
-				res.metadata.ISBN13 = cleanVal
-			}
+		}
+		if id.ID != "" && id.ID == res.uniqueIdentifier {
+			packageISBN = isbn13(id)
+		} else if res.metadata.ISBN13 == "" {
+			res.metadata.ISBN13 = isbn13(id)
 		}
 	}
+	res.metadata.ISBN13 = cmp.Or(res.metadata.ISBN13, packageISBN)
 
 	// 5. ExtraMeta collection (preserve unknown tags)
 	for _, m := range metaTags {
@@ -442,6 +445,26 @@ func parseOPF(data []byte) (*parsedOPF, error) {
 	return res, nil
 }
 
+func opfAttribute(attrs []xml.Attr, name string) string {
+	for _, attr := range attrs {
+		if attr.Name.Local == name && (attr.Name.Space == "" || attr.Name.Space == opfNamespace) {
+			return attr.Value
+		}
+	}
+	return ""
+}
+
+func isbn13(id rawIdentifier) string {
+	digits := reOnlyDigits.ReplaceAllString(id.Value, "")
+	scheme := strings.ToLower(id.Scheme)
+	if scheme != "uri" && len(digits) == 13 &&
+		(scheme == "isbn" || scheme == "isbn13" || strings.Contains(strings.ToLower(id.ID), "isbn") ||
+			strings.HasPrefix(digits, "978") || strings.HasPrefix(digits, "979")) {
+		return digits
+	}
+	return ""
+}
+
 func escapeXML(s string) string {
 	var buf bytes.Buffer
 	if err := xml.EscapeText(&buf, []byte(s)); err != nil {
@@ -461,34 +484,42 @@ func formatFloat(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
-// serializeMetadataXML constructs a complete, valid <metadata> XML block.
+// serializeMetadataXML constructs a complete <metadata> XML block.
 func serializeMetadataXML(m Metadata, uniqueIDAttr string, coverMetaID string, isEPUB3 bool) []byte {
 	var buf bytes.Buffer
-	buf.WriteString("  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:opf=\"http://www.idpf.org/2007/opf\">\n")
+	buf.WriteString("  <metadata xmlns=\"http://www.idpf.org/2007/opf\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:opf=\"http://www.idpf.org/2007/opf\">\n")
 
 	// Title
 	if m.Title != "" {
-		buf.WriteString(fmt.Sprintf("    <dc:title id=\"title-main\">%s</dc:title>\n", escapeXML(m.Title)))
-		buf.WriteString("    <meta refines=\"#title-main\" property=\"title-type\">main</meta>\n")
+		fmt.Fprintf(&buf, "    <dc:title id=\"title-main\">%s</dc:title>\n", escapeXML(m.Title))
+		if isEPUB3 {
+			buf.WriteString("    <meta refines=\"#title-main\" property=\"title-type\">main</meta>\n")
+		}
 	}
 
 	// Subtitle
 	if m.Subtitle != "" {
-		buf.WriteString(fmt.Sprintf("    <dc:title id=\"title-sub\">%s</dc:title>\n", escapeXML(m.Subtitle)))
-		buf.WriteString("    <meta refines=\"#title-sub\" property=\"title-type\">subtitle</meta>\n")
+		if isEPUB3 {
+			fmt.Fprintf(&buf, "    <dc:title id=\"title-sub\">%s</dc:title>\n", escapeXML(m.Subtitle))
+			buf.WriteString("    <meta refines=\"#title-sub\" property=\"title-type\">subtitle</meta>\n")
+		}
 		buf.WriteString(fmt.Sprintf("    <meta name=\"calibre:subtitle\" content=\"%s\"/>\n", escapeXMLAttr(m.Subtitle)))
 	}
 
 	// Authors
 	for i, author := range m.Authors {
 		creatorID := fmt.Sprintf("creator-%d", i+1)
-		if i == 0 && m.SortAuthor != "" {
-			buf.WriteString(fmt.Sprintf("    <dc:creator id=\"%s\" opf:role=\"aut\" opf:file-as=\"%s\">%s</dc:creator>\n", creatorID, escapeXMLAttr(m.SortAuthor), escapeXML(author)))
-			buf.WriteString(fmt.Sprintf("    <meta refines=\"#%s\" property=\"role\" scheme=\"marc:relators\">aut</meta>\n", creatorID))
-			buf.WriteString(fmt.Sprintf("    <meta refines=\"#%s\" property=\"file-as\">%s</meta>\n", creatorID, escapeXML(m.SortAuthor)))
+		sortAuthor := i == 0 && m.SortAuthor != ""
+		if isEPUB3 {
+			fmt.Fprintf(&buf, "    <dc:creator id=\"%s\">%s</dc:creator>\n", creatorID, escapeXML(author))
+			fmt.Fprintf(&buf, "    <meta refines=\"#%s\" property=\"role\" scheme=\"marc:relators\">aut</meta>\n", creatorID)
+			if sortAuthor {
+				fmt.Fprintf(&buf, "    <meta refines=\"#%s\" property=\"file-as\">%s</meta>\n", creatorID, escapeXML(m.SortAuthor))
+			}
+		} else if sortAuthor {
+			fmt.Fprintf(&buf, "    <dc:creator id=\"%s\" opf:role=\"aut\" opf:file-as=\"%s\">%s</dc:creator>\n", creatorID, escapeXMLAttr(m.SortAuthor), escapeXML(author))
 		} else {
-			buf.WriteString(fmt.Sprintf("    <dc:creator id=\"%s\" opf:role=\"aut\">%s</dc:creator>\n", creatorID, escapeXML(author)))
-			buf.WriteString(fmt.Sprintf("    <meta refines=\"#%s\" property=\"role\" scheme=\"marc:relators\">aut</meta>\n", creatorID))
+			fmt.Fprintf(&buf, "    <dc:creator id=\"%s\" opf:role=\"aut\">%s</dc:creator>\n", creatorID, escapeXML(author))
 		}
 	}
 
@@ -514,38 +545,24 @@ func serializeMetadataXML(m Metadata, uniqueIDAttr string, coverMetaID string, i
 		buf.WriteString(fmt.Sprintf("    <dc:description>%s</dc:description>\n", escapeXML(m.Description)))
 	}
 
-	// Identifiers
-	writtenIDs := make(map[string]bool)
-
-	// Ensure unique-identifier attribute matches an identifier
-	if uniqueIDAttr != "" {
-		val := ""
-		if v, ok := m.Identifiers[uniqueIDAttr]; ok && v != "" {
-			val = v
-		} else if v, ok := m.Identifiers["uuid"]; ok && v != "" {
-			val = v
-		} else if v, ok := m.Identifiers["isbn"]; ok && v != "" {
-			val = v
-		} else if m.ISBN13 != "" {
-			val = m.ISBN13
-		} else {
-			val = "urn:uuid:01234567-89ab-cdef-0123-456789abcdef"
-		}
-		buf.WriteString(fmt.Sprintf("    <dc:identifier id=\"%s\">%s</dc:identifier>\n", escapeXMLAttr(uniqueIDAttr), escapeXML(val)))
-		writtenIDs[uniqueIDAttr] = true
-	}
-
-	// ISBN13
+	// Explicit edition ISBN comes before the package identifiers.
 	if m.ISBN13 != "" {
-		buf.WriteString(fmt.Sprintf("    <dc:identifier opf:scheme=\"ISBN\">%s</dc:identifier>\n", escapeXML(m.ISBN13)))
+		if isEPUB3 {
+			fmt.Fprintf(&buf, "    <dc:identifier>urn:isbn:%s</dc:identifier>\n", escapeXML(m.ISBN13))
+		} else {
+			fmt.Fprintf(&buf, "    <dc:identifier opf:scheme=\"ISBN\">%s</dc:identifier>\n", escapeXML(m.ISBN13))
+		}
 	}
 
-	// Other identifiers
+	if uniqueIDAttr != "" {
+		val := cmp.Or(m.Identifiers[uniqueIDAttr], m.Identifiers["uuid"], m.Identifiers["isbn"], m.ISBN13,
+			"urn:uuid:01234567-89ab-cdef-0123-456789abcdef")
+		fmt.Fprintf(&buf, "    <dc:identifier id=\"%s\">%s</dc:identifier>\n", escapeXMLAttr(uniqueIDAttr), escapeXML(val))
+	}
 	for k, v := range m.Identifiers {
-		if writtenIDs[k] {
-			continue
+		if k != uniqueIDAttr {
+			fmt.Fprintf(&buf, "    <dc:identifier opf:scheme=\"%s\" id=\"id-%s\">%s</dc:identifier>\n", escapeXMLAttr(k), escapeXMLAttr(k), escapeXML(v))
 		}
-		buf.WriteString(fmt.Sprintf("    <dc:identifier opf:scheme=\"%s\" id=\"id-%s\">%s</dc:identifier>\n", escapeXMLAttr(k), escapeXMLAttr(k), escapeXML(v)))
 	}
 
 	// Series (EPUB 2 / Calibre & EPUB 3 belongs-to-collection)
@@ -554,10 +571,12 @@ func serializeMetadataXML(m Metadata, uniqueIDAttr string, coverMetaID string, i
 		if m.SeriesIndex != nil {
 			buf.WriteString(fmt.Sprintf("    <meta name=\"calibre:series_index\" content=\"%s\"/>\n", formatFloat(*m.SeriesIndex)))
 		}
-		buf.WriteString(fmt.Sprintf("    <meta property=\"belongs-to-collection\" id=\"series-c01\">%s</meta>\n", escapeXML(m.Series)))
-		buf.WriteString("    <meta refines=\"#series-c01\" property=\"collection-type\">series</meta>\n")
-		if m.SeriesIndex != nil {
-			buf.WriteString(fmt.Sprintf("    <meta refines=\"#series-c01\" property=\"group-position\">%s</meta>\n", formatFloat(*m.SeriesIndex)))
+		if isEPUB3 {
+			fmt.Fprintf(&buf, "    <meta property=\"belongs-to-collection\" id=\"series-c01\">%s</meta>\n", escapeXML(m.Series))
+			buf.WriteString("    <meta refines=\"#series-c01\" property=\"collection-type\">series</meta>\n")
+			if m.SeriesIndex != nil {
+				fmt.Fprintf(&buf, "    <meta refines=\"#series-c01\" property=\"group-position\">%s</meta>\n", formatFloat(*m.SeriesIndex))
+			}
 		}
 	}
 
@@ -576,6 +595,10 @@ func serializeMetadataXML(m Metadata, uniqueIDAttr string, coverMetaID string, i
 	for k, v := range m.ExtraMeta {
 		if k == "dcterms:modified" {
 			hasModified = true
+			if isEPUB3 {
+				buf.WriteString(fmt.Sprintf("    <meta property=\"dcterms:modified\">%s</meta>\n", escapeXML(v)))
+				continue
+			}
 		}
 		if strings.Contains(k, ":") {
 			buf.WriteString(fmt.Sprintf("    <meta name=\"%s\" content=\"%s\"/>\n", escapeXMLAttr(k), escapeXMLAttr(v)))

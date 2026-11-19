@@ -28,87 +28,9 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	slog.DebugContext(ctx, "metadata discovery search started")
-	cfg, err := config.Load(ctx, s.db, s.baseOverrides)
-	if err != nil {
-		http.Error(w, "Unable to load metadata settings", 500)
-		return
-	}
-	client := s.prowlarrHTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: 20 * time.Second}
-	}
-	var providers []metadata.Provider
-	if cfg.Settings.OpenLibraryEnabled {
-		providers = append(providers, metadata.NewOpenLibraryProvider(metadata.WithOpenLibraryClient(client)))
-	}
-	if cfg.Settings.HardcoverAPIKey != "" {
-		providers = append(providers, metadata.NewHardcoverProvider(cfg.Settings.HardcoverAPIKey, metadata.WithHardcoverClient(client)))
-	}
-	books := []metadata.BookMetadata{}
-	success := false
-	for _, p := range providers {
-		found, err := p.Search(ctx, query)
-		logMetadataResponse(ctx, p.Name(), len(found), err)
-		if err == nil {
-			success = true
-			books = append(found, books...)
-		}
-	}
-	if cfg.Settings.GoogleBooksAPIKey != "" {
-		values := url.Values{"q": {query}, "maxResults": {"20"}}
-		values.Set("key", cfg.Settings.GoogleBooksAPIKey)
-		req, _ := http.NewRequestWithContext(ctx, "GET", "https://www.googleapis.com/books/v1/volumes?"+values.Encode(), nil)
-		resp, err := client.Do(req)
-		if err != nil {
-			logMetadataResponse(ctx, "Google Books", 0, err)
-		} else {
-			defer resp.Body.Close()
-			if resp.StatusCode == 200 {
-				var result struct {
-					Items []struct {
-						VolumeInfo struct {
-							Title               string
-							Subtitle            string
-							Authors             []string
-							PublishedDate       string
-							Description         string
-							Language            string
-							ImageLinks          struct{ Thumbnail string }
-							IndustryIdentifiers []struct {
-								Type       string
-								Identifier string
-							}
-						}
-					}
-				}
-				err := json.NewDecoder(resp.Body).Decode(&result)
-				logMetadataResponse(ctx, "Google Books", len(result.Items), err)
-				if err == nil {
-					success = true
-					for _, item := range result.Items {
-						v := item.VolumeInfo
-						year := 0
-						fmt.Sscanf(v.PublishedDate, "%d", &year)
-						book := metadata.BookMetadata{
-							Title: v.Title, Subtitle: v.Subtitle, Authors: v.Authors, Year: year,
-							Description: v.Description, Language: v.Language, CoverURL: v.ImageLinks.Thumbnail,
-						}
-						for _, identifier := range v.IndustryIdentifiers {
-							if identifier.Type == "ISBN_13" {
-								book.ISBN13 = identifier.Identifier
-								break
-							}
-						}
-						books = append(books, book)
-					}
-				}
-			} else {
-				slog.WarnContext(ctx, "metadata provider returned an error status", "provider", "Google Books", "status", resp.StatusCode)
-			}
-		}
-	}
-	if !success {
-		http.Error(w, "Metadata sources unavailable. Try again shortly.", 502)
+	books, status := s.searchMetadata(ctx, query)
+	if status != 0 {
+		http.Error(w, http.StatusText(status), status)
 		return
 	}
 	type match struct {
@@ -273,6 +195,102 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	slog.DebugContext(ctx, "metadata discovery search completed", "results", len(out))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out)
+}
+
+func (s *Server) searchMetadata(ctx context.Context, query string) ([]metadata.BookMetadata, int) {
+	cfg, err := config.Load(ctx, s.db, s.baseOverrides)
+	if err != nil {
+		return nil, http.StatusInternalServerError
+	}
+	client := s.prowlarrHTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 20 * time.Second}
+	}
+	var providers []metadata.Provider
+	if cfg.Settings.OpenLibraryEnabled {
+		providers = append(providers, metadata.NewOpenLibraryProvider(metadata.WithOpenLibraryClient(client)))
+	}
+	if cfg.Settings.HardcoverAPIKey != "" {
+		providers = append(providers, metadata.NewHardcoverProvider(cfg.Settings.HardcoverAPIKey, metadata.WithHardcoverClient(client)))
+	}
+	var books []metadata.BookMetadata
+	success := false
+	for _, p := range providers {
+		found, err := p.Search(ctx, query)
+		logMetadataResponse(ctx, p.Name(), len(found), err)
+		if err == nil {
+			success = true
+			books = append(found, books...)
+		}
+	}
+	if cfg.Settings.GoogleBooksAPIKey != "" {
+		found, err := searchGoogleBooks(ctx, client, query, cfg.Settings.GoogleBooksAPIKey)
+		logMetadataResponse(ctx, "Google Books", len(found), err)
+		if err == nil {
+			success = true
+			books = append(books, found...)
+		}
+	}
+	if !success {
+		return nil, http.StatusBadGateway
+	}
+	return books, 0
+}
+
+func searchGoogleBooks(ctx context.Context, client *http.Client, query, key string) ([]metadata.BookMetadata, error) {
+	values := url.Values{"q": {query}, "maxResults": {"20"}, "key": {key}}
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://www.googleapis.com/books/v1/volumes?"+values.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected Google Books status %d", resp.StatusCode)
+	}
+	var result struct {
+		Items []struct {
+			VolumeInfo struct {
+				Title               string
+				Subtitle            string
+				Authors             []string
+				PublishedDate       string
+				Publisher           string
+				Description         string
+				Language            string
+				ImageLinks          struct{ Thumbnail string }
+				IndustryIdentifiers []struct {
+					Type       string
+					Identifier string
+				}
+			}
+		}
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	books := make([]metadata.BookMetadata, 0, len(result.Items))
+	for _, item := range result.Items {
+		v := item.VolumeInfo
+		year := 0
+		fmt.Sscanf(v.PublishedDate, "%d", &year)
+		book := metadata.BookMetadata{
+			Title: v.Title, Subtitle: v.Subtitle, Authors: v.Authors, Year: year,
+			PublishDate: v.PublishedDate, Publisher: v.Publisher,
+			Description: v.Description, Language: v.Language, CoverURL: v.ImageLinks.Thumbnail,
+		}
+		for _, identifier := range v.IndustryIdentifiers {
+			if identifier.Type == "ISBN_13" {
+				book.ISBN13 = identifier.Identifier
+				break
+			}
+		}
+		books = append(books, book)
+	}
+	return books, nil
 }
 
 func logMetadataResponse(ctx context.Context, provider string, count int, err error) {

@@ -68,6 +68,7 @@ type Server struct {
 	displayVersion     string
 	baseOverrides      config.Overrides
 	settingsMu         sync.Mutex
+	metadataRepairMu   sync.Mutex
 	db                 *database.DB
 	sessionMgr         *auth.SessionManager
 	maintenance        config.MaintenanceConfig
