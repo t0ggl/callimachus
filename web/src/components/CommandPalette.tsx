@@ -48,21 +48,25 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
+  const resultsRef = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
   const closePalette = () => {
     previousFocus.current?.focus({ preventScroll: true });
     onClose();
   };
 
-  // Focus input when opened and listen for global Escape
+  // Focus input when opened
   useEffect(() => {
     if (isOpen) {
       setQuery('');
       setSelectedIndex(0);
       previousFocus.current = document.activeElement as HTMLElement | null;
       inputRef.current?.focus();
+    }
+  }, [isOpen]);
 
+  useEffect(() => {
+    if (isOpen) {
       const handleGlobalKeyDown = (e: KeyboardEvent) => {
         if (e.key === 'Escape' && !selectedSeries && !(e.target as HTMLElement | null)?.closest?.('dialog')) {
           e.preventDefault();
@@ -178,6 +182,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   useEffect(() => {
     setSelectedIndex(0);
+    if (resultsRef.current) resultsRef.current.scrollTop = 0;
   }, [query]);
 
   // Handle keyboard events inside command palette
@@ -283,21 +288,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto divide-y divide-zinc-800">
-          {onSubmitRequest && query.trim() && (
-            <div className="p-4">
-              <DiscoveryResults
-                query={query}
-                defaultSearchFormat={defaultSearchFormat}
-                onSubmitRequest={onSubmitRequest}
-                onOpenBook={onOpenBook}
-              />
-            </div>
-          )}
-
+        <div ref={resultsRef} className="flex-1 overflow-y-auto divide-y divide-zinc-800">
           {/* Results List */}
           <div
-            ref={listRef}
             data-testid="command-palette-list"
             className="p-2 space-y-1"
           >
@@ -307,7 +300,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               </div>
             )}
             {items.length === 0 ? (
-              <div className="py-10 text-center text-sm text-zinc-400">
+              <div className="px-3 py-2 text-sm text-zinc-400">
                 No library items or commands match &ldquo;{query}&rdquo;.
               </div>
             ) : (
@@ -365,6 +358,16 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               })
             )}
           </div>
+          {onSubmitRequest && query.trim() && (
+            <div className="p-4">
+              <DiscoveryResults
+                query={query}
+                defaultSearchFormat={defaultSearchFormat}
+                onSubmitRequest={onSubmitRequest}
+                onOpenBook={onOpenBook}
+              />
+            </div>
+          )}
         </div>
 
         {/* Footer shortcuts */}

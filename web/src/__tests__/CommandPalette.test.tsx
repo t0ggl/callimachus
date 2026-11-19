@@ -183,8 +183,10 @@ describe('CommandPalette Component', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('supports keyboard navigation across palette items and renders DiscoveryResults when searching', async () => {
+  it('puts matching library books and commands before Discovery and keeps them keyboard-selectable', async () => {
     const onNavigate = vi.fn();
+    const onSelectBook = vi.fn();
+    const localBook = { ...testBooks[0], title: 'The Library at Mount Char' };
     const onSubmitRequest = vi.fn().mockResolvedValue(undefined);
     const user = userEvent.setup({ delay: null });
 
@@ -193,7 +195,7 @@ describe('CommandPalette Component', () => {
       vi.fn().mockResolvedValue({
         ok: true,
         json: async () => [
-          { title: 'Hyperion', authors: ['Dan Simmons'], year: 1989 },
+          { title: 'The Midnight Library', authors: ['Matt Haig'], year: 2020 },
         ],
       }),
     );
@@ -202,23 +204,28 @@ describe('CommandPalette Component', () => {
       <CommandPalette
         isOpen={true}
         onClose={vi.fn()}
-        books={testBooks}
+        books={[localBook]}
         authors={testAuthors}
         series={testSeries}
         onNavigate={onNavigate}
-        onSelectBook={vi.fn()}
+        onSelectBook={onSelectBook}
         onSubmitRequest={onSubmitRequest}
       />
     );
 
     const input = screen.getByTestId('command-palette-input');
-    await user.type(input, 'Hyperion');
+    await user.type(input, 'Library');
 
-    expect(await screen.findByRole('button', { name: 'Add Hyperion' })).toBeInTheDocument();
-    expect(screen.getByText('Library & Commands')).toBeInTheDocument();
+    const addButton = await screen.findByRole('button', { name: 'Add The Midnight Library' });
+    for (const item of [screen.getByText(localBook.title), screen.getByText('Library')]) {
+      expect(item.compareDocumentPosition(addButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
 
-    await user.click(screen.getByRole('button', { name: 'Add Hyperion' }));
-    expect(onSubmitRequest).toHaveBeenCalledWith('Hyperion', 'Dan Simmons', 'ebook', 1989, expect.any(Object));
+    await user.keyboard('{ArrowDown}{Enter}');
+    expect(onSelectBook).toHaveBeenCalledWith(localBook);
+
+    await user.click(addButton);
+    expect(onSubmitRequest).toHaveBeenCalledWith('The Midnight Library', 'Matt Haig', 'ebook', 2020, expect.any(Object));
 
     await user.clear(input);
     input.focus();
