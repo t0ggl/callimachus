@@ -9,10 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/t0ggl/callimachus/pkg/auth"
+	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/indexers"
+	"github.com/t0ggl/callimachus/pkg/metadata"
 	"github.com/t0ggl/callimachus/pkg/requests"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
@@ -110,7 +113,85 @@ func TestUpgradeDispatchRetainsLibraryEdition(t *testing.T) {
 	}
 }
 
-func TestLibraryScanPurgesHiddenPathEntriesAndOrphans(t *testing.T) {
+func TestLibraryScanPreservesBookMatchedByCatalogMonitor(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	root := t.TempDir()
+	c := catalog.New(db)
+	hiddenDir := filepath.Join(root, ".agents")
+	if err := os.Mkdir(hiddenDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reproduce legacy scanner output before hidden paths were skipped.
+	scanned := &catalog.ScannedBook{Author: "Author", Series: "Series", Title: "Book"}
+	for _, format := range []string{"epub", "m4b"} {
+		path := filepath.Join(hiddenDir, "Book."+format)
+		if err := os.WriteFile(path, []byte("fixture"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		scanned.MediaFiles = append(scanned.MediaFiles, catalog.ScannedMediaFile{Path: path, Format: format, FileSize: 7})
+	}
+	imported, err := c.ReconcileScannedBook(ctx, scanned)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Discovery reuses the scanner's rows. The book has no request, queue,
+	// or availability check because it already appears to be owned.
+	discoveries := 0
+	m := &catalog.Monitor{
+		DB: db,
+		Discover: func(context.Context, string, string) ([]metadata.BookMetadata, error) {
+			discoveries++
+			return []metadata.BookMetadata{{Authors: []string{"Author"}, Series: "Series", Title: "Book"}}, nil
+		},
+		Search: func(context.Context, string) error {
+			t.Fatal("monitor should skip availability checks for an owned book")
+			return nil
+		},
+	}
+	if err := m.SetMonitored(ctx, "series", imported.Series.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Tick(ctx, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	if discoveries != 1 {
+		t.Fatalf("got %d discovery calls, want 1", discoveries)
+	}
+	// Disabling series discovery clears its timestamp and leaves book monitoring enabled.
+	if err := m.SetMonitored(ctx, "series", imported.Series.ID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{db: db, baseOverrides: config.Overrides{LibraryRoot: root}}
+	for range 2 {
+		if _, err := s.scanLibrary(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	book, err := c.GetBookByID(ctx, imported.Book.ID)
+	if err != nil || !book.Monitored {
+		t.Fatalf("monitored book was not preserved: %+v, %v", book, err)
+	}
+	for _, asset := range imported.MediaAssets {
+		edition, err := c.GetEditionByID(ctx, asset.EditionID)
+		if err != nil || !edition.Monitored || edition.BookID != book.ID {
+			t.Fatalf("monitored edition was not preserved: %+v, %v", edition, err)
+		}
+		assets, err := c.GetMediaAssetsByEditionID(ctx, edition.ID)
+		if err != nil || len(assets) != 0 {
+			t.Fatalf("hidden inventory was not purged: %+v, %v", assets, err)
+		}
+		if _, err := os.Stat(asset.FilePath); err != nil {
+			t.Fatalf("hidden file was not preserved: %v", err)
+		}
+	}
+}
+
+func TestLibraryScanPurgesHiddenPathAssetsWithoutDeletingCatalog(t *testing.T) {
+	t.Setenv(config.EnvVarName(config.KeyHardcoverAPIKey), "")
 	db := testutil.NewTestDB(t)
 	root := filepath.Join(t.TempDir(), ".library")
 	outsideRoot := t.TempDir()
@@ -204,21 +285,16 @@ func TestLibraryScanPurgesHiddenPathEntriesAndOrphans(t *testing.T) {
 		}
 	}
 
-	// Purged hidden assets and solely orphaned editions/books/authors/series
+	// Purged hidden inventory. Legacy catalog provenance is unknown.
 	assertExists("media_assets", "m-red-rising", false)
-	assertExists("book_editions", "e-red-rising", false)
-	assertExists("books", "b-red-rising", false)
-	assertExists("authors", "a-agents", false)
-	assertExists("series", "s-red-rising", false)
+	assertExists("book_editions", "e-red-rising", true)
+	assertExists("books", "b-red-rising", true)
+	assertExists("authors", "a-agents", true)
+	assertExists("series", "s-red-rising", true)
 
 	assertExists("media_assets", "m-hidden-vol", false)
-	assertExists("book_editions", "e-hidden-vol", false)
-	assertExists("books", "b-hidden-vol", false)
-	assertExists("series", "s-hidden", false)
 
 	assertExists("media_assets", "m-dotfile", false)
-	assertExists("book_editions", "e-dotfile", false)
-	assertExists("books", "b-dotfile", false)
 
 	// Preserved visible, unowned, requested, monitored, and outside entries
 	assertExists("authors", "a-visible", true)
@@ -250,16 +326,13 @@ func TestLibraryScanPurgesHiddenPathEntriesAndOrphans(t *testing.T) {
 	for _, b := range apiBooks {
 		bookTitles[b.Title] = b.State
 	}
-	for _, forbidden := range []string{"Red Rising #1", "Hidden Volume", "Dotfile Book"} {
-		if _, ok := bookTitles[forbidden]; ok {
-			t.Errorf("/api/books still contains hidden entry %q", forbidden)
+	for _, title := range []string{"Red Rising #1", "Hidden Volume", "Dotfile Book", "Unowned Book"} {
+		if state := bookTitles[title]; state != "Not in library" {
+			t.Errorf("%s state = %q, want Not in library", title, state)
 		}
 	}
 	if bookTitles["Visible Book"] != "In library" {
 		t.Errorf("Visible Book state = %q, want In library", bookTitles["Visible Book"])
-	}
-	if bookTitles["Unowned Book"] != "Not in library" {
-		t.Errorf("Unowned Book state = %q, want Not in library", bookTitles["Unowned Book"])
 	}
 	if bookTitles["Requested Book"] != "Searching" {
 		t.Errorf("Requested Book state = %q, want Searching", bookTitles["Requested Book"])
@@ -276,10 +349,7 @@ func TestLibraryScanPurgesHiddenPathEntriesAndOrphans(t *testing.T) {
 	for _, a := range apiAuthors {
 		authorNames[a.Name] = true
 	}
-	if authorNames[".agents"] {
-		t.Errorf("/api/authors still contains .agents")
-	}
-	for _, want := range []string{"Visible Author", "Unowned Author", "Requested Author", "Monitored Author"} {
+	for _, want := range []string{".agents", "Visible Author", "Unowned Author", "Requested Author", "Monitored Author"} {
 		if !authorNames[want] {
 			t.Errorf("/api/authors missing %q", want)
 		}
@@ -296,12 +366,7 @@ func TestLibraryScanPurgesHiddenPathEntriesAndOrphans(t *testing.T) {
 	for _, sr := range apiSeries {
 		seriesTitles[sr.Title] = true
 	}
-	for _, forbidden := range []string{"Red Rising", ".hidden"} {
-		if seriesTitles[forbidden] {
-			t.Errorf("/api/series still contains %q", forbidden)
-		}
-	}
-	for _, want := range []string{"Visible Series", "Unowned Series", "Monitored Series"} {
+	for _, want := range []string{"Red Rising", ".hidden", "Visible Series", "Unowned Series", "Monitored Series"} {
 		if !seriesTitles[want] {
 			t.Errorf("/api/series missing %q", want)
 		}
@@ -314,7 +379,7 @@ func TestLibraryScanPurgesHiddenPathEntriesAndOrphans(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &srResp); err != nil {
 		t.Fatal(err)
 	}
-	if len(srResp.Books) != 0 || srResp.OwnedCount != 0 {
+	if len(srResp.Books) != 1 || len(srResp.Books[0].Formats) != 0 || srResp.OwnedCount != 0 {
 		t.Errorf("Red Rising series still has books=%+v owned=%d", srResp.Books, srResp.OwnedCount)
 	}
 
@@ -325,28 +390,17 @@ func TestLibraryScanPurgesHiddenPathEntriesAndOrphans(t *testing.T) {
 		w = httptest.NewRecorder()
 		s.handleCatalogEntity(w, httptest.NewRequest("GET", url, nil))
 		var entityResp struct {
-			Books []json.RawMessage `json:"books"`
+			Books []struct {
+				State   string   `json:"state"`
+				Formats []string `json:"formats"`
+			} `json:"books"`
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &entityResp); err != nil {
 			t.Fatal(err)
 		}
-		if len(entityResp.Books) != 0 {
-			t.Errorf("%s still returned %d books", url, len(entityResp.Books))
+		if len(entityResp.Books) != 1 || entityResp.Books[0].State != "Not in library" || len(entityResp.Books[0].Formats) != 0 {
+			t.Errorf("%s books = %+v, want one unowned book with no formats", url, entityResp.Books)
 		}
-	}
-
-	w = httptest.NewRecorder()
-	s.handleCatalogEntity(w, httptest.NewRequest("GET", "/api/catalog/entity?kind=authors&name=Visible+Author", nil))
-	var visibleEntity struct {
-		Books []struct {
-			Title string `json:"title"`
-		} `json:"books"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &visibleEntity); err != nil {
-		t.Fatal(err)
-	}
-	if len(visibleEntity.Books) != 1 || visibleEntity.Books[0].Title != "Visible Book" {
-		t.Errorf("Visible Author books = %+v, want only Visible Book", visibleEntity.Books)
 	}
 }
 
@@ -417,7 +471,7 @@ func TestLibraryScanPreservesSharedCatalogEntriesWhenPurgingHiddenAsset(t *testi
 	}
 
 	assertCount("SELECT COUNT(*) FROM media_assets WHERE id='m-shared-epub'", 0)
-	assertCount("SELECT COUNT(*) FROM book_editions WHERE id='e-shared-epub'", 0)
+	assertCount("SELECT COUNT(*) FROM book_editions WHERE id='e-shared-epub'", 1)
 	assertCount("SELECT COUNT(*) FROM media_assets WHERE id='m-shared-m4b'", 1)
 	assertCount("SELECT COUNT(*) FROM book_editions WHERE id='e-shared-m4b'", 1)
 	assertCount("SELECT COUNT(*) FROM books WHERE id='b-shared'", 1)
@@ -425,7 +479,7 @@ func TestLibraryScanPreservesSharedCatalogEntriesWhenPurgingHiddenAsset(t *testi
 	assertCount("SELECT COUNT(*) FROM series WHERE id='s-shared'", 1)
 
 	assertCount("SELECT COUNT(*) FROM media_assets WHERE id='m-mixed-hidden'", 0)
-	assertCount("SELECT COUNT(*) FROM books WHERE id='b-mixed-hidden'", 0)
+	assertCount("SELECT COUNT(*) FROM books WHERE id='b-mixed-hidden'", 1)
 	assertCount("SELECT COUNT(*) FROM books WHERE id='b-mixed-unowned'", 1)
 	assertCount("SELECT COUNT(*) FROM authors WHERE id='a-mixed'", 1)
 	assertCount("SELECT COUNT(*) FROM series WHERE id='s-mixed'", 1)
