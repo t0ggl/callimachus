@@ -1,9 +1,11 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { CommandPalette } from '../components/CommandPalette';
 import { App } from '../App';
 import { testBooks, testAuthors, testSeries } from './testFixtures';
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe('CommandPalette Component', () => {
   it('renders nothing when isOpen is false', () => {
@@ -148,6 +150,80 @@ describe('CommandPalette Component', () => {
     expect(settingsItem).toBeInTheDocument();
     await user.click(settingsItem);
     expect(onNavigate).toHaveBeenCalledWith('settings');
+  });
+
+  it('provides accessible Close and Clear search controls in the header', async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup({ delay: null });
+
+    render(
+      <CommandPalette
+        isOpen={true}
+        onClose={onClose}
+        books={testBooks}
+        authors={testAuthors}
+        series={testSeries}
+        onNavigate={vi.fn()}
+        onSelectBook={vi.fn()}
+      />
+    );
+
+    const input = screen.getByTestId('command-palette-input');
+    expect(screen.queryByRole('button', { name: 'Clear search' })).not.toBeInTheDocument();
+
+    await user.type(input, 'Obsidian');
+    const clearBtn = screen.getByRole('button', { name: 'Clear search' });
+    await user.click(clearBtn);
+    expect(input).toHaveValue('');
+    expect(input).toHaveFocus();
+    expect(screen.queryByRole('button', { name: 'Clear search' })).not.toBeInTheDocument();
+
+    const closeBtn = screen.getByRole('button', { name: 'Close search' });
+    await user.click(closeBtn);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('supports keyboard navigation across palette items and renders DiscoveryResults when searching', async () => {
+    const onNavigate = vi.fn();
+    const onSubmitRequest = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup({ delay: null });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => [
+          { title: 'Hyperion', authors: ['Dan Simmons'], year: 1989 },
+        ],
+      }),
+    );
+
+    render(
+      <CommandPalette
+        isOpen={true}
+        onClose={vi.fn()}
+        books={testBooks}
+        authors={testAuthors}
+        series={testSeries}
+        onNavigate={onNavigate}
+        onSelectBook={vi.fn()}
+        onSubmitRequest={onSubmitRequest}
+      />
+    );
+
+    const input = screen.getByTestId('command-palette-input');
+    await user.type(input, 'Hyperion');
+
+    expect(await screen.findByRole('button', { name: 'Add Hyperion' })).toBeInTheDocument();
+    expect(screen.getByText('Library & Commands')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Add Hyperion' }));
+    expect(onSubmitRequest).toHaveBeenCalledWith('Hyperion', 'Dan Simmons', 'both', 1989);
+
+    await user.clear(input);
+    input.focus();
+    await user.keyboard('{ArrowDown}{Enter}');
+    expect(onNavigate).toHaveBeenCalledWith('activity');
   });
 });
 
