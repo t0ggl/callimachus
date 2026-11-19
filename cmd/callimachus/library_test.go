@@ -109,3 +109,330 @@ func TestUpgradeDispatchRetainsLibraryEdition(t *testing.T) {
 		t.Fatalf("edition %s %v", edition, err)
 	}
 }
+
+func TestLibraryScanPurgesHiddenPathEntriesAndOrphans(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	root := filepath.Join(t.TempDir(), ".library")
+	outsideRoot := t.TempDir()
+
+	visiblePath := filepath.Join(root, "Visible Author", "Visible Series", "Visible Book (2024)", "Visible Book (2024) - Visible Author.epub")
+	hiddenAgentsPath := filepath.Join(root, ".agents", "Red Rising #1", "Red Rising #1.epub")
+	hiddenSubdirPath := filepath.Join(root, "Visible Author", ".hidden", "Hidden Volume (2024)", "Hidden Volume (2024) - Visible Author.epub")
+	hiddenDotfilePath := filepath.Join(root, "Visible Author", "Visible Series", "Visible Book (2024)", "._Visible Book (2024) - Visible Author.epub")
+	hiddenRequestedPath := filepath.Join(root, ".agents", "Requested Book", "Requested Book.epub")
+	outsideAgentsPath := filepath.Join(outsideRoot, ".agents", "Outside.epub")
+
+	for _, p := range []string{visiblePath, hiddenAgentsPath, hiddenSubdirPath, hiddenDotfilePath, hiddenRequestedPath, outsideAgentsPath} {
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("fixture"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stmts := []struct {
+		query string
+		args  []any
+	}{
+		// Stale pre-#53 .agents entry
+		{`INSERT INTO authors(id,name,sort_name) VALUES('a-agents','.agents','.agents')`, nil},
+		{`INSERT INTO series(id,title) VALUES('s-red-rising','Red Rising')`, nil},
+		{`INSERT INTO books(id,author_id,series_id,series_index,title,monitored) VALUES('b-red-rising','a-agents','s-red-rising',1,'Red Rising #1',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-red-rising','b-red-rising','epub',1)`, nil},
+		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-red-rising','e-red-rising',?,7,1)`, []any{hiddenAgentsPath}},
+
+		// Visible author + nested hidden directory
+		{`INSERT INTO authors(id,name,sort_name) VALUES('a-visible','Visible Author','Author, Visible')`, nil},
+		{`INSERT INTO series(id,title) VALUES('s-hidden','.hidden')`, nil},
+		{`INSERT INTO books(id,author_id,series_id,title,monitored) VALUES('b-hidden-vol','a-visible','s-hidden','Hidden Volume',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-hidden-vol','b-hidden-vol','epub',1)`, nil},
+		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-hidden-vol','e-hidden-vol',?,7,1)`, []any{hiddenSubdirPath}},
+
+		// Dotfile under visible directory
+		{`INSERT INTO books(id,author_id,title,monitored) VALUES('b-dotfile','a-visible','Dotfile Book',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-dotfile','b-dotfile','epub',1)`, nil},
+		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-dotfile','e-dotfile',?,7,1)`, []any{hiddenDotfilePath}},
+
+		// Legitimate unowned entry
+		{`INSERT INTO authors(id,name,sort_name) VALUES('a-unowned','Unowned Author','Author, Unowned')`, nil},
+		{`INSERT INTO series(id,title) VALUES('s-unowned','Unowned Series')`, nil},
+		{`INSERT INTO books(id,author_id,series_id,title,monitored) VALUES('b-unowned','a-unowned','s-unowned','Unowned Book',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-unowned','b-unowned','epub',1)`, nil},
+
+		// Legitimate requested entry that also happened to have a hidden-path asset
+		{`INSERT INTO users(id,username,email,role,auth_source) VALUES('u-req','requester','req@example.test','requester','local')`, nil},
+		{`INSERT INTO authors(id,name,sort_name) VALUES('a-req','Requested Author','Author, Requested')`, nil},
+		{`INSERT INTO books(id,author_id,title,monitored) VALUES('b-req','a-req','Requested Book',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-req','b-req','epub',1)`, nil},
+		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-req','e-req',?,7,1)`, []any{hiddenRequestedPath}},
+		{`INSERT INTO book_requests(id,user_id,book_id,title,author,format,status) VALUES(1,'u-req','b-req','Requested Book','Requested Author','epub','searching')`, nil},
+
+		// Legitimate monitored author & series with no owned files
+		{`INSERT INTO authors(id,name,sort_name,monitored) VALUES('a-mon','Monitored Author','Author, Monitored',1)`, nil},
+		{`INSERT INTO series(id,title,monitored) VALUES('s-mon','Monitored Series',1)`, nil},
+
+		// Asset outside LibraryRoot must remain untouched
+		{`INSERT INTO authors(id,name,sort_name) VALUES('a-outside','Outside Author','Author, Outside')`, nil},
+		{`INSERT INTO books(id,author_id,title,monitored) VALUES('b-outside','a-outside','Outside Book',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-outside','b-outside','epub',1)`, nil},
+		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-outside','e-outside',?,7,1)`, []any{outsideAgentsPath}},
+	}
+	for _, st := range stmts {
+		if _, err := db.Exec(st.query, st.args...); err != nil {
+			t.Fatalf("seed %s: %v", st.query, err)
+		}
+	}
+
+	s := &Server{db: db, baseOverrides: config.Overrides{LibraryRoot: root}}
+	n, err := s.scanLibrary(context.Background())
+	if err != nil {
+		t.Fatalf("scanLibrary failed: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 visible scanned book, got %d", n)
+	}
+
+	assertExists := func(table, id string, want bool) {
+		t.Helper()
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM "+table+" WHERE id=?", id).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if (count > 0) != want {
+			t.Errorf("%s id=%q exists=%v, want %v", table, id, count > 0, want)
+		}
+	}
+
+	// Purged hidden assets and solely orphaned editions/books/authors/series
+	assertExists("media_assets", "m-red-rising", false)
+	assertExists("book_editions", "e-red-rising", false)
+	assertExists("books", "b-red-rising", false)
+	assertExists("authors", "a-agents", false)
+	assertExists("series", "s-red-rising", false)
+
+	assertExists("media_assets", "m-hidden-vol", false)
+	assertExists("book_editions", "e-hidden-vol", false)
+	assertExists("books", "b-hidden-vol", false)
+	assertExists("series", "s-hidden", false)
+
+	assertExists("media_assets", "m-dotfile", false)
+	assertExists("book_editions", "e-dotfile", false)
+	assertExists("books", "b-dotfile", false)
+
+	// Preserved visible, unowned, requested, monitored, and outside entries
+	assertExists("authors", "a-visible", true)
+	assertExists("authors", "a-unowned", true)
+	assertExists("series", "s-unowned", true)
+	assertExists("books", "b-unowned", true)
+	assertExists("book_editions", "e-unowned", true)
+
+	assertExists("media_assets", "m-req", false)
+	assertExists("book_editions", "e-req", true)
+	assertExists("books", "b-req", true)
+	assertExists("authors", "a-req", true)
+
+	assertExists("authors", "a-mon", true)
+	assertExists("series", "s-mon", true)
+	assertExists("media_assets", "m-outside", true)
+
+	// Check library view (/api/books)
+	w := httptest.NewRecorder()
+	s.handleGetBooks(w, httptest.NewRequest("GET", "/api/books", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("/api/books status %d: %s", w.Code, w.Body)
+	}
+	var apiBooks []APIBook
+	if err := json.Unmarshal(w.Body.Bytes(), &apiBooks); err != nil {
+		t.Fatal(err)
+	}
+	bookTitles := make(map[string]string, len(apiBooks))
+	for _, b := range apiBooks {
+		bookTitles[b.Title] = b.State
+	}
+	for _, forbidden := range []string{"Red Rising #1", "Hidden Volume", "Dotfile Book"} {
+		if _, ok := bookTitles[forbidden]; ok {
+			t.Errorf("/api/books still contains hidden entry %q", forbidden)
+		}
+	}
+	if bookTitles["Visible Book"] != "In library" {
+		t.Errorf("Visible Book state = %q, want In library", bookTitles["Visible Book"])
+	}
+	if bookTitles["Unowned Book"] != "Not in library" {
+		t.Errorf("Unowned Book state = %q, want Not in library", bookTitles["Unowned Book"])
+	}
+	if bookTitles["Requested Book"] != "Searching" {
+		t.Errorf("Requested Book state = %q, want Searching", bookTitles["Requested Book"])
+	}
+
+	// Check author list view (/api/authors)
+	w = httptest.NewRecorder()
+	s.handleGetAuthors(w, httptest.NewRequest("GET", "/api/authors", nil))
+	var apiAuthors []APIAuthor
+	if err := json.Unmarshal(w.Body.Bytes(), &apiAuthors); err != nil {
+		t.Fatal(err)
+	}
+	authorNames := make(map[string]bool, len(apiAuthors))
+	for _, a := range apiAuthors {
+		authorNames[a.Name] = true
+	}
+	if authorNames[".agents"] {
+		t.Errorf("/api/authors still contains .agents")
+	}
+	for _, want := range []string{"Visible Author", "Unowned Author", "Requested Author", "Monitored Author"} {
+		if !authorNames[want] {
+			t.Errorf("/api/authors missing %q", want)
+		}
+	}
+
+	// Check series list view (/api/series)
+	w = httptest.NewRecorder()
+	s.handleGetSeries(w, httptest.NewRequest("GET", "/api/series", nil))
+	var apiSeries []APISeries
+	if err := json.Unmarshal(w.Body.Bytes(), &apiSeries); err != nil {
+		t.Fatal(err)
+	}
+	seriesTitles := make(map[string]bool, len(apiSeries))
+	for _, sr := range apiSeries {
+		seriesTitles[sr.Title] = true
+	}
+	for _, forbidden := range []string{"Red Rising", ".hidden"} {
+		if seriesTitles[forbidden] {
+			t.Errorf("/api/series still contains %q", forbidden)
+		}
+	}
+	for _, want := range []string{"Visible Series", "Unowned Series", "Monitored Series"} {
+		if !seriesTitles[want] {
+			t.Errorf("/api/series missing %q", want)
+		}
+	}
+
+	// Check series detail view (/api/series/books and /api/catalog/entity)
+	w = httptest.NewRecorder()
+	s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=Red+Rising", nil))
+	var srResp seriesBooksResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &srResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(srResp.Books) != 0 || srResp.OwnedCount != 0 {
+		t.Errorf("Red Rising series still has books=%+v owned=%d", srResp.Books, srResp.OwnedCount)
+	}
+
+	for _, url := range []string{
+		"/api/catalog/entity?kind=authors&name=.agents",
+		"/api/catalog/entity?kind=series&name=Red+Rising",
+	} {
+		w = httptest.NewRecorder()
+		s.handleCatalogEntity(w, httptest.NewRequest("GET", url, nil))
+		var entityResp struct {
+			Books []json.RawMessage `json:"books"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &entityResp); err != nil {
+			t.Fatal(err)
+		}
+		if len(entityResp.Books) != 0 {
+			t.Errorf("%s still returned %d books", url, len(entityResp.Books))
+		}
+	}
+
+	w = httptest.NewRecorder()
+	s.handleCatalogEntity(w, httptest.NewRequest("GET", "/api/catalog/entity?kind=authors&name=Visible+Author", nil))
+	var visibleEntity struct {
+		Books []struct {
+			Title string `json:"title"`
+		} `json:"books"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &visibleEntity); err != nil {
+		t.Fatal(err)
+	}
+	if len(visibleEntity.Books) != 1 || visibleEntity.Books[0].Title != "Visible Book" {
+		t.Errorf("Visible Author books = %+v, want only Visible Book", visibleEntity.Books)
+	}
+}
+
+func TestLibraryScanPreservesSharedCatalogEntriesWhenPurgingHiddenAsset(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	root := t.TempDir()
+
+	sharedM4B := filepath.Join(root, "Shared Author", "Shared Series", "Shared Book (2024)", "Shared Book (2024) - Shared Author.m4b")
+	sharedHiddenEPUB := filepath.Join(root, ".agents", "Shared Book.epub")
+	mixedHiddenEPUB := filepath.Join(root, ".agents", "Hidden In Mixed.epub")
+	queuedHiddenEPUB := filepath.Join(root, ".agents", "Queued Book.epub")
+	for _, p := range []string{sharedM4B, sharedHiddenEPUB, mixedHiddenEPUB, queuedHiddenEPUB} {
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("fixture"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stmts := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO authors(id,name,sort_name) VALUES('a-shared','Shared Author','Author, Shared')`, nil},
+		{`INSERT INTO series(id,title) VALUES('s-shared','Shared Series')`, nil},
+		{`INSERT INTO books(id,author_id,series_id,title,monitored) VALUES('b-shared','a-shared','s-shared','Shared Book',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-shared-m4b','b-shared','m4b',1)`, nil},
+		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-shared-m4b','e-shared-m4b',?,7,1)`, []any{sharedM4B}},
+		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-shared-epub','b-shared','epub',1)`, nil},
+		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-shared-epub','e-shared-epub',?,7,1)`, []any{sharedHiddenEPUB}},
+
+		{`INSERT INTO authors(id,name,sort_name) VALUES('a-mixed','Mixed Author','Author, Mixed')`, nil},
+		{`INSERT INTO series(id,title) VALUES('s-mixed','Mixed Series')`, nil},
+		{`INSERT INTO books(id,author_id,series_id,title,monitored) VALUES('b-mixed-hidden','a-mixed','s-mixed','Hidden In Mixed',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-mixed-hidden','b-mixed-hidden','epub',1)`, nil},
+		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-mixed-hidden','e-mixed-hidden',?,7,1)`, []any{mixedHiddenEPUB}},
+		{`INSERT INTO books(id,author_id,series_id,title,monitored) VALUES('b-mixed-unowned','a-mixed','s-mixed','Unowned In Mixed',1)`, nil},
+
+		// Queued edition & pending catalog action must not be deleted
+		{`INSERT INTO authors(id,name,sort_name) VALUES('a-queued','Queued Author','Author, Queued')`, nil},
+		{`INSERT INTO catalog_actions(kind,entity_id,action) VALUES('authors','a-queued','discover')`, nil},
+		{`INSERT INTO books(id,author_id,title,monitored) VALUES('b-queued','a-queued','Queued Book',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-queued','b-queued','epub',1)`, nil},
+		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-queued','e-queued',?,7,1)`, []any{queuedHiddenEPUB}},
+		{`INSERT INTO download_queue(id,edition_id,download_client_task_id,title,protocol,status) VALUES('dq-1','e-queued','task-1','Queued Book','torrent','downloading')`, nil},
+	}
+	for _, st := range stmts {
+		if _, err := db.Exec(st.query, st.args...); err != nil {
+			t.Fatalf("seed %s: %v", st.query, err)
+		}
+	}
+
+	s := &Server{db: db, baseOverrides: config.Overrides{LibraryRoot: root}}
+	if _, err := s.scanLibrary(context.Background()); err != nil {
+		t.Fatalf("scanLibrary failed: %v", err)
+	}
+
+	assertCount := func(query string, want int) {
+		t.Helper()
+		var got int
+		if err := db.QueryRow(query).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("%s = %d, want %d", query, got, want)
+		}
+	}
+
+	assertCount("SELECT COUNT(*) FROM media_assets WHERE id='m-shared-epub'", 0)
+	assertCount("SELECT COUNT(*) FROM book_editions WHERE id='e-shared-epub'", 0)
+	assertCount("SELECT COUNT(*) FROM media_assets WHERE id='m-shared-m4b'", 1)
+	assertCount("SELECT COUNT(*) FROM book_editions WHERE id='e-shared-m4b'", 1)
+	assertCount("SELECT COUNT(*) FROM books WHERE id='b-shared'", 1)
+	assertCount("SELECT COUNT(*) FROM authors WHERE id='a-shared'", 1)
+	assertCount("SELECT COUNT(*) FROM series WHERE id='s-shared'", 1)
+
+	assertCount("SELECT COUNT(*) FROM media_assets WHERE id='m-mixed-hidden'", 0)
+	assertCount("SELECT COUNT(*) FROM books WHERE id='b-mixed-hidden'", 0)
+	assertCount("SELECT COUNT(*) FROM books WHERE id='b-mixed-unowned'", 1)
+	assertCount("SELECT COUNT(*) FROM authors WHERE id='a-mixed'", 1)
+	assertCount("SELECT COUNT(*) FROM series WHERE id='s-mixed'", 1)
+
+	assertCount("SELECT COUNT(*) FROM media_assets WHERE id='m-queued'", 0)
+	assertCount("SELECT COUNT(*) FROM book_editions WHERE id='e-queued'", 1)
+	assertCount("SELECT COUNT(*) FROM books WHERE id='b-queued'", 1)
+	assertCount("SELECT COUNT(*) FROM authors WHERE id='a-queued'", 1)
+	assertCount("SELECT COUNT(*) FROM download_queue WHERE id='dq-1' AND edition_id='e-queued'", 1)
+}
