@@ -180,26 +180,41 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid entity", 400)
 		return
 	}
-	column, bookColumn := "name", "author_id"
+	column, bookColumn, photo := "name", "author_id", "COALESCE(photo_url,'')"
 	if kind == "series" {
-		column, bookColumn = "title", "series_id"
+		column, bookColumn, photo = "title", "series_id", "''"
 	}
-	var id string
+	var id, photoURL string
 	var monitored bool
-	err := s.db.QueryRowContext(r.Context(), "SELECT id,monitored FROM "+kind+" WHERE "+column+"=? COLLATE NOCASE", name).Scan(&id, &monitored)
+	err := s.db.QueryRowContext(r.Context(), "SELECT id,monitored,"+photo+" FROM "+kind+" WHERE "+column+"=? COLLATE NOCASE", name).Scan(&id, &monitored, &photoURL)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		http.Error(w, "Unable to load entity", 500)
 		return
 	}
 	type entry struct {
-		ID    string   `json:"id"`
-		Title string   `json:"title"`
-		Date  string   `json:"releaseDate"`
-		Index *float64 `json:"seriesIndex"`
-		State string   `json:"state"`
+		ID          string   `json:"id"`
+		Title       string   `json:"title"`
+		Subtitle    string   `json:"subtitle,omitempty"`
+		AuthorName  string   `json:"authorName"`
+		SeriesTitle string   `json:"seriesTitle,omitempty"`
+		Date        string   `json:"releaseDate"`
+		Index       *float64 `json:"seriesIndex"`
+		State       string   `json:"state"`
+		Formats     []string `json:"formats"`
+		CoverURL    string   `json:"coverUrl,omitempty"`
 	}
 	books := []entry{}
-	rows, err := s.db.QueryContext(r.Context(), `SELECT b.id,b.title,COALESCE(b.release_date,''),b.series_index,`+bookAvailabilitySQL+` FROM books b WHERE b.`+bookColumn+`=? ORDER BY b.series_index,b.release_date,b.title`, id)
+	rows, err := s.db.QueryContext(r.Context(), `
+		SELECT b.id, b.title, COALESCE(b.subtitle,''), a.name, COALESCE(s.title,''),
+		       COALESCE(b.release_date,''), b.series_index, `+bookAvailabilitySQL+`,
+		       (SELECT json_group_array(format) FROM (
+		           SELECT DISTINCT UPPER(e.format) AS format
+		           FROM book_editions e JOIN media_assets m ON m.edition_id=e.id
+		           WHERE e.book_id=b.id AND e.format<>'' ORDER BY format
+		       ))
+		FROM books b JOIN authors a ON a.id=b.author_id LEFT JOIN series s ON s.id=b.series_id
+		WHERE b.`+bookColumn+`=?
+		ORDER BY b.series_index IS NULL, b.series_index, b.release_date, b.title, b.id`, id)
 	if err != nil {
 		http.Error(w, "Unable to load books", 500)
 		return
@@ -208,7 +223,12 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 	today := time.Now().UTC().Format(time.DateOnly)
 	for rows.Next() {
 		var b entry
-		if err = rows.Scan(&b.ID, &b.Title, &b.Date, &b.Index, &b.State); err != nil {
+		var formats string
+		if err := rows.Scan(&b.ID, &b.Title, &b.Subtitle, &b.AuthorName, &b.SeriesTitle, &b.Date, &b.Index, &b.State, &formats); err != nil {
+			http.Error(w, "Unable to load books", 500)
+			return
+		}
+		if err := json.Unmarshal([]byte(formats), &b.Formats); err != nil {
 			http.Error(w, "Unable to load books", 500)
 			return
 		}
@@ -219,6 +239,11 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to load books", 500)
 		return
 	}
+	for i := range books {
+		if len(books[i].Formats) > 0 && s.bookCover(r, books[i].ID) != "" {
+			books[i].CoverURL = "/api/books/" + books[i].ID + "/cover"
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"monitored": monitored, "books": books})
+	json.NewEncoder(w).Encode(map[string]any{"monitored": monitored, "photoUrl": photoURL, "books": books})
 }

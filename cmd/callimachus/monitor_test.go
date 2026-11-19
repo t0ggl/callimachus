@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/indexers"
 	"github.com/t0ggl/callimachus/pkg/requests"
 	"github.com/t0ggl/callimachus/pkg/testutil"
@@ -84,6 +88,58 @@ func TestCatalogMonitoringRejectsInvalidInput(t *testing.T) {
 	s.handleCatalogMonitor(w, httptest.NewRequest("PUT", "/api/catalog/entity?kind=authors&name=x", strings.NewReader(`{}`)))
 	if w.Code != 400 {
 		t.Fatalf("missing toggle: %d", w.Code)
+	}
+}
+
+func TestCatalogEntityBookMetadata(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "book.jpg"), []byte("cover fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{
+		`INSERT INTO authors(id,name,sort_name,photo_url) VALUES('a','Author','Author','https://example.invalid/author.jpg')`,
+		`INSERT INTO series(id,title) VALUES('s','Sequence')`,
+		`INSERT INTO books(id,author_id,series_id,series_index,title,subtitle,release_date)
+		  VALUES ('owned','a','s',0.5,'Book','A prequel','2020-05-10'), ('upcoming','a','s',1,'Next Book',NULL,'2099-05-10')`,
+		`INSERT INTO book_editions(id,book_id,format)
+		  VALUES ('ebook','owned','epub'), ('audio','owned','m4b'), ('empty','owned','pdf'), ('future','upcoming','epub')`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO media_assets(id,edition_id,file_path,file_size)
+		VALUES ('one','ebook',?,1), ('two','audio',?,1), ('three','audio',?,1)`,
+		filepath.Join(root, "book.epub"), filepath.Join(root, "book.m4b"), filepath.Join(root, "extra.m4b")); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{db: db, baseOverrides: config.Overrides{LibraryRoot: root}}
+	for _, tc := range []struct{ query, photoURL string }{
+		{"kind=authors&name=Author", "https://example.invalid/author.jpg"},
+		{"kind=series&name=Sequence", ""},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			s.handleCatalogEntity(w, httptest.NewRequest("GET", "/api/catalog/entity?"+tc.query, nil))
+			var data struct {
+				PhotoURL string
+				Books    []APIBook
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil || w.Code != 200 || len(data.Books) != 2 || data.PhotoURL != tc.photoURL {
+				t.Fatalf("entity response: %d %s (%v)", w.Code, w.Body, err)
+			}
+			owned, upcoming := data.Books[0], data.Books[1]
+			if owned.ID != "owned" || owned.State != "In library" || owned.SeriesIndex == nil || *owned.SeriesIndex != 0.5 ||
+				owned.Subtitle != "A prequel" || owned.AuthorName != "Author" || owned.SeriesTitle != "Sequence" ||
+				owned.CoverURL != "/api/books/owned/cover" || !slices.Equal(owned.Formats, []string{"EPUB", "M4B"}) {
+				t.Errorf("owned book: %+v", owned)
+			}
+			if upcoming.ID != "upcoming" || upcoming.State != "Scheduled" || upcoming.Formats == nil || len(upcoming.Formats) != 0 || upcoming.CoverURL != "" {
+				t.Errorf("upcoming book: %+v", upcoming)
+			}
+		})
 	}
 }
 
