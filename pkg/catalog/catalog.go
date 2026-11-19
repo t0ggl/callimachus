@@ -239,16 +239,28 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 
 	existing, err := c.GetBookByAuthorAndTitle(ctx, book.AuthorID, cleanTitle)
 	if err == nil {
-		// Update missing series info if newly provided
-		if (existing.SeriesID == nil && book.SeriesID != nil) ||
-			(existing.ReleaseDate == nil && book.ReleaseDate != nil) {
+		// Update missing series info or strictly more precise release date if newly provided.
+		var mergedRelease *string
+		if book.ReleaseDate != nil {
+			if cand := metadata.NormalizeReleaseDate(*book.ReleaseDate, 0); cand != "" {
+				cur := ""
+				if existing.ReleaseDate != nil {
+					cur = *existing.ReleaseDate
+				}
+				normCur := metadata.NormalizeReleaseDate(cur, 0)
+				if normCur == "" || (len(cand) > len(normCur) && strings.HasPrefix(cand, normCur)) {
+					mergedRelease = &cand
+				}
+			}
+		}
+		if (existing.SeriesID == nil && book.SeriesID != nil) || mergedRelease != nil {
 			if book.SeriesID != nil {
 				existing.SeriesID = book.SeriesID
 				existing.SeriesIndex = book.SeriesIndex
 				existing.SeriesIndexDisplay = book.SeriesIndexDisplay
 			}
-			if book.ReleaseDate != nil {
-				existing.ReleaseDate = book.ReleaseDate
+			if mergedRelease != nil {
+				existing.ReleaseDate = mergedRelease
 			}
 			_ = c.UpsertBook(ctx, existing)
 		}
@@ -264,6 +276,13 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 	book.Title = cleanTitle
 	if book.Genres == "" {
 		book.Genres = "[]"
+	}
+	if book.ReleaseDate != nil {
+		if norm := metadata.NormalizeReleaseDate(*book.ReleaseDate, 0); norm != "" {
+			book.ReleaseDate = &norm
+		} else {
+			book.ReleaseDate = nil
+		}
 	}
 	book.Monitored = true
 
@@ -558,7 +577,7 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 	}
 	var releaseDate *string
 	if book.Year > 0 {
-		d := fmt.Sprintf("%04d-01-01", book.Year)
+		d := fmt.Sprintf("%04d", book.Year)
 		releaseDate = &d
 	}
 
@@ -628,7 +647,13 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 		edition.Language = book.Language
 	}
 	if releaseDate != nil {
-		edition.PublicationDate = releaseDate
+		existingPub := ""
+		if edition.PublicationDate != nil {
+			existingPub = *edition.PublicationDate
+		}
+		if merged := metadata.MergeReleaseDate(existingPub, *releaseDate); merged != "" {
+			edition.PublicationDate = &merged
+		}
 	}
 	if err := c.UpsertEdition(ctx, edition); err != nil {
 		return nil, err
@@ -729,7 +754,7 @@ func (c *Catalog) ReconcileScannedBook(ctx context.Context, sb *ScannedBook) (*I
 	}
 	var releaseDate *string
 	if sb.Year > 0 {
-		d := fmt.Sprintf("%04d-01-01", sb.Year)
+		d := fmt.Sprintf("%04d", sb.Year)
 		releaseDate = &d
 	}
 	var indexDisplay *string
@@ -909,7 +934,7 @@ func (c *Catalog) IngestConvertedAudio(ctx context.Context, editionID, source, t
 	if err != nil {
 		return err
 	}
-	fmt.Sscanf(date, "%d", &b.Year)
+	b.Year = metadata.ReleaseYear(date, 0)
 	root := filepath.Dir(filepath.Dir(filepath.Dir(target)))
 	if b.Series != "" {
 		root = filepath.Dir(root)

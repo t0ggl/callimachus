@@ -202,7 +202,7 @@ func (s *RequestService) insertRequests(ctx context.Context, input CreateRequest
 		}
 		book := &database.Book{AuthorID: author.ID, Title: input.Title, Synopsis: &input.Synopsis, SeriesIndex: input.SeriesIndex}
 		if input.Year > 0 {
-			date := fmt.Sprintf("%04d-01-01", input.Year)
+			date := fmt.Sprintf("%04d", input.Year)
 			book.ReleaseDate = &date
 		}
 		if strings.TrimSpace(input.Series) != "" {

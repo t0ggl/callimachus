@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -209,6 +210,10 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	for i := range books {
+		books[i].PublishDate = cmp.Or(metadata.NormalizeReleaseDate(books[i].PublishDate, books[i].Year), books[i].PublishDate)
+	}
+
 	sort.SliceStable(books, func(i, j int) bool {
 		ai, bi := books[i].SeriesIndex, books[j].SeriesIndex
 		if ai != nil && bi != nil {
@@ -238,7 +243,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 	for i := range books {
 		b := &books[i]
 		b.SeriesIndexDisplay = catalog.SeriesIndexLabel(b.SeriesIndex)
-		b.State = bookAvailability(b.State, b.PublishDate, today)
+		b.State = bookAvailability(b.State, b.PublishDate, b.Year, today)
 		if b.State == "In library" {
 			ownedCount++
 		}
@@ -325,8 +330,8 @@ func mergeSeriesBookMetadata(local *seriesBook, remote metadata.BookMetadata) {
 	if local.CoverURL == "" && remote.CoverURL != "" {
 		local.CoverURL = remote.CoverURL
 	}
-	if remote.PublishDate != "" {
-		local.PublishDate = remote.PublishDate
+	if remoteDate := metadata.NormalizeReleaseDate(remote.PublishDate, remote.Year); remoteDate != "" {
+		local.PublishDate = metadata.MergeReleaseDate(local.PublishDate, remoteDate)
 	}
 	if remote.Year > 0 {
 		local.Year = remote.Year

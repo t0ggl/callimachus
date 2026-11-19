@@ -209,3 +209,66 @@ func TestCatalogMonitoringRespectsOpenLibraryEnabled(t *testing.T) {
 		}
 	})
 }
+
+func TestCatalogEntityFutureDateFormats(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	if _, err := db.Exec(`INSERT INTO settings(key,value) VALUES('hardcover_api_key','mock')`); err != nil {
+		t.Fatal(err)
+	}
+	mt := testutil.NewMockTransportForTest(t)
+	mt.RegisterString("/v1/graphql", 200, `{"data":{"books":[
+		{"id":1,"title":"Full Future","release_date":"2099-05-10","release_year":2099,"contributions":[{"author":{"name":"Author"}}]},
+		{"id":2,"title":"Month Future","release_date":"2099-06","release_year":2099,"contributions":[{"author":{"name":"Author"}}]},
+		{"id":3,"title":"Month Name Future","release_date":"August 2099","release_year":2099,"contributions":[{"author":{"name":"Author"}}]},
+		{"id":4,"title":"Year Only Future","release_date":"","release_year":2099,"contributions":[{"author":{"name":"Author"}}]}
+	]}}`, nil)
+
+	s := &Server{db: db, prowlarrHTTPClient: mt.Client(), monitorWake: make(chan struct{}, 1)}
+	s.acquisition = s.newAcquisition()
+	s.catalogMonitor = s.newCatalogMonitor()
+
+	w := httptest.NewRecorder()
+	s.handleCatalogMonitor(w, httptest.NewRequest("PUT", "/api/catalog/entity?kind=authors&name=Author", strings.NewReader(`{"monitored":true}`)))
+	if w.Code != 204 {
+		t.Fatalf("monitor: %d %s", w.Code, w.Body.String())
+	}
+	if err := s.catalogMonitor.Tick(context.Background(), time.Date(2028, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO books(id,author_id,title,release_date,monitored)
+		SELECT 'past', id, 'Past Book', '2020-01-15', 0 FROM authors WHERE name='Author'`); err != nil {
+		t.Fatal(err)
+	}
+
+	w = httptest.NewRecorder()
+	s.handleCatalogEntity(w, httptest.NewRequest("GET", "/api/catalog/entity?kind=authors&name=Author", nil))
+	if w.Code != 200 {
+		t.Fatalf("entity: %d %s", w.Code, w.Body.String())
+	}
+	var data struct {
+		Books []APIBook `json:"books"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]APIBook{}
+	for _, b := range data.Books {
+		got[b.Title] = b
+	}
+	expected := map[string]struct{ date, state string }{
+		"Full Future":       {"2099-05-10", "Scheduled"},
+		"Month Future":      {"2099-06", "Scheduled"},
+		"Month Name Future": {"2099-08", "Scheduled"},
+		"Year Only Future":  {"2099", "Scheduled"},
+		"Past Book":         {"2020-01-15", "Not in library"},
+	}
+	for title, want := range expected {
+		b, ok := got[title]
+		if !ok {
+			t.Fatalf("missing book %q", title)
+		}
+		if b.ReleaseDate != want.date || b.State != want.state {
+			t.Errorf("%s: got (%q, %q), want (%q, %q)", title, b.ReleaseDate, b.State, want.date, want.state)
+		}
+	}
+}
