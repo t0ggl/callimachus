@@ -311,4 +311,41 @@ describe('book discovery', () => {
     expect(add).toHaveBeenCalledWith('Hyperion', 'Dan Simmons', 'both', 1989, expect.any(Object));
     expect(await screen.findByRole('button', { name: 'Added Hyperion' })).toBeDisabled();
   });
+
+  it('hides Format and Add controls for guests while keeping library and series reading-order navigation', async () => {
+    const user = userEvent.setup({ delay: null });
+    const open = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (String(url).startsWith('/api/discover?')) {
+          return Response.json([
+            { title: 'Owned Book', authors: ['Author A'], year: 2020, library_book_id: 'owned-1' },
+            { title: 'Unowned Book', authors: ['Author A'], year: 2024, series: 'Guest Saga', series_index: 2 },
+          ]);
+        }
+        if (String(url).startsWith('/api/series/books?')) {
+          return Response.json({
+            title: 'Guest Saga',
+            complete: true,
+            books: [
+              { title: 'Unowned Book', authors: ['Author A'], series_index: 2, description: 'Guest readable blurb', state: 'Not in library', formats: [] },
+            ],
+          });
+        }
+        throw new Error(`Unexpected fetch ${url}`);
+      }),
+    );
+
+    render(<DiscoveryResults query="Guest" canManage={false} canRequest={false} onSubmitRequest={vi.fn()} onOpenBook={open} />);
+
+    expect(await screen.findByText('Unowned Book')).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Format' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Add Unowned Book/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /In Library/ })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Guest Saga' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
+  });
 });

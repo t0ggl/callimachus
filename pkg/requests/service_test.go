@@ -306,6 +306,61 @@ func TestService_PreventDuplicateActiveRequests(t *testing.T) {
 	}
 }
 
+func TestService_ManualOnlyDoesNotEnableMonitoring(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	createTestUser(t, db, "user-1", "synthetic-user1", auth.RoleRequester)
+	manualBookID := "book-manual"
+	autoBookID := "book-auto"
+	createTestBook(t, db, manualBookID, "Manual Search Book")
+	createTestBook(t, db, autoBookID, "Auto Monitored Book")
+
+	svc := NewRequestService(db)
+
+	if _, err := svc.SubmitRequest(ctx, CreateRequestInput{
+		UserID:     "user-1",
+		BookID:     &manualBookID,
+		Title:      "Manual Search Book",
+		Author:     "Synthetic Test Author",
+		Format:     FormatEPUB,
+		ManualOnly: true,
+	}); err != nil {
+		t.Fatalf("manual SubmitRequest failed: %v", err)
+	}
+
+	var bookMonitored, editionMonitored bool
+	if err := db.QueryRowContext(ctx, `SELECT monitored FROM books WHERE id='book-manual'`).Scan(&bookMonitored); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT monitored FROM book_editions WHERE id='book-manual-epub'`).Scan(&editionMonitored); err != nil {
+		t.Fatal(err)
+	}
+	if bookMonitored || editionMonitored {
+		t.Fatalf("expected ManualOnly request not to monitor book or edition, got book=%v edition=%v", bookMonitored, editionMonitored)
+	}
+
+	if _, err := svc.SubmitRequest(ctx, CreateRequestInput{
+		UserID: "user-1",
+		BookID: &autoBookID,
+		Title:  "Auto Monitored Book",
+		Author: "Synthetic Test Author",
+		Format: FormatEPUB,
+	}); err != nil {
+		t.Fatalf("standard SubmitRequest failed: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT monitored FROM books WHERE id='book-auto'`).Scan(&bookMonitored); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT monitored FROM book_editions WHERE id='book-auto-epub'`).Scan(&editionMonitored); err != nil {
+		t.Fatal(err)
+	}
+	if !bookMonitored || !editionMonitored {
+		t.Fatalf("expected standard request to monitor book and edition, got book=%v edition=%v", bookMonitored, editionMonitored)
+	}
+}
+
 func TestService_YearOnlyReleaseDatePrecision(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	if _, err := db.Exec(`INSERT INTO users (id, username, email, role) VALUES ('u1', 'u1', 'u1@example.test', 'user')`); err != nil {

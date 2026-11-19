@@ -49,7 +49,7 @@ it('opens an audiobook request on its own tab and can switch using its book cont
     throw new Error(`Unexpected fetch ${url}`);
   });
   vi.stubGlobal('fetch', fetchMock);
-  render(<ActivityView {...base} requests={[ebook, audio]} />);
+  render(<ActivityView {...base} canRequest requests={[ebook, audio]} />);
   const row = within(screen.getByTestId('activity-request:2'));
   await user.click(row.getByRole('button', { name: 'Manual Search for Dune' }));
   const dialog = within(screen.getByRole('dialog', { name: 'Download Options' }));
@@ -65,7 +65,7 @@ it('shows two format rows and cancels or removes them independently', async () =
   const user = userEvent.setup({ delay: null });
   const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
   vi.stubGlobal('fetch', fetchMock);
-  render(<ActivityView {...base} requests={[ebook, audio]} downloads={[
+  render(<ActivityView {...base} canRequest requests={[ebook, audio]} downloads={[
     { ...testDownloads[0], id: 'ebook-download', editionId: 'shared-legacy-edition', requestId: '1', status: 'downloading' },
     { ...testDownloads[0], id: 'audio-download', editionId: 'shared-legacy-edition', requestId: '2', status: 'completed' },
   ]} />);
@@ -88,7 +88,7 @@ it('opens book details with current stage and lazily reveals the timestamped sea
     throw new Error(`Unexpected fetch ${url}`);
   });
   vi.stubGlobal('fetch', fetchMock);
-  const { rerender } = render(<ActivityView {...base} requests={[ebook]} />);
+  const { rerender } = render(<ActivityView {...base} canRequest requests={[ebook]} />);
   await user.click(screen.getByRole('button', { name: /Dune eBook · Evaluating releases/ }));
   const dialog = within(screen.getByRole('dialog', { name: 'Details for Dune' }));
   expect(await dialog.findByText('A desert planet')).toBeInTheDocument();
@@ -101,7 +101,7 @@ it('opens book details with current stage and lazily reveals the timestamped sea
   await user.click(dialog.getByRole('button', { name: 'View Search Log' }));
   const event = await dialog.findByText('Scored Dune EPUB');
   expect(event.parentElement?.querySelector('time')).toHaveAttribute('datetime', time);
-  rerender(<ActivityView {...base} requests={[{ ...ebook, status: 'downloading', stage: 'importing' }]} />);
+  rerender(<ActivityView {...base} canRequest requests={[{ ...ebook, status: 'downloading', stage: 'importing' }]} />);
   expect(stages.getByText('Importing').parentElement).toHaveAttribute('aria-current', 'step');
   await user.click(dialog.getByRole('button', { name: 'Hide Search Log' }));
   expect(dialog.queryByRole('list', { name: 'Search log' })).not.toBeInTheDocument();
@@ -112,7 +112,7 @@ it('opens book details with current stage and lazily reveals the timestamped sea
 it('keeps the row and shows the API error when cancellation fails', async () => {
   const user = userEvent.setup({ delay: null });
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ error: 'Import is finishing' }, { status: 409 })));
-  render(<ActivityView {...base} requests={[ebook]} />);
+  render(<ActivityView {...base} canRequest requests={[ebook]} />);
   await user.click(screen.getByRole('button', { name: 'Cancel Dune eBook' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('Import is finishing');
   expect(screen.getByRole('button', { name: 'Cancel Dune eBook' })).toBeEnabled();
@@ -149,6 +149,7 @@ it('renders card metadata, responsive touch targets, cover fallback, and connect
   const { rerender } = render(
     <ActivityView
       {...base}
+      canRequest
       connectionStatus="connecting"
       requests={[{ ...ebook, coverUrl: '/broken-cover.jpg', requestType: 'audiobook', stage: 'downloading' }]}
     />
@@ -190,7 +191,7 @@ it('supports keyboard navigation across card controls and search log', async () 
   });
   vi.stubGlobal('fetch', fetchMock);
 
-  render(<ActivityView {...base} requests={[ebook]} />);
+  render(<ActivityView {...base} canRequest requests={[ebook]} />);
 
   const titleBtn = screen.getByRole('button', { name: /Dune eBook · Evaluating releases/ });
   const manualBtn = screen.getByRole('button', { name: 'Manual Search for Dune' });
@@ -219,4 +220,11 @@ it('supports keyboard navigation across card controls and search log', async () 
   expect(cancelBtn).toHaveFocus();
   await user.keyboard(' ');
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/requests/1', { method: 'DELETE' }));
+});
+
+it('hides Manual Search and Cancel/Remove controls for guests in ActivityView', () => {
+  render(<ActivityView {...base} canRequest={false} canManageJobs={false} requests={[ebook, audio]} />);
+  expect(screen.queryByRole('button', { name: /Manual Search/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Cancel/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Remove/i })).not.toBeInTheDocument();
 });

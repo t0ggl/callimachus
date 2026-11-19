@@ -1,16 +1,84 @@
 import { EntityLink } from './EntityLink';
 import React, { useEffect, useState } from 'react';
-import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download } from 'lucide-react';
+import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download, Bell } from 'lucide-react';
 import { ManualSearch } from './ManualSearch';
 import { MetadataRepairPanel } from './MetadataRepairPanel';
 import { Book } from '../types';
+
+export interface ResolveBookInput {
+  bookId?: string;
+  title: string;
+  subtitle?: string;
+  author: string;
+  series?: string;
+  seriesId?: string;
+  hardcoverSeriesId?: number;
+  seriesIndex?: number | null;
+  releaseDate?: string;
+  synopsis?: string;
+  coverUrl?: string;
+}
+
+export async function resolveCatalogBook(input: ResolveBookInput): Promise<Book> {
+  if (input.bookId) {
+    const res = await fetch(`/api/books?id=${encodeURIComponent(input.bookId)}`);
+    if (!res.ok) throw new Error('Unable to load book details. Try again.');
+    const list: Book[] = await res.json();
+    const found = list.find((item) => item.id === input.bookId);
+    if (found) {
+      return {
+        ...found,
+        coverUrl: found.coverUrl || input.coverUrl,
+        synopsis: found.synopsis || input.synopsis,
+        subtitle: found.subtitle || input.subtitle,
+        releaseDate: found.releaseDate || input.releaseDate,
+        seriesId: found.seriesId || input.seriesId,
+        seriesTitle: found.seriesTitle || input.series,
+        seriesIndex: found.seriesIndex ?? input.seriesIndex ?? undefined,
+      };
+    }
+  }
+  const res = await fetch('/api/books/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      book_id: input.bookId || undefined,
+      title: input.title,
+      subtitle: input.subtitle,
+      author: input.author || 'Unknown',
+      series: input.series,
+      series_id: input.seriesId || undefined,
+      hardcover_series_id: input.hardcoverSeriesId || undefined,
+      series_index: input.seriesIndex ?? undefined,
+      release_date: input.releaseDate,
+      synopsis: input.synopsis,
+      cover_url: input.coverUrl,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error('Unable to save book details. Check permissions and retry.');
+  }
+  const resolved: Book = await res.json();
+  return {
+    ...resolved,
+    coverUrl: resolved.coverUrl || input.coverUrl,
+    synopsis: resolved.synopsis || input.synopsis,
+    subtitle: resolved.subtitle || input.subtitle,
+    releaseDate: resolved.releaseDate || input.releaseDate,
+    seriesTitle: resolved.seriesTitle || input.series,
+    seriesIndex: resolved.seriesIndex ?? input.seriesIndex ?? undefined,
+  };
+}
 
 interface BookDetailModalProps {
   book: Book | null;
   onClose: () => void;
   activity?: React.ReactNode;
   isAdmin?: boolean;
+  canManage?: boolean;
+  canRequest?: boolean;
   onMetadataApplied?: () => void;
+  onBookUpdated?: (book: Book) => void;
 }
 
 function formatBytes(bytes?: number): string {
@@ -31,50 +99,189 @@ function formatDuration(seconds?: number): string {
   return `${mins}m`;
 }
 
-export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose, activity, isAdmin, onMetadataApplied }) => {
+export const BookDetailModal: React.FC<BookDetailModalProps> = ({
+  book,
+  onClose,
+  activity,
+  isAdmin,
+  canManage,
+  canRequest,
+  onMetadataApplied,
+  onBookUpdated,
+}) => {
   const dialog = React.useRef<HTMLDialogElement>(null);
   const fixButton = React.useRef<HTMLButtonElement>(null);
+  const [prevBook, setPrevBook] = useState<Book | null>(book);
+  const [activeBook, setActiveBook] = useState<Book | null>(book);
   const [repairBookID, setRepairBookID] = useState<string>();
   const [showDownloadOptions, setShowDownloadOptions] = useState(false);
+  const [monitored, setMonitored] = useState(Boolean(book?.monitored));
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState('');
+
+  if (book !== prevBook) {
+    const sameResolvingBook = Boolean(
+      book &&
+        prevBook &&
+        prevBook.id === '' &&
+        book.title === prevBook.title &&
+        book.authorName === prevBook.authorName
+    );
+    setPrevBook(book);
+    setActiveBook(book);
+    setMonitored(Boolean(book?.monitored));
+    setActionError('');
+    if (!sameResolvingBook) {
+      setShowDownloadOptions(false);
+      setRepairBookID(undefined);
+    }
+  }
+
   useEffect(() => {
     const element = dialog.current;
     element?.showModal();
     return () => element?.close();
   }, [Boolean(book)]);
 
-  if (!book) return null;
-  const canRepair = isAdmin && book.editions.some((edition) =>
-    edition.assets.some((asset) => asset.filename?.toLowerCase().endsWith('.epub')));
-  const repairing = canRepair && repairBookID === book.id;
+  const currentBook = activeBook ?? book;
+  if (!currentBook) return null;
+  const hasAssets = currentBook.editions.some((edition) => edition.assets.length > 0);
+  const canRepair = Boolean(
+    isAdmin &&
+      currentBook.id &&
+      currentBook.editions.some((edition) =>
+        edition.assets.some((asset) => asset.filename?.toLowerCase().endsWith('.epub'))
+      )
+  );
+  const repairing = canRepair && repairBookID === currentBook.id;
+  const isOwned =
+    currentBook.state === 'In library' ||
+    (currentBook.state === undefined && (hasAssets || currentBook.formats.length > 0));
+  const allowRequest = Boolean(canRequest ?? canManage);
+  const showMonitorControl = !isOwned && Boolean(canManage);
+
+  const ensurePersistedBook = async (): Promise<Book> => {
+    if (currentBook.id) return currentBook;
+    const resolved = await resolveCatalogBook({
+      title: currentBook.title,
+      subtitle: currentBook.subtitle,
+      author: currentBook.authorName,
+      series: currentBook.seriesTitle,
+      seriesId: currentBook.seriesId,
+      seriesIndex: currentBook.seriesIndex,
+      releaseDate: currentBook.releaseDate,
+      synopsis: currentBook.synopsis,
+      coverUrl: currentBook.coverUrl,
+    });
+    const merged: Book = {
+      ...currentBook,
+      ...resolved,
+      coverUrl: resolved.coverUrl || currentBook.coverUrl,
+      synopsis: resolved.synopsis || currentBook.synopsis,
+      subtitle: resolved.subtitle || currentBook.subtitle,
+      releaseDate: resolved.releaseDate || currentBook.releaseDate,
+      seriesId: resolved.seriesId || currentBook.seriesId,
+      seriesTitle: resolved.seriesTitle || currentBook.seriesTitle,
+      seriesIndex: resolved.seriesIndex ?? currentBook.seriesIndex,
+      seriesIndexDisplay: resolved.seriesIndexDisplay || currentBook.seriesIndexDisplay,
+    };
+    setActiveBook(merged);
+    onBookUpdated?.(merged);
+    return merged;
+  };
+
+  const handleShowDownloadOptions = async () => {
+    if (currentBook.id) {
+      setActionError('');
+      setShowDownloadOptions(true);
+      return;
+    }
+    setActionBusy(true);
+    setActionError('');
+    try {
+      await ensurePersistedBook();
+      setShowDownloadOptions(true);
+    } catch (e) {
+      setActionError((e as Error).message);
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleToggleMonitor = async () => {
+    setActionBusy(true);
+    setActionError('');
+    const next = !monitored;
+    try {
+      const persisted = await ensurePersistedBook();
+      const res = await fetch(`/api/books/${encodeURIComponent(persisted.id)}/monitor`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ monitored: next }),
+      });
+      if (!res.ok) {
+        throw new Error('Unable to save monitoring state. Check permissions and retry.');
+      }
+      const updated: Book = { ...persisted, monitored: next };
+      setMonitored(next);
+      setActiveBook(updated);
+      onBookUpdated?.(updated);
+    } catch (e) {
+      setActionError((e as Error).message);
+    } finally {
+      setActionBusy(false);
+    }
+  };
 
   return (
     <>
     <dialog
       ref={dialog}
-      aria-label={`Details for ${book.title}`}
+      aria-label={`Details for ${currentBook.title}`}
       className="m-auto w-[calc(100%-2rem)] max-w-3xl max-h-[90dvh] bg-zinc-900 text-zinc-100 border border-zinc-700 rounded-xl overflow-hidden backdrop:bg-black/75"
       onCancel={onClose}
       onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       <div className="max-h-[90dvh] flex flex-col">
-        {!activity && !repairing && <div className="px-6 pt-4 flex flex-wrap items-center gap-3">
-          <button type="button" onClick={() => setShowDownloadOptions(true)}
-            className="inline-flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300">
-            <Download size={16} aria-hidden="true" />
-            Show Download Options
-          </button>
+        {!activity && !repairing && (allowRequest || showMonitorControl) && <div className="px-6 pt-4 flex flex-wrap items-center gap-3">
+          {allowRequest && (
+            <button type="button" disabled={actionBusy} onClick={() => void handleShowDownloadOptions()}
+              className="inline-flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50">
+              <Download size={16} aria-hidden="true" />
+              Show Download Options
+            </button>
+          )}
+          {showMonitorControl && (
+            <button
+              type="button"
+              disabled={actionBusy}
+              aria-pressed={monitored}
+              onClick={() => void handleToggleMonitor()}
+              className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50 ${
+                monitored
+                  ? 'border-blue-700/80 bg-blue-950/70 text-blue-200 hover:bg-blue-900/70'
+                  : 'border-zinc-700 bg-zinc-800 text-zinc-100 hover:bg-zinc-700'
+              }`}
+            >
+              <Bell size={16} aria-hidden="true" />
+              {monitored ? 'Monitoring Book' : 'Monitor Book'}
+            </button>
+          )}
+          {actionError && (
+            <p role="alert" className="text-xs text-red-300">{actionError}</p>
+          )}
         </div>}
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-950/40">
           <div className="flex flex-wrap items-center gap-3">
-            <h2 className="text-lg font-semibold text-zinc-100">{book.title}</h2>
+            <h2 className="text-lg font-semibold text-zinc-100">{currentBook.title}</h2>
             <div className="flex gap-1.5">
-              {book.state && book.state !== 'In library' && (
+              {currentBook.state && currentBook.state !== 'In library' && (
                 <span className="rounded-sm border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-xs text-zinc-200">
-                  {book.state}
+                  {currentBook.state}
                 </span>
               )}
-              {book.formats.map((fmt) => (
+              {currentBook.formats.map((fmt) => (
                 <span
                   key={fmt}
                   className={`text-[11px] font-mono px-2 py-0.5 rounded-sm font-medium ${
@@ -102,7 +309,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
 
         {/* Content body */}
         {repairing ? (
-          <MetadataRepairPanel key={book.id} bookID={book.id} onApplied={onMetadataApplied}
+          <MetadataRepairPanel key={currentBook.id} bookID={currentBook.id} onApplied={onMetadataApplied}
             onBack={() => {
               setRepairBookID(undefined);
               requestAnimationFrame(() => fixButton.current?.focus());
@@ -112,11 +319,11 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
             {/* Cover art */}
             <div className="w-40 sm:w-48 shrink-0">
               <div className="aspect-[2/3] rounded-lg overflow-hidden bg-zinc-800 border border-zinc-700/60 shadow-md">
-                {book.coverUrl ? (
+                {currentBook.coverUrl ? (
                   <img
-                    src={book.coverUrl}
+                    src={currentBook.coverUrl}
                     referrerPolicy="no-referrer"
-                    alt={book.title}
+                    alt={currentBook.title}
                     className="w-full h-full object-cover"
                   />
                 ) : (
@@ -131,9 +338,9 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
             {/* Metadata overview */}
             <div className="flex-1 min-w-0 space-y-4">
               <div>
-                <h3 className="text-xl font-bold text-zinc-100">{book.title}</h3>
-                {book.subtitle && (
-                  <p className="text-sm text-zinc-400 mt-0.5">{book.subtitle}</p>
+                <h3 className="text-xl font-bold text-zinc-100">{currentBook.title}</h3>
+                {currentBook.subtitle && (
+                  <p className="text-sm text-zinc-400 mt-0.5">{currentBook.subtitle}</p>
                 )}
               </div>
 
@@ -141,35 +348,35 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
                 <div className="flex items-center gap-2 text-zinc-300">
                   <User className="w-4 h-4 text-zinc-500 shrink-0" />
                   <span className="text-zinc-500">Author:</span>
-                  <span className="font-medium text-zinc-200"><EntityLink kind="authors" name={book.authorName} /></span>
+                  <span className="font-medium text-zinc-200"><EntityLink kind="authors" name={currentBook.authorName} /></span>
                 </div>
 
-                {book.seriesTitle && (
+                {currentBook.seriesTitle && (
                   <div className="flex items-center gap-2 text-zinc-300">
                     <Layers className="w-4 h-4 text-purple-400 shrink-0" />
                     <span className="text-zinc-500">Series:</span>
                     <span className="font-medium text-zinc-200">
-                      <EntityLink kind="series" name={book.seriesTitle} id={book.seriesId} />{book.seriesIndex != null && ` (Book ${book.seriesIndex})`}
+                      <EntityLink kind="series" name={currentBook.seriesTitle} id={currentBook.seriesId} />{currentBook.seriesIndex != null && ` (Book ${currentBook.seriesIndex})`}
                     </span>
                   </div>
                 )}
 
-                {book.releaseDate && (
+                {currentBook.releaseDate && (
                   <div className="flex items-center gap-2 text-zinc-300">
                     <Calendar className="w-4 h-4 text-zinc-500 shrink-0" />
                     <span className="text-zinc-500">Released:</span>
-                    <span className="font-medium text-zinc-200">{book.releaseDate}</span>
+                    <span className="font-medium text-zinc-200">{currentBook.releaseDate}</span>
                   </div>
                 )}
               </div>
 
               {/* Synopsis */}
-              {book.synopsis && (
+              {currentBook.synopsis && (
                 <div className="bg-zinc-950/50 p-3.5 rounded-lg border border-zinc-800/80 text-xs text-zinc-300 leading-relaxed">
                   <div className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-1">
                     Synopsis
                   </div>
-                  {book.synopsis}
+                  {currentBook.synopsis}
                 </div>
               )}
             </div>
@@ -185,7 +392,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
                 Available files
               </h4>
               {canRepair && (
-                <button ref={fixButton} type="button" onClick={() => setRepairBookID(book.id)}
+                <button ref={fixButton} type="button" onClick={() => setRepairBookID(currentBook.id)}
                   className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300">
                   Fix Metadata
                 </button>
@@ -193,8 +400,8 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
             </div>
 
             <div className="space-y-3">
-              {book.editions.length === 0 && <p className="text-xs text-zinc-400">No files available.</p>}
-              {book.editions.map((edition) => (
+              {currentBook.editions.length === 0 && <p className="text-xs text-zinc-400">No files available.</p>}
+              {currentBook.editions.map((edition) => (
                 <div
                   key={edition.id}
                   className="bg-zinc-950/60 border border-zinc-800 rounded-lg p-4 space-y-3"
@@ -241,7 +448,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
                         className="flex flex-col sm:flex-row sm:items-start justify-between p-2 rounded-sm bg-zinc-900/80 border border-zinc-800/60 text-xs gap-2"
                       >
                         <a
-                          href={`/api/books/${encodeURIComponent(book.id)}/files/${encodeURIComponent(asset.id)}`}
+                          href={`/api/books/${encodeURIComponent(currentBook.id)}/files/${encodeURIComponent(asset.id)}`}
                           download={asset.filename || true}
                           aria-label={asset.filename ? `Download ${asset.filename}` : 'Download file'}
                           className="flex min-w-0 flex-1 items-start gap-2 rounded-sm text-xs text-blue-300 underline decoration-blue-300/50 underline-offset-2 hover:text-blue-100 hover:decoration-current focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300"
@@ -281,8 +488,8 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
         </div>}
       </div>
     </dialog>
-    {showDownloadOptions && <ManualSearch key={book.id}
-      book={{ id: book.id, title: book.title, author: book.authorName }}
+    {showDownloadOptions && currentBook.id && <ManualSearch key={currentBook.id}
+      book={{ id: currentBook.id, title: currentBook.title, author: currentBook.authorName }}
       onClose={() => setShowDownloadOptions(false)} />}
     </>
   );

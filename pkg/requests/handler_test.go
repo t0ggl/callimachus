@@ -179,3 +179,70 @@ func TestHandler_DuplicateRequestConflict(t *testing.T) {
 		t.Fatalf("expected 201 Created for non-duplicate format, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestHandler_GuestForbiddenOnMutations(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	createTestUser(t, db, "guest-1", "synthetic-guest", auth.RoleGuest)
+	if _, err := db.Exec(`INSERT INTO authors(id,name,sort_name) VALUES('a-existing','Existing Author','Author, Existing')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO books(id,author_id,title) VALUES('b-existing','a-existing','Existing Book')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO book_requests(id,user_id,book_id,title,author,format,status) VALUES(42,'guest-1','b-existing','Existing Book','Existing Author','epub','error')`); err != nil {
+		t.Fatal(err)
+	}
+
+	sm := auth.NewSessionManager(1*time.Hour, auth.DefaultCookieConfig())
+	t.Cleanup(sm.Close)
+	guestSess, err := sm.CreateSession("guest-1", "synthetic-guest", auth.RoleGuest)
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	svc := NewRequestService(db)
+	h := NewHandler(HandlerConfig{Service: svc, SessionManager: sm, DB: db})
+
+	reqCall := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+		req.Header.Set("Authorization", "Bearer "+guestSess.Token)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := reqCall(http.MethodPost, "/api/requests", `{"title":"Unauthorized Creation","author":"Unknown Author","series":"Forbidden Series","format":"epub"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for guest POST /api/requests, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, check := range []struct {
+		query string
+		want  int
+	}{
+		{"SELECT COUNT(*) FROM authors", 1},
+		{"SELECT COUNT(*) FROM series", 0},
+		{"SELECT COUNT(*) FROM books", 1},
+		{"SELECT COUNT(*) FROM book_requests", 1},
+	} {
+		var got int
+		if err := db.QueryRow(check.query).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != check.want {
+			t.Fatalf("%s = %d, want %d after guest POST /api/requests", check.query, got, check.want)
+		}
+	}
+
+	if rec := reqCall(http.MethodDelete, "/api/requests/42", ""); rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for guest DELETE /api/requests/42, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := reqCall(http.MethodPost, "/api/requests/42/refresh", ""); rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for guest POST /api/requests/42/refresh, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := reqCall(http.MethodPost, "/api/requests/42/download", `{"key":"1:k"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for guest POST /api/requests/42/download, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := reqCall(http.MethodGet, "/api/requests", ""); rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for guest GET /api/requests, got %d: %s", rec.Code, rec.Body.String())
+	}
+}

@@ -45,7 +45,23 @@ func (m *Monitor) SetMonitored(ctx context.Context, kind, id string, enabled boo
 	if err == nil && n == 0 {
 		return sql.ErrNoRows
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if enabled {
+		bookCol := "author_id"
+		if kind == "series" {
+			bookCol = "series_id"
+		}
+		if _, err := m.DB.ExecContext(ctx, `
+			UPDATE books SET monitored = 1, availability_checked_at = NULL, updated_at = CURRENT_TIMESTAMP
+			WHERE `+bookCol+` = ? AND monitored = 0
+			  AND NOT EXISTS (SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id = e.id WHERE e.book_id = books.id)
+		`, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Monitor) Queue(ctx context.Context, kind, id, action string) error {
@@ -102,7 +118,7 @@ func (m *Monitor) Tick(ctx context.Context, now time.Time) error {
 			next = next.AddDate(0, 0, day-1)
 			if e.discover || (e.monitored && (last.IsZero() || !now.Before(next))) {
 				slog.DebugContext(ctx, "catalog discovery check", "entity_kind", kind, "entity_id", e.id)
-				err := m.discover(ctx, kind, e.id, e.name)
+				err := m.discover(ctx, kind, e.id, e.name, e.monitored)
 				if err != nil {
 					failures = append(failures, err.Error())
 					continue
@@ -139,7 +155,7 @@ func (m *Monitor) Tick(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-func (m *Monitor) discover(ctx context.Context, kind, id, name string) error {
+func (m *Monitor) discover(ctx context.Context, kind, id, name string, monitored bool) error {
 	c := New(m.DB)
 	var known []metadata.BookMetadata
 	if kind == "series" {
@@ -157,10 +173,10 @@ func (m *Monitor) discover(ctx context.Context, kind, id, name string) error {
 	if err != nil {
 		return err
 	}
-	return m.persist(ctx, kind, id, name, known, found)
+	return m.persist(ctx, kind, id, name, monitored, known, found)
 }
 
-func (m *Monitor) persist(ctx context.Context, kind, id, name string, known, found []metadata.BookMetadata) error {
+func (m *Monitor) persist(ctx context.Context, kind, id, name string, monitored bool, known, found []metadata.BookMetadata) error {
 	c := New(m.DB)
 	var authors []string
 	var providerID int
@@ -212,7 +228,7 @@ func (m *Monitor) persist(ctx context.Context, kind, id, name string, known, fou
 		if err != nil {
 			return err
 		}
-		book := &database.Book{AuthorID: author.ID, Title: b.Title, SeriesIndex: b.SeriesIndex, Synopsis: &b.Description}
+		book := &database.Book{AuthorID: author.ID, Title: b.Title, SeriesIndex: b.SeriesIndex, Synopsis: &b.Description, Monitored: monitored}
 		if kind == "series" {
 			book.SeriesID = &id
 		} else {

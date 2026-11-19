@@ -19,10 +19,12 @@ import (
 
 type seriesBook struct {
 	metadata.BookMetadata
+	BookID             string   `json:"book_id,omitempty"`
 	SeriesIndexDisplay string   `json:"series_index_display,omitempty"`
 	Formats            []string `json:"formats"`
 	LibraryBookID      string   `json:"library_book_id,omitempty"`
 	State              string   `json:"state"`
+	Monitored          bool     `json:"monitored"`
 }
 
 type seriesBooksResponse struct {
@@ -128,7 +130,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 		rows, err := s.db.QueryContext(r.Context(), `
 			SELECT b.id, b.title, COALESCE(b.subtitle, ''), a.name, b.series_index,
 			       COALESCE(b.release_date, ''),
-			       COALESCE(b.synopsis, ''), `+bookAvailabilitySQL+`
+			       COALESCE(b.synopsis, ''), b.monitored, `+bookAvailabilitySQL+`
 			FROM books b
 			JOIN authors a ON a.id=b.author_id
 			WHERE b.series_id=?
@@ -142,7 +144,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 			var id, author string
 			if err := rows.Scan(
 				&id, &b.Title, &b.Subtitle, &author, &b.SeriesIndex,
-				&b.PublishDate, &b.Description, &b.State,
+				&b.PublishDate, &b.Description, &b.Monitored, &b.State,
 			); err != nil {
 				rows.Close()
 				http.Error(w, "Unable to load series", 500)
@@ -157,6 +159,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 			} else {
 				b.Authors = []string{}
 			}
+			b.BookID = id
 			b.Series = seriesTitle
 			b.Formats = formatsByBook[id]
 			if b.Formats == nil {

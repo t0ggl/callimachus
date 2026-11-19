@@ -143,6 +143,10 @@ func (h *Handler) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	if !auth.HasRole(user.Role, auth.RoleRequester) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
 
 	var input CreateRequestInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -242,6 +246,10 @@ func (h *Handler) handleGetRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodDelete {
+		if !auth.HasRole(user.Role, auth.RoleRequester) {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
 		err := h.service.dismiss(r.Context(), id)
 		switch {
 		case errors.Is(err, ErrImportFinishing):
@@ -294,6 +302,11 @@ func (h *Handler) handleCandidates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.UserID != user.ID && !auth.HasRole(user.Role, auth.RoleCurator) {
+		writeError(w, 403, "forbidden")
+		return
+	}
+	isMutating := strings.HasSuffix(r.URL.Path, "/refresh") || strings.HasSuffix(r.URL.Path, "/download")
+	if isMutating && !auth.HasRole(user.Role, auth.RoleRequester) {
 		writeError(w, 403, "forbidden")
 		return
 	}

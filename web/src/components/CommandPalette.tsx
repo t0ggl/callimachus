@@ -18,6 +18,9 @@ interface CommandPaletteProps {
   authors: Author[];
   series: Series[];
   canAccessSettings?: boolean;
+  canManage?: boolean;
+  canRequest?: boolean;
+  isAdmin?: boolean;
   onNavigate: (view: string) => void;
   onSelectBook: (book: Book) => void;
 }
@@ -42,6 +45,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   authors,
   series,
   canAccessSettings = false,
+  canManage,
+  canRequest,
+  isAdmin,
   onNavigate,
   onSelectBook,
 }) => {
@@ -213,6 +219,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     {selectedSeries && (
       <SeriesDetailModal
         {...selectedSeries}
+        canManage={canManage}
+        canRequest={canRequest}
+        isAdmin={isAdmin}
         onClose={() => setSelectedSeries(null)}
         onOpenBook={onOpenBook ? (id) => { setSelectedSeries(null); onOpenBook(id); } : undefined}
       />
@@ -366,6 +375,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               <DiscoveryResults
                 query={query}
                 defaultSearchFormat={defaultSearchFormat}
+                canManage={canManage}
+                canRequest={canRequest}
+                isAdmin={isAdmin}
                 onSubmitRequest={onSubmitRequest}
                 onOpenBook={onOpenBook}
               />

@@ -347,6 +347,11 @@ func (a *Acquisition) process(ctx context.Context, id int64) error {
 			completed_at=CURRENT_TIMESTAMP, book_id=COALESCE(book_id,(SELECT e.book_id FROM download_queue q
 				JOIN book_editions e ON e.id=q.edition_id WHERE q.request_id=book_requests.id AND q.status='completed'
 				ORDER BY q.created_at DESC,q.rowid DESC LIMIT 1)),updated_at=CURRENT_TIMESTAMP WHERE id=? AND dismissed=0`, id)
+		if err != nil {
+			return err
+		}
+		_, err = a.DB.ExecContext(ctx, `UPDATE books SET monitored=0, updated_at=CURRENT_TIMESTAMP
+			WHERE id=(SELECT book_id FROM book_requests WHERE id=?) AND monitored=1`, id)
 		return err
 	case "failed", "error":
 		if key != "" {

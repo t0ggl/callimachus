@@ -160,6 +160,9 @@ interface CatalogViewProps {
   authors: Author[];
   series: Series[];
   bundleSeriesInLibrary?: boolean;
+  canManage?: boolean;
+  canRequest?: boolean;
+  isAdmin?: boolean;
   onSelectBook: (book: Book) => void;
   keyboardNavigationEnabled?: boolean;
   selectedSeries?: SeriesSelection | null;
@@ -172,6 +175,9 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
   authors,
   series,
   bundleSeriesInLibrary = true,
+  canManage,
+  canRequest,
+  isAdmin,
   onSelectBook,
   keyboardNavigationEnabled = true,
   selectedSeries: controlledSelectedSeries,
@@ -261,13 +267,27 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
       {selectedSeries && (
         <SeriesDetailModal
           {...selectedSeries}
+          canManage={canManage}
+          canRequest={canRequest}
+          isAdmin={isAdmin}
           onClose={() => setSelectedSeries(null)}
           onOpenBook={(bookId) => {
             const found = books.find((b) => b.id === bookId);
             if (found) {
               setSelectedSeries(null);
               onSelectBook(found);
+              return;
             }
+            void fetch(`/api/books?id=${encodeURIComponent(bookId)}`)
+              .then((res) => (res.ok ? res.json() : []))
+              .then((list: Book[]) => {
+                const fetched = Array.isArray(list) ? list.find((b) => b.id === bookId) : undefined;
+                if (fetched) {
+                  setSelectedSeries(null);
+                  onSelectBook(fetched);
+                }
+              })
+              .catch(() => {});
           }}
         />
       )}

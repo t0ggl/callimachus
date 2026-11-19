@@ -16,8 +16,8 @@ async function findOrCreateRequest(book: RequestBook, format: Format): Promise<A
     const res = await fetch('/api/requests');
     if (!res.ok) throw new Error('Unable to load acquisitions.');
     const requests: Acquisition[] = await res.json();
-    return requests.find(r => r.book_id === book.id && r.format === format)
-      ?? requests.find(r => r.book_id === book.id && r.format === 'both');
+    return requests.find(r => Boolean(book.id) && r.book_id === book.id && r.format === format)
+      ?? requests.find(r => Boolean(book.id) && r.book_id === book.id && r.format === 'both');
   };
   const existing = await find();
   if (existing) return existing;

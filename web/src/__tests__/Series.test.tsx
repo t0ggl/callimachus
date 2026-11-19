@@ -466,3 +466,213 @@ it('renders every book individually in grid and list views when bundling is disa
   expect(screen.getByTestId('book-row-book-dune-2')).toBeInTheDocument();
 });
 
+it('opens unowned book details, inline Download options, and inline Monitor for Scheduled books in SeriesDetailModal', async () => {
+  const user = userEvent.setup({ delay: null });
+  const unownedBook: Book = {
+    id: 'book-unowned',
+    title: 'Missing Tome',
+    authorId: 'auth-1',
+    authorName: 'Author One',
+    seriesTitle: 'Sequence',
+    seriesIndex: 2,
+    releaseDate: '2020-03-01',
+    synopsis: 'Missing blurb.',
+    coverUrl: 'https://covers.example/missing.jpg',
+    state: 'Not in library',
+    monitored: false,
+    formats: [],
+    editions: [],
+  };
+  const scheduledBook: Book = {
+    id: 'book-sched',
+    title: 'Future Tome',
+    authorId: 'auth-1',
+    authorName: 'Author One',
+    seriesTitle: 'Sequence',
+    seriesIndex: 3,
+    releaseDate: '2099-09-01',
+    state: 'Scheduled',
+    monitored: false,
+    formats: [],
+    editions: [],
+  };
+
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.startsWith('/api/series/books?')) {
+      return Response.json({
+        title: 'Sequence',
+        authors: ['Author One'],
+        total_books: 2,
+        owned_count: 0,
+        complete: true,
+        books: [
+          {
+            title: 'Missing Tome',
+            authors: ['Author One'],
+            description: 'Missing blurb.',
+            cover_url: 'https://covers.example/missing.jpg',
+            publish_date: '2020-03-01',
+            series_index: 2,
+            formats: [],
+            state: 'Not in library',
+          },
+          {
+            title: 'Future Tome',
+            authors: ['Author One'],
+            publish_date: '2099-09-01',
+            series_index: 3,
+            formats: [],
+            state: 'Scheduled',
+            monitored: false,
+          },
+        ],
+      });
+    }
+    if (url === '/api/books/resolve' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body));
+      if (body.title === 'Missing Tome') return Response.json(unownedBook);
+      if (body.title === 'Future Tome') return Response.json(scheduledBook);
+    }
+    if (url === '/api/books/book-sched/monitor' && init?.method === 'PUT') {
+      return Response.json({ id: 'book-sched', monitored: true });
+    }
+    if (url === '/api/requests' && (!init?.method || init.method === 'GET')) {
+      return Response.json([{ id: 42, book_id: 'book-unowned', format: 'epub' }]);
+    }
+    if (url === '/api/requests/42/candidates') {
+      return Response.json([{ key: '1:g', format: 'epub', score: 90, penalty: 0, breakdown: { format: 30 }, release: { title: 'Missing Tome EPUB', size: 1024, seeders: 10 } }]);
+    }
+    throw new Error(`Unexpected fetch ${url} (${init?.method ?? 'GET'})`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<SeriesDetailModal title="Sequence" canRequest canManage onClose={vi.fn()} />);
+
+  const list = await screen.findByRole('list', { name: 'Series reading order' });
+  const [missingItem, scheduledItem] = within(list).getAllByRole('listitem');
+
+  // 1. Clicking unowned book title opens BookDetailModal read-only WITHOUT calling POST /api/books/resolve.
+  await user.click(within(missingItem).getByRole('button', { name: 'Missing Tome' }));
+  const detailDialog = await screen.findByRole('dialog', { name: 'Details for Missing Tome' });
+  expect(within(detailDialog).getByText('Missing blurb.')).toBeInTheDocument();
+  expect(within(detailDialog).getByText('2020-03-01')).toBeInTheDocument();
+  expect(within(detailDialog).getByRole('img', { name: 'Missing Tome' })).toHaveAttribute('src', 'https://covers.example/missing.jpg');
+  expect(within(detailDialog).getByRole('button', { name: 'Show Download Options' })).toBeInTheDocument();
+  expect(within(detailDialog).getByRole('button', { name: 'Monitor Book' })).toHaveAttribute('aria-pressed', 'false');
+  expect(within(detailDialog).getByText('No files available.')).toBeInTheDocument();
+  expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(0);
+  await user.click(within(detailDialog).getByRole('button', { name: 'Close details' }));
+
+  // 2. Inline Download next to "Not in library" lazily resolves once and opens ManualSearch.
+  await user.click(within(missingItem).getByRole('button', { name: 'Download' }));
+  const downloadDialog = await screen.findByRole('dialog', { name: 'Download Options' });
+  expect(within(downloadDialog).getByRole('tablist', { name: 'Download format' })).toBeInTheDocument();
+  expect(await within(downloadDialog).findByText('Missing Tome EPUB')).toBeInTheDocument();
+  expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(1);
+  await user.click(within(downloadDialog).getByRole('button', { name: 'Close' }));
+
+  // 3. Inline Monitor next to "Scheduled" resolves book & persists books.monitored.
+  const monitorBtn = within(scheduledItem).getByRole('button', { name: 'Monitor' });
+  expect(monitorBtn).toHaveAttribute('aria-pressed', 'false');
+  await user.click(monitorBtn);
+  await waitFor(() => {
+    expect(within(scheduledItem).getByRole('button', { name: 'Monitoring' })).toHaveAttribute('aria-pressed', 'true');
+  });
+  expect(fetchMock).toHaveBeenCalledWith(
+    '/api/books/book-sched/monitor',
+    expect.objectContaining({ method: 'PUT', body: '{"monitored":true}' }),
+  );
+});
+
+it('lets guests inspect unowned book details read-only and restricts requesters to download actions in SeriesDetailModal', async () => {
+  const user = userEvent.setup({ delay: null });
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.startsWith('/api/series/books?')) {
+      return Response.json({
+        title: 'Sequence',
+        authors: ['Author One'],
+        total_books: 2,
+        owned_count: 0,
+        complete: true,
+        books: [
+          {
+            title: 'Missing Tome',
+            subtitle: 'Book Two Subtitle',
+            authors: ['Author One'],
+            description: 'Guest visible synopsis.',
+            cover_url: 'https://covers.example/missing.jpg',
+            publish_date: '2020-03',
+            series_index: 2,
+            formats: [],
+            state: 'Not in library',
+          },
+          {
+            title: 'Future Tome',
+            authors: ['Author One'],
+            description: 'Scheduled synopsis.',
+            publish_date: '2099-09',
+            series_index: 3,
+            formats: [],
+            state: 'Scheduled',
+            monitored: false,
+          },
+        ],
+      });
+    }
+    if (url === '/api/books/resolve' && init?.method === 'POST') {
+      return Response.json({
+        id: 'req-unowned',
+        title: 'Missing Tome',
+        authorId: 'auth-1',
+        authorName: 'Author One',
+        state: 'Not in library',
+        formats: [],
+        editions: [],
+      });
+    }
+    if (url === '/api/requests' && (!init?.method || init.method === 'GET')) {
+      return Response.json([{ id: 55, book_id: 'req-unowned', format: 'epub' }]);
+    }
+    if (url === '/api/requests/55/candidates') {
+      return Response.json([]);
+    }
+    throw new Error(`Unexpected fetch ${url} (${init?.method ?? 'GET'})`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  // Guest: read-only access to full details with zero write actions or /api/books/resolve writes
+  const { rerender } = render(
+    <SeriesDetailModal title="Sequence" canManage={false} canRequest={false} onClose={vi.fn()} />
+  );
+  const list = await screen.findByRole('list', { name: 'Series reading order' });
+  const [missingItem, scheduledItem] = within(list).getAllByRole('listitem');
+  expect(within(missingItem).queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
+  expect(within(scheduledItem).queryByRole('button', { name: /Monitor/i })).not.toBeInTheDocument();
+
+  await user.click(within(missingItem).getByRole('button', { name: 'Missing Tome' }));
+  const guestDetail = await screen.findByRole('dialog', { name: 'Details for Missing Tome' });
+  expect(within(guestDetail).getByText('Book Two Subtitle')).toBeInTheDocument();
+  expect(within(guestDetail).getByText('Guest visible synopsis.')).toBeInTheDocument();
+  expect(within(guestDetail).getByText('2020-03')).toBeInTheDocument();
+  expect(within(guestDetail).getByText('No files available.')).toBeInTheDocument();
+  expect(within(guestDetail).queryByRole('button', { name: 'Show Download Options' })).not.toBeInTheDocument();
+  expect(within(guestDetail).queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
+  expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(0);
+  await user.click(within(guestDetail).getByRole('button', { name: 'Close details' }));
+
+  // Requester: sees Download & Show Download Options (resolves lazily on click), never Monitor
+  rerender(<SeriesDetailModal title="Sequence" canManage={false} canRequest onClose={vi.fn()} />);
+  expect(within(missingItem).getByRole('button', { name: 'Download' })).toBeInTheDocument();
+  expect(within(scheduledItem).queryByRole('button', { name: /Monitor/i })).not.toBeInTheDocument();
+
+  await user.click(within(missingItem).getByRole('button', { name: 'Missing Tome' }));
+  const reqDetail = await screen.findByRole('dialog', { name: 'Details for Missing Tome' });
+  expect(within(reqDetail).queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
+  expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(0);
+
+  await user.click(within(reqDetail).getByRole('button', { name: 'Show Download Options' }));
+  expect(await screen.findByRole('dialog', { name: 'Download Options' })).toBeInTheDocument();
+  expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(1);
+});
+
+

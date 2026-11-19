@@ -26,6 +26,7 @@ interface ActivityViewProps {
   logs: ImportLog[];
   requests?: BookRequest[];
   canManageJobs?: boolean;
+  canRequest?: boolean;
   isAdmin?: boolean;
   onMetadataApplied?: () => void;
   connectionStatus: 'connected' | 'connecting' | 'disconnected';
@@ -203,9 +204,11 @@ export function activityItems({ conversionJobs, downloads, logs, requests = [] }
   return [...items.values()].sort((a, b) => Number(a.phase === 'Completed') - Number(b.phase === 'Completed'));
 }
 
-function ActivityDetails({ item, onClose, isAdmin, onMetadataApplied }: {
+function ActivityDetails({ item, onClose, canManage, canRequest, isAdmin, onMetadataApplied }: {
   item: ActivityItem;
   onClose: () => void;
+  canManage?: boolean;
+  canRequest?: boolean;
   isAdmin?: boolean;
   onMetadataApplied?: () => void;
 }) {
@@ -262,7 +265,7 @@ function ActivityDetails({ item, onClose, isAdmin, onMetadataApplied }: {
   };
   const current = stages.findIndex(step => step.id === item.stage);
 
-  return <BookDetailModal book={metadata} onClose={onClose} isAdmin={isAdmin}
+  return <BookDetailModal book={metadata} onClose={onClose} canManage={canManage} canRequest={canRequest} isAdmin={isAdmin}
     onMetadataApplied={() => { setBookRevision((value) => value + 1); onMetadataApplied?.(); }} activity={
     <section aria-label="Acquisition progress" className="space-y-4 border-t border-zinc-800 pt-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -412,7 +415,8 @@ export const ActivityView: React.FC<ActivityViewProps> = (props) => {
     ) : items.length > 0 ? (
       <ul aria-label="Book activity" className="space-y-3">
         {items.map(item => {
-          const path = item.request ? `/api/requests/${encodeURIComponent(item.request.id)}` : props.canManageJobs ?
+          const allowRequest = Boolean(props.canRequest ?? props.canManageJobs);
+          const path = item.request && allowRequest ? `/api/requests/${encodeURIComponent(item.request.id)}` : props.canManageJobs ?
             item.downloadId ? `/api/activity/downloads/${encodeURIComponent(item.downloadId)}` :
               item.conversionId ? `/api/activity/conversions/${encodeURIComponent(item.conversionId)}` : undefined : undefined;
           const busy = pending.includes(item.id);
@@ -464,9 +468,9 @@ export const ActivityView: React.FC<ActivityViewProps> = (props) => {
                 </div>
               </div>
 
-              {(item.request && item.request.status !== 'downloading' || path) && (
+              {((allowRequest && item.request && item.request.status !== 'downloading') || path) && (
                 <div className="flex flex-wrap items-center gap-2 shrink-0">
-                  {item.request && item.request.status !== 'downloading' && (
+                  {allowRequest && item.request && item.request.status !== 'downloading' && (
                     <button
                       type="button"
                       aria-label={`Manual Search for ${item.title}`}
@@ -540,7 +544,7 @@ export const ActivityView: React.FC<ActivityViewProps> = (props) => {
       requestFormat={manual.requestType === 'audiobook' ? 'm4b' : manual.requestType === 'ebook' ? 'epub' : 'both'}
       book={manual.bookId ? { id: manual.bookId, title: manual.title, author: manual.author } : undefined}
       onClose={() => setManual(null)} />}
-    {detail && <ActivityDetails key={detail.id} item={detail} isAdmin={props.isAdmin}
+    {detail && <ActivityDetails key={detail.id} item={detail} canManage={props.canManageJobs} canRequest={Boolean(props.canRequest ?? props.canManageJobs)} isAdmin={props.isAdmin}
       onMetadataApplied={props.onMetadataApplied} onClose={() => setSelected(null)} />}
   </section>;
 };
