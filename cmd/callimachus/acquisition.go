@@ -18,12 +18,19 @@ func (s *Server) newAcquisition() *requests.Acquisition {
 		return s.prowlarrClient(r)
 	}
 	return &requests.Acquisition{DB: s.db,
-		Search: func(ctx context.Context, q string) ([]indexers.ProwlarrRelease, error) {
+		Search: func(ctx context.Context, q, format string) ([]indexers.ProwlarrRelease, error) {
 			c, err := client(ctx)
 			if err != nil {
 				return nil, err
 			}
-			return c.Search(ctx, q, indexers.DefaultCategories)
+			categories := indexers.DefaultCategories
+			switch format {
+			case requests.FormatEPUB:
+				categories = []int{indexers.CategoryBooks, indexers.CategoryBooksEBook}
+			case requests.FormatM4B:
+				categories = []int{indexers.CategoryAudioAudiobook}
+			}
+			return c.Search(ctx, q, categories)
 		},
 		Grab: func(ctx context.Context, r indexers.ProwlarrRelease) error {
 			c, err := client(ctx)
@@ -57,7 +64,7 @@ func (s *Server) handleAcquisitionFailure(w http.ResponseWriter, r *http.Request
 		http.Error(w, "queue_id is required", 400)
 		return
 	}
-	result, err := s.db.ExecContext(r.Context(), `UPDATE download_queue SET status='failed',error_message=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('queued','downloading','dispatching') AND id IN (SELECT queue_id FROM acquisition_candidates)`, event.Error, event.QueueID)
+	result, err := s.db.ExecContext(r.Context(), `UPDATE download_queue SET status='failed',error_message=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('queued','downloading','dispatching') AND request_id IS NOT NULL`, event.Error, event.QueueID)
 	if err != nil {
 		http.Error(w, "Unable to record failure", 500)
 		return

@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/t0ggl/callimachus/pkg/auth"
+	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/database"
 )
 
@@ -37,9 +39,10 @@ func DefaultServiceConfig() ServiceConfig {
 
 // RequestService manages book acquisition requests, quotas, and state transitions.
 type RequestService struct {
-	db  *database.DB
-	cfg ServiceConfig
-	mu  sync.RWMutex
+	db       *database.DB
+	cfg      ServiceConfig
+	mu       sync.RWMutex
+	submitMu sync.Mutex
 }
 
 // NewRequestService creates a new RequestService instance.
@@ -114,15 +117,31 @@ func (s *RequestService) SubmitRequest(ctx context.Context, input CreateRequestI
 		return nil, fmt.Errorf("%w: %s", ErrInvalidFormat, input.Format)
 	}
 
-	// Resolve username and role from users table if available
-	var dbUsername, dbRole string
-	err := s.db.QueryRowContext(ctx, "SELECT username, role FROM users WHERE id = ?", input.UserID).Scan(&dbUsername, &dbRole)
-	if err == nil {
-		if input.UserRole == "" {
-			input.UserRole = dbRole
-		}
-	} else if input.UserRole == "" {
-		input.UserRole = auth.RoleRequester
+	created, err := s.insertRequests(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	trigger := s.cfg.SearchTrigger
+	s.mu.RUnlock()
+	for _, req := range created {
+		slog.InfoContext(ctx, "book request created", "request_id", req.ID, "status", req.Status)
+		_ = trigger.TriggerSearch(ctx, req)
+	}
+	// Keep the existing single-object response for clients opening manual search.
+	return created[0], nil
+}
+
+func (s *RequestService) insertRequests(ctx context.Context, input CreateRequestInput) ([]*BookRequest, error) {
+	s.submitMu.Lock()
+	defer s.submitMu.Unlock()
+	var username, dbRole string
+	err := s.db.QueryRowContext(ctx, "SELECT username, role FROM users WHERE id = ?", input.UserID).Scan(&username, &dbRole)
+	if err != nil {
+		return nil, err
+	}
+	if input.UserRole == "" {
+		input.UserRole = dbRole
 	}
 
 	// Check quotas for non-exempt users
@@ -136,7 +155,7 @@ func (s *RequestService) SubmitRequest(ctx context.Context, input CreateRequestI
 		if weeklyLimit > 0 {
 			var weeklyCount int
 			cutoff := now.Add(-7 * 24 * time.Hour)
-			q := "SELECT COUNT(*) FROM book_requests WHERE user_id = ? AND created_at >= ?"
+			q := "SELECT COUNT(*) FROM book_requests WHERE user_id = ? AND counts_toward_quota = 1 AND created_at >= ?"
 			if err := s.db.QueryRowContext(ctx, q, input.UserID, cutoff).Scan(&weeklyCount); err != nil {
 				return nil, fmt.Errorf("failed to check weekly request quota: %w", err)
 			}
@@ -148,7 +167,7 @@ func (s *RequestService) SubmitRequest(ctx context.Context, input CreateRequestI
 		if monthlyLimit > 0 {
 			var monthlyCount int
 			cutoff := now.Add(-30 * 24 * time.Hour)
-			q := "SELECT COUNT(*) FROM book_requests WHERE user_id = ? AND created_at >= ?"
+			q := "SELECT COUNT(*) FROM book_requests WHERE user_id = ? AND counts_toward_quota = 1 AND created_at >= ?"
 			if err := s.db.QueryRowContext(ctx, q, input.UserID, cutoff).Scan(&monthlyCount); err != nil {
 				return nil, fmt.Errorf("failed to check monthly request quota: %w", err)
 			}
@@ -158,64 +177,74 @@ func (s *RequestService) SubmitRequest(ctx context.Context, input CreateRequestI
 		}
 	}
 
+	if input.BookID == nil || *input.BookID == "" {
+		c := catalog.New(s.db)
+		author, err := c.GetOrCreateAuthor(ctx, input.Author)
+		if err != nil {
+			return nil, err
+		}
+		book := &database.Book{AuthorID: author.ID, Title: input.Title, Synopsis: &input.Synopsis, SeriesIndex: input.SeriesIndex}
+		if input.Year > 0 {
+			date := fmt.Sprintf("%04d-01-01", input.Year)
+			book.ReleaseDate = &date
+		}
+		if strings.TrimSpace(input.Series) != "" {
+			series, err := c.GetOrCreateSeries(ctx, input.Series)
+			if err != nil {
+				return nil, err
+			}
+			if series != nil {
+				book.SeriesID = &series.ID
+			}
+		}
+		book, err = c.GetOrCreateBook(ctx, book)
+		if err != nil {
+			return nil, err
+		}
+		input.BookID = &book.ID
+	}
+	if cover, err := url.Parse(input.CoverURL); err != nil || cover.Host == "" || (cover.Scheme != "https" && cover.Scheme != "http") || cover.User != nil {
+		input.CoverURL = ""
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
 	now := time.Now().UTC()
 	status := StatusSearching
 	if input.ManualOnly {
 		status = StatusError
 	}
-	monitored := true
-	insertQuery := `
-		INSERT INTO book_requests (
-			user_id, book_id, title, author, format, status,
-			monitored,
-			created_at, updated_at, year
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`
-	monitoredInt := 0
-	if monitored {
-		monitoredInt = 1
+	formats := []string{input.Format}
+	if input.Format == FormatBoth {
+		formats = []string{FormatEPUB, FormatM4B}
 	}
-
-	res, err := s.db.ExecContext(ctx, insertQuery,
-		input.UserID,
-		input.BookID,
-		input.Title,
-		input.Author,
-		input.Format,
-		status,
-		monitoredInt,
-		now,
-		now,
-		input.Year,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to insert book request: %w", err)
+	var created []*BookRequest
+	for i, format := range formats {
+		res, err := tx.ExecContext(ctx, `INSERT INTO book_requests
+			(user_id, book_id, title, author, format, status, created_at, updated_at, year, counts_toward_quota, cover_url)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+			input.UserID, input.BookID, input.Title, input.Author, format, status, now, now, input.Year, i == 0, input.CoverURL)
+		if err != nil {
+			return nil, err
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return nil, err
+		}
+		created = append(created, &BookRequest{ID: id, UserID: input.UserID, Username: username, BookID: input.BookID,
+			Title: input.Title, Author: input.Author, Format: format, Status: status, Monitored: true,
+			CreatedAt: now, UpdatedAt: now, Year: input.Year, CoverURL: input.CoverURL, Stage: "queued"})
+		if _, err := tx.ExecContext(ctx, "UPDATE book_editions SET monitored=1, updated_at=? WHERE book_id=? AND format=?", now, input.BookID, format); err != nil {
+			return nil, err
+		}
 	}
-
-	requestID, err := res.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get request id: %w", err)
-	}
-	slog.InfoContext(ctx, "book request created", "request_id", requestID, "status", status)
-
-	req, err := s.GetRequest(ctx, requestID)
-	if err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE books SET monitored=1, synopsis=COALESCE(NULLIF(synopsis,''), NULLIF(?,'')), updated_at=? WHERE id=?", input.Synopsis, now, input.BookID); err != nil {
 		return nil, err
 	}
-
-	if monitored {
-		if input.BookID != nil && *input.BookID != "" {
-			_ = s.markBookMonitored(ctx, *input.BookID, input.Format)
-		}
-		s.mu.RLock()
-		trigger := s.cfg.SearchTrigger
-		s.mu.RUnlock()
-		if trigger != nil {
-			_ = trigger.TriggerSearch(ctx, req)
-		}
-	}
-
-	return req, nil
+	return created, tx.Commit()
 }
 
 // MarkDownloading transitions a searching request to downloading status.
@@ -230,7 +259,7 @@ func (s *RequestService) MarkDownloading(ctx context.Context, requestID int64) e
 	}
 
 	now := time.Now().UTC()
-	query := "UPDATE book_requests SET status = ?, updated_at = ? WHERE id = ?"
+	query := "UPDATE book_requests SET status = ?, updated_at = ? WHERE id = ? AND dismissed = 0"
 	_, err = s.db.ExecContext(ctx, query, StatusDownloading, now, requestID)
 	return err
 }
@@ -247,7 +276,7 @@ func (s *RequestService) MarkAvailable(ctx context.Context, requestID int64) err
 	}
 
 	now := time.Now().UTC()
-	query := "UPDATE book_requests SET status = ?, updated_at = ? WHERE id = ?"
+	query := "UPDATE book_requests SET status = ?, updated_at = ? WHERE id = ? AND dismissed = 0"
 	_, err = s.db.ExecContext(ctx, query, StatusAvailable, now, requestID)
 	return err
 }
@@ -256,10 +285,14 @@ func (s *RequestService) MarkAvailable(ctx context.Context, requestID int64) err
 func (s *RequestService) GetRequest(ctx context.Context, requestID int64) (*BookRequest, error) {
 	query := `
 		SELECT r.id, r.user_id, COALESCE(u.username, ''), r.book_id, r.title, r.author, r.format, r.status,
-		       r.monitored, r.created_at, r.updated_at
+		       r.monitored, r.created_at, r.updated_at, r.year, r.cover_url,
+		       CASE WHEN EXISTS (SELECT 1 FROM download_queue q WHERE q.request_id=r.id AND q.status IN ('importing','converting')) THEN 'importing'
+		            WHEN r.status = 'available' THEN 'available'
+		            WHEN r.status = 'downloading' THEN 'downloading'
+		            ELSE COALESCE((SELECT stage FROM request_events WHERE request_id=r.id AND stage!='' ORDER BY id DESC LIMIT 1), 'queued') END
 		FROM book_requests r
 		LEFT JOIN users u ON r.user_id = u.id
-		WHERE r.id = ?
+		WHERE r.id = ? AND r.dismissed = 0
 	`
 
 	var (
@@ -279,7 +312,7 @@ func (s *RequestService) GetRequest(ctx context.Context, requestID int64) (*Book
 		&req.Status,
 		&monitoredI,
 		&req.CreatedAt,
-		&req.UpdatedAt,
+		&req.UpdatedAt, &req.Year, &req.CoverURL, &req.Stage,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -302,10 +335,14 @@ func (s *RequestService) GetRequest(ctx context.Context, requestID int64) (*Book
 func (s *RequestService) ListRequests(ctx context.Context, filter RequestFilter) ([]BookRequest, error) {
 	query := `
 		SELECT r.id, r.user_id, COALESCE(u.username, ''), r.book_id, r.title, r.author, r.format, r.status,
-		       r.monitored, r.created_at, r.updated_at
+		       r.monitored, r.created_at, r.updated_at, r.year, r.cover_url,
+		       CASE WHEN EXISTS (SELECT 1 FROM download_queue q WHERE q.request_id=r.id AND q.status IN ('importing','converting')) THEN 'importing'
+		            WHEN r.status = 'available' THEN 'available'
+		            WHEN r.status = 'downloading' THEN 'downloading'
+		            ELSE COALESCE((SELECT stage FROM request_events WHERE request_id=r.id AND stage!='' ORDER BY id DESC LIMIT 1), 'queued') END
 		FROM book_requests r
 		LEFT JOIN users u ON r.user_id = u.id
-		WHERE 1=1
+		WHERE r.dismissed = 0
 	`
 	var args []any
 
@@ -361,7 +398,7 @@ func (s *RequestService) ListRequests(ctx context.Context, filter RequestFilter)
 			&req.Status,
 			&monitoredI,
 			&req.CreatedAt,
-			&req.UpdatedAt,
+			&req.UpdatedAt, &req.Year, &req.CoverURL, &req.Stage,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan book request row: %w", err)
@@ -382,20 +419,4 @@ func (s *RequestService) ListRequests(ctx context.Context, filter RequestFilter)
 	}
 
 	return results, nil
-}
-
-func (s *RequestService) markBookMonitored(ctx context.Context, bookID string, format string) error {
-	now := time.Now().UTC()
-	_, _ = s.db.ExecContext(ctx, "UPDATE books SET monitored = 1, updated_at = ? WHERE id = ?", now, bookID)
-
-	switch strings.ToLower(format) {
-	case FormatEPUB:
-		_, _ = s.db.ExecContext(ctx, "UPDATE book_editions SET monitored = 1, updated_at = ? WHERE book_id = ? AND format = 'epub'", now, bookID)
-	case FormatM4B:
-		_, _ = s.db.ExecContext(ctx, "UPDATE book_editions SET monitored = 1, updated_at = ? WHERE book_id = ? AND format = 'm4b'", now, bookID)
-	default:
-		_, _ = s.db.ExecContext(ctx, "UPDATE book_editions SET monitored = 1, updated_at = ? WHERE book_id = ?", now, bookID)
-	}
-
-	return nil
 }

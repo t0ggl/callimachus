@@ -12,7 +12,8 @@ import {
   Book,
   Author,
   Series,
-  BookRequest,
+  mapBookRequest,
+  RequestMetadata,
   IndexerConfig,
   LibrarySettings,
   LogLevel,
@@ -21,7 +22,6 @@ import {
   SettingsOverridesMap,
   UserProfile,
   RequestType,
-  RequestStatus,
 } from './types';
 
 interface AppProps {
@@ -62,7 +62,6 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
   const [books, setBooks] = useState<Book[]>([]);
   const [authors, setAuthors] = useState<Author[]>([]);
   const [series, setSeries] = useState<Series[]>([]);
-  const [requests, setRequests] = useState<BookRequest[]>([]);
   const [indexers, setIndexers] = useState<IndexerConfig[]>([]);
   const [librarySettings, setLibrarySettings] = useState<LibrarySettings>({
     rootPath: './books',
@@ -92,7 +91,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
 
   // Real-time activity stream for live pipeline updates
   const {
-    logs, setLogs,
+    logs, setLogs, requests, setRequests,
     conversionJobs,
     setConversionJobs,
     downloads,
@@ -172,22 +171,13 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
-          const mapped: BookRequest[] = data.map((r: any) => ({
-            id: String(r.id),
-            title: r.title,
-            author: r.author,
-            requestedBy: r.username || 'Anonymous',
-            requestType: (r.format === 'epub' ? 'ebook' : r.format === 'm4b' ? 'audiobook' : 'both') as RequestType,
-            status: r.status as RequestStatus,
-            requestedAt: r.created_at,
-          }));
-          setRequests(mapped);
+          setRequests(data.map(mapBookRequest));
         }
       }
     } catch (err) {
       console.error('Failed to load requests', err);
     }
-  }, [redirectToOIDC]);
+  }, [redirectToOIDC, setRequests]);
 
   const fetchActivity = useCallback(async () => {
     try {
@@ -201,11 +191,12 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
         if (data.conversionJobs) setConversionJobs(data.conversionJobs);
         if (data.downloads) setDownloads(data.downloads);
         if (data.logs) setLogs(data.logs);
+        if (Array.isArray(data.requests)) setRequests(data.requests.map(mapBookRequest));
       }
     } catch (err) {
       console.error('Failed to load activity', err);
     }
-  }, [setConversionJobs, setDownloads, setLogs, redirectToOIDC]);
+  }, [setConversionJobs, setDownloads, setLogs, setRequests, redirectToOIDC]);
 
   const applySettingsResponse = useCallback((data: any) => {
     if (!data || typeof data !== 'object') return;
@@ -365,7 +356,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
       }
 
       // View switching shortcuts 1, 2, 3
-      if (!isInput && !isPaletteOpen && !selectedBook && !selectedSeries) {
+      if (!isInput && !isPaletteOpen && !selectedBook && !selectedSeries && !document.querySelector('dialog[open]')) {
         if (e.key === '1') {
           window.location.hash = '';
           setCurrentView('catalog');
@@ -388,14 +379,15 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
     title: string,
     author: string,
     type: RequestType,
-    year?: number
+    year?: number,
+    metadata?: RequestMetadata
   ) => {
     try {
       const format = type === 'ebook' ? 'epub' : type === 'audiobook' ? 'm4b' : 'both';
       const res = await fetch('/api/requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, author, format, year }),
+        body: JSON.stringify({ title, author, format, year, ...metadata }),
       });
       if (!res.ok) throw new Error('Unable to add this book. Please try again.');
       await fetchRequests();
@@ -442,6 +434,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
           <div className="space-y-6">
           <ActivityView
             requests={requests}
+            canManageJobs={currentUser?.role === 'admin' || currentUser?.role === 'curator'}
             conversionJobs={conversionJobs}
             downloads={downloads}
             logs={logs}

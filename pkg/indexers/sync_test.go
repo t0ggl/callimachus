@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -106,7 +105,7 @@ func TestSyncer_PeriodicExecution(t *testing.T) {
 	t.Parallel()
 
 	db := setupTestDB(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	_, err := db.ExecContext(ctx, `
@@ -117,9 +116,19 @@ VALUES ('mock-indexer-periodic', 'Periodic Indexer', 'torznab', 'https://indexer
 		t.Fatalf("failed to insert indexer: %v", err)
 	}
 
-	mt := testutil.NewMockTransport()
 	expectedURL := "https://indexer.example.local/api?apikey=key1&cat=7000&limit=50&t=search"
-	mt.RegisterFixture(expectedURL, http.StatusOK, "testdata/torznab/feed_rss.xml", nil)
+	fixture := testutil.NewMockTransportForTest(t)
+	fixture.RegisterFixture(expectedURL, http.StatusOK, "testdata/torznab/feed_rss.xml", nil)
+	secondSync := make(chan struct{})
+	calls := 0
+	mt := testutil.NewMockTransportForTest(t)
+	mt.RegisterHandler(expectedURL, func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 2 {
+			close(secondSync)
+		}
+		return fixture.RoundTrip(req)
+	})
 
 	cfg := indexers.SyncerConfig{
 		Interval:     20 * time.Millisecond,
@@ -131,23 +140,24 @@ VALUES ('mock-indexer-periodic', 'Periodic Indexer', 'torznab', 'https://indexer
 
 	syncer := indexers.NewSyncer(db.DB, cfg)
 
-	var callbackCount int32
+	var callbackCount int
 	syncer.SetHandler(func(ctx context.Context, release indexers.Release) error {
-		atomic.AddInt32(&callbackCount, 1)
+		callbackCount++
 		return nil
 	})
 
 	syncer.Start(ctx)
-
-	// Wait for initial sync and at least one periodic tick
-	time.Sleep(80 * time.Millisecond)
-
+	defer syncer.Stop()
+	select {
+	case <-secondSync:
+	case <-ctx.Done():
+		t.Fatal("syncer did not make a periodic request")
+	}
 	syncer.Stop()
 
 	// Initial sync gives 3 callbacks; subsequent ticks deduplicate, so count should be 3
-	count := atomic.LoadInt32(&callbackCount)
-	if count != 3 {
-		t.Errorf("expected exactly 3 callbacks after deduplicated ticks, got %d", count)
+	if callbackCount != 3 {
+		t.Errorf("expected exactly 3 callbacks after deduplicated ticks, got %d", callbackCount)
 	}
 
 	// Verify last_sync_at was recorded

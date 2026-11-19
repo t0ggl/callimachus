@@ -148,14 +148,14 @@ func TestStagingMonitor_MultiPartMP3_DispatchesToConverter(t *testing.T) {
 		t.Fatalf("PollOnce multi-part mp3 failed: %v", err)
 	}
 
-	// Verify download_queue is completed
+	// Verify the download waits for conversion
 	var status string
 	err = db.QueryRowContext(ctx, `SELECT status FROM download_queue WHERE id = 'dq-audio-mp3'`).Scan(&status)
 	if err != nil {
 		t.Fatalf("query queue status failed: %v", err)
 	}
-	if status != "completed" {
-		t.Errorf("expected status 'completed', got '%s'", status)
+	if status != "converting" {
+		t.Errorf("expected status 'converting', got '%s'", status)
 	}
 
 	// Verify task was enqueued into conversion_queue
@@ -453,5 +453,29 @@ func TestStagingMonitor_SingleMP3RequiresConversion(t *testing.T) {
 	}
 	if _, err := os.Stat(source); err != nil {
 		t.Fatalf("MP3 source lost: %v", err)
+	}
+}
+
+func TestStagingIgnoresLateCancelledDownload(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	_, err := db.Exec(`
+		INSERT INTO download_queue(id,download_client_task_id,title,protocol,status)
+			VALUES('old','client','Cancelled Release','torrent','queued');
+		UPDATE download_queue SET status='cancelled' WHERE id='old';
+		DELETE FROM download_queue WHERE id='old';`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "Cancelled Release.epub"), []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{DB: db, CompletedRoot: root})
+	if err := sm.PollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRow("SELECT count(*) FROM download_queue").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("late cancelled release queued again: %d %v", count, err)
 	}
 }

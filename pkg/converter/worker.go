@@ -2,6 +2,7 @@ package converter
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -99,10 +100,39 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	}
 
 	slog.InfoContext(ctx, "conversion job started", "job_id", job.ID, "attempt", job.Attempts)
-	err = w.ProcessJob(ctx, job)
+	jobCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			var cancelled bool
+			err := w.queue.db.QueryRowContext(jobCtx, "SELECT status='cancelled' FROM conversion_queue WHERE id=?", job.ID).Scan(&cancelled)
+			if cancelled || errors.Is(err, sql.ErrNoRows) {
+				stop()
+				return
+			}
+			select {
+			case <-jobCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	err = w.ProcessJob(jobCtx, job)
+	cancelled := jobCtx.Err() != nil && ctx.Err() == nil
+	stop()
+	<-done
+	if cancelled {
+		return true, nil
+	}
 	if err != nil {
 		slog.WarnContext(ctx, "conversion job failed", "job_id", job.ID, "attempt", job.Attempts)
 		failErr := w.queue.FailJob(ctx, job.ID, err)
+		if errors.Is(failErr, ErrJobNotFound) {
+			return true, nil
+		}
 		if failErr != nil {
 			slog.ErrorContext(ctx, "conversion worker could not save job failure", "job_id", job.ID)
 			return true, fmt.Errorf("job failed with: %v, queue fail update failed: %w", err, failErr)
@@ -233,7 +263,9 @@ func (w *Worker) ProcessJob(ctx context.Context, job *database.ConversionQueueIt
 	w.reportStage(ctx, job.ID, StageTagging, 90.0)
 
 	// Step 5: Moving atomically to canonical destination
-	w.reportStage(ctx, job.ID, StageMoving, 95.0)
+	if err := w.reportStage(ctx, job.ID, StageMoving, 95.0); err != nil {
+		return err
+	}
 
 	targetDir := filepath.Dir(job.TargetPath)
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
@@ -254,12 +286,15 @@ func (w *Worker) ProcessJob(ctx context.Context, job *database.ConversionQueueIt
 	return nil
 }
 
-func (w *Worker) reportStage(ctx context.Context, jobID, stage string, percent float64) {
+func (w *Worker) reportStage(ctx context.Context, jobID, stage string, percent float64) error {
 	slog.DebugContext(ctx, "conversion job stage changed", "job_id", jobID, "stage", stage)
-	_ = w.queue.UpdateProgress(ctx, jobID, stage, percent, nil)
+	if err := w.queue.UpdateProgress(ctx, jobID, stage, percent, nil); err != nil {
+		return err
+	}
 	if w.cfg.OnStageChange != nil {
 		w.cfg.OnStageChange(stage, percent)
 	}
+	return nil
 }
 
 func findCoverImage(sourcePath string) string {

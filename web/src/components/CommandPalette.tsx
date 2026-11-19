@@ -1,14 +1,14 @@
 import { EntityLink } from './EntityLink';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, Book as BookIcon, User, Layers, ArrowRight, CornerDownLeft, X } from 'lucide-react';
-import { Book, Author, Series, RequestType } from '../types';
+import { Book, Author, Series, RequestMetadata, RequestType } from '../types';
 
 import { DiscoveryResults } from './DiscoveryResults';
 import { SeriesBadge } from './SeriesBadge';
 import { SeriesDetailModal } from './SeriesDetailModal';
 
 interface CommandPaletteProps {
-  onSubmitRequest?: (title: string, author: string, type: RequestType, year?: number) => Promise<void>;
+  onSubmitRequest?: (title: string, author: string, type: RequestType, year?: number, metadata?: RequestMetadata) => Promise<void>;
   onOpenBook?: (id: string) => void;
   isOpen: boolean;
   onClose: () => void;

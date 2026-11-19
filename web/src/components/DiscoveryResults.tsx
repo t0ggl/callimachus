@@ -1,11 +1,12 @@
 import { EntityLink } from './EntityLink';
 import { useState, useEffect } from 'react';
 import { Check, Plus, Loader2, BookOpen, AlertCircle, CheckCircle2, Search } from 'lucide-react';
-import { RequestType } from '../types';
+import { RequestMetadata, RequestType } from '../types';
 import { SeriesBadge } from './SeriesBadge';
 import { SeriesDetailModal } from './SeriesDetailModal';
 
 type Match = {
+  description?: string;
   cover_url?: string;
   series?: string;
   series_index?: number;
@@ -24,6 +25,7 @@ interface Props {
     author: string,
     type: RequestType,
     year?: number,
+    metadata?: RequestMetadata,
   ) => Promise<void>;
 }
 
@@ -113,7 +115,13 @@ export function DiscoveryResults({ query, onSubmitRequest, onOpenBook }: Props) 
     setErrorSource(null);
     setMessage('');
     try {
-      await onSubmitRequest(m.title, authorText, format, m.year);
+      await onSubmitRequest(m.title, authorText, format, m.year, {
+        book_id: m.library_book_id,
+        cover_url: m.cover_url,
+        series: m.series,
+        series_index: m.series_index,
+        synopsis: m.description,
+      });
       setAdded((prev) => (prev.includes(itemKey) ? prev : [...prev, itemKey]));
       setMessage(`Added ${m.title}. Acquisition will run in the background.`);
     } catch (e) {

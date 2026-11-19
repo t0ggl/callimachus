@@ -24,6 +24,7 @@ describe('book discovery', () => {
             title: 'Dune',
             authors: ['Frank Herbert'],
             year: 1965,
+            description: 'A desert planet',
             cover_url: 'https://covers.example/dune.jpg',
             series: 'Dune Chronicles',
             series_index: 1,
@@ -53,7 +54,13 @@ describe('book discovery', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Adding book to queue');
 
     resolveAdd();
-    expect(add).toHaveBeenCalledWith('Dune', 'Frank Herbert', 'both', 1965);
+    expect(add).toHaveBeenCalledWith('Dune', 'Frank Herbert', 'both', 1965, {
+      book_id: undefined,
+      cover_url: 'https://covers.example/dune.jpg',
+      series: 'Dune Chronicles',
+      series_index: 1,
+      synopsis: 'A desert planet',
+    });
     expect(await screen.findByText(/Added Dune/)).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('Added Dune');
     expect(screen.getByRole('button', { name: 'Added Dune' })).toBeDisabled();
@@ -150,7 +157,7 @@ describe('book discovery', () => {
     await user.selectOptions(formatSelect, 'audiobook');
     await user.click(await screen.findByRole('button', { name: 'Add Foundation' }));
 
-    expect(add).toHaveBeenCalledWith('Foundation', 'Isaac Asimov', 'audiobook', 1951);
+    expect(add).toHaveBeenCalledWith('Foundation', 'Isaac Asimov', 'audiobook', 1951, expect.any(Object));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Request quota exceeded');
     expect(within(alert).queryByRole('button', { name: 'Retry search' })).not.toBeInTheDocument();

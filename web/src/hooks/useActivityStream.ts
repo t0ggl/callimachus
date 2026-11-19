@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { ConversionJob, DownloadItem, ImportLog } from '../types';
+import { BookRequest, ConversionJob, DownloadItem, ImportLog, mapBookRequest } from '../types';
 
 export interface ActivityStreamEvent {
   type: 'conversion_progress' | 'download_progress' | 'job_status_change';
@@ -18,6 +18,7 @@ export function useActivityStream({
   initialDownloads = [],
 }: ActivityStreamOptions = {}) {
   const [conversionJobs, setConversionJobs] = useState<ConversionJob[]>(initialConversionJobs);
+  const [requests, setRequests] = useState<BookRequest[]>([]);
   const [logs, setLogs] = useState<ImportLog[]>([]);
   const [downloads, setDownloads] = useState<DownloadItem[]>(initialDownloads);
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'connecting' | 'disconnected'>('connecting');
@@ -59,6 +60,7 @@ export function useActivityStream({
             setConversionJobs(data.conversionJobs || []);
             setDownloads(data.downloads || []);
             setLogs(data.logs || []);
+            if (Array.isArray(data.requests)) setRequests(data.requests.map(mapBookRequest));
           } catch (err) { console.error('Failed to read activity update', err); }
         });
 
@@ -104,7 +106,7 @@ export function useActivityStream({
   }, [url, handleConversionUpdate, handleDownloadUpdate]);
 
   return {
-    logs, setLogs,
+    logs, setLogs, requests, setRequests,
     conversionJobs,
     setConversionJobs,
     downloads,

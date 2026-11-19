@@ -38,7 +38,7 @@ func (db *DB) pruneLogBatch(ctx context.Context, table, cutoff string) (int64, e
 	// Table names come exclusively from PruneLogs, never from user input.
 	query := `SELECT id FROM ` + table + ` WHERE status IN ('completed', 'failed', 'cancelled') AND updated_at < ? AND created_at < ?`
 	if table == "download_queue" {
-		query += ` AND NOT EXISTS (SELECT 1 FROM acquisition_candidates c JOIN book_requests r ON r.id=c.request_id WHERE c.queue_id=download_queue.id AND r.status != 'available')`
+		query += ` AND NOT EXISTS (SELECT 1 FROM acquisition_candidates c JOIN book_requests r ON r.id=c.request_id WHERE c.queue_id=download_queue.id AND r.dismissed=0 AND r.status != 'available')`
 	}
 	query += ` LIMIT 500`
 	tx, err := db.BeginTx(ctx, nil)

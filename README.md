@@ -95,6 +95,14 @@ integration must report terminal transfer failures with authenticated
 or Admin session (cookie or Bearer token). This records failure for the background engine to select
 the next candidate. Prowlarr itself does not report downstream transfer status.
 
+Requesting both formats creates separate eBook and Audiobook entries in
+**Activity**. Open either entry to see its book details, acquisition stages and
+search log. Cancel stops Callimachus work for that entry, including queued or
+running conversion, and skips late files for the cancelled release. Stop a
+transfer already handed off by Prowlarr in its download client. A file already
+being published finishes before its activity can be dismissed. Remove hides
+finished activity and keeps its library files.
+
 ### Automatic eBook conversion
 
 In Settings → Quality Profile, enable “Automatically convert eBooks to target format”

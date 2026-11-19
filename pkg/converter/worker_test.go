@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/testutil"
@@ -458,5 +459,57 @@ func TestWorkerEbookRealCalibre(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+type cancellableEbookRunner struct {
+	*MockRunner
+	started chan struct{}
+}
+
+func (r cancellableEbookRunner) Run(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+	close(r.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestWorkerStopsCancelledConversion(t *testing.T) {
+	queue, db := setupTestQueueDB(t)
+	ctx, stop := context.WithTimeout(context.Background(), 3*time.Second)
+	defer stop()
+	job, err := queue.EnqueueEbook(ctx, "synth-ed-1", filepath.Join(t.TempDir(), "source.mobi"), t.TempDir(),
+		catalog.BookDetails{Title: "Book", Author: "Author", Format: "epub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := cancellableEbookRunner{MockRunner: NewMockRunner(), started: make(chan struct{})}
+	worker := NewWorker(queue, runner, WorkerConfig{WorkerID: "worker", WorkDir: t.TempDir()})
+	done := make(chan error, 1)
+	go func() {
+		_, err := worker.RunOnce(ctx)
+		done <- err
+	}()
+	select {
+	case <-runner.started:
+	case <-ctx.Done():
+		t.Fatal("conversion did not start")
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE conversion_queue SET status='cancelled' WHERE id=?", job.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("mock conversion command was not interrupted")
+	}
+	got, err := queue.GetJob(ctx, job.ID)
+	if err != nil || got.Status != StatusCancelled || got.Attempts != 0 {
+		t.Fatalf("cancelled conversion was retried: %+v %v", got, err)
+	}
+	if _, err := os.Stat(job.TargetPath); !os.IsNotExist(err) {
+		t.Fatalf("cancelled output was published: %v", err)
 	}
 }

@@ -37,7 +37,7 @@ func acquisitionFixture(t *testing.T) (*Acquisition, int64, *int, *int) {
 		t.Fatal(err)
 	}
 	searches, grabs := 0, 0
-	a := &Acquisition{DB: db, Search: func(context.Context, string) ([]indexers.ProwlarrRelease, error) {
+	a := &Acquisition{DB: db, Search: func(context.Context, string, string) ([]indexers.ProwlarrRelease, error) {
 		searches++
 		out := []indexers.ProwlarrRelease{}
 		for i := 0; i < 5; i++ {
@@ -208,7 +208,7 @@ func TestManualOverrideAndCandidateAuthorization(t *testing.T) {
 
 func TestHighestPositiveCandidateWins(t *testing.T) {
 	a, id, _, grabs := acquisitionFixture(t)
-	a.Search = func(context.Context, string) ([]indexers.ProwlarrRelease, error) {
+	a.Search = func(context.Context, string, string) ([]indexers.ProwlarrRelease, error) {
 		return []indexers.ProwlarrRelease{{GUID: "low", IndexerID: 1, Title: "Book EPUB"}, {GUID: "best", IndexerID: 1, Title: "Book EPUB", Seeders: 100, Verified: true}, {GUID: "excluded", IndexerID: 1, Title: "foreign EPUB", Seeders: 200}}, nil
 	}
 	a.Evaluate = func(_ context.Context, r indexers.ProwlarrRelease) (bool, []string, error) {
@@ -240,7 +240,7 @@ func TestFailurePenaltyMakesMaximumScoreNegative(t *testing.T) {
 	a, id, _, _ := acquisitionFixture(t)
 	ctx := context.Background()
 	mustExec(t, a, `UPDATE book_requests SET year=2024 WHERE id=?`, id)
-	a.Search = func(context.Context, string) ([]indexers.ProwlarrRelease, error) {
+	a.Search = func(context.Context, string, string) ([]indexers.ProwlarrRelease, error) {
 		return []indexers.ProwlarrRelease{{GUID: "max", IndexerID: 1, Title: "Book EPUB 2024", Seeders: 50, Verified: true}}, nil
 	}
 	if err := a.Refresh(ctx, id); err != nil {

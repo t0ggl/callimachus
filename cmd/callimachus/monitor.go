@@ -49,26 +49,37 @@ func (s *Server) searchMonitoredBook(ctx context.Context, id string) error {
 	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO users(id,username,email,role,auth_source) VALUES('catalog-monitor','catalog-monitor','catalog-monitor@invalid','guest','system')`); err != nil {
 		return err
 	}
-	var requestID int64
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM book_requests WHERE book_id=? AND status IN ('searching','downloading','available') ORDER BY id DESC LIMIT 1`, id).Scan(&requestID)
-	if errors.Is(err, sql.ErrNoRows) {
-		result, e := s.db.ExecContext(ctx, `INSERT INTO book_requests(user_id,book_id,title,author,format,status,year) SELECT 'catalog-monitor',b.id,b.title,a.name,'both','searching',COALESCE(CAST(substr(b.release_date,1,4) AS INTEGER),0) FROM books b JOIN authors a ON a.id=b.author_id WHERE b.id=?`, id)
-		if e != nil {
-			return e
-		}
-		requestID, err = result.LastInsertId()
+
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO book_requests(user_id,book_id,title,author,format,status,year)
+		SELECT 'catalog-monitor',b.id,b.title,a.name,f.format,'searching',COALESCE(CAST(substr(b.release_date,1,4) AS INTEGER),0)
+		FROM books b JOIN authors a ON a.id=b.author_id
+		CROSS JOIN (SELECT 'epub' AS format UNION ALL SELECT 'm4b') f
+		WHERE b.id=? AND NOT EXISTS(SELECT 1 FROM book_requests r WHERE r.book_id=b.id
+			AND r.status IN ('searching','downloading','available','cancelled'))`, id); err != nil {
+		return err
 	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM book_requests WHERE book_id=? AND status='searching' AND dismissed=0`, id)
 	if err != nil {
 		return err
 	}
-	var status string
-	if err = s.db.QueryRowContext(ctx, `SELECT status FROM book_requests WHERE id=?`, requestID).Scan(&status); err != nil {
+	var ids []int64
+	for rows.Next() {
+		var requestID int64
+		if err := rows.Scan(&requestID); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, requestID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
 		return err
 	}
-	if status != "searching" {
-		return nil
+	var refreshErr error
+	for _, requestID := range ids {
+		refreshErr = errors.Join(refreshErr, s.acquisition.Refresh(ctx, requestID))
 	}
-	return s.acquisition.Refresh(ctx, requestID)
+	return refreshErr
 }
 
 func (s *Server) runCatalogMonitor(ctx context.Context) {
