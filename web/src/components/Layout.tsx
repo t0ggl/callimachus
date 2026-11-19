@@ -209,7 +209,7 @@ export const Layout: React.FC<LayoutProps> = ({
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
         {/* Top Header Bar */}
-        <header className="h-14 bg-zinc-900 border-b border-zinc-800 flex items-center justify-between px-6 shrink-0">
+        <header className="h-14 bg-zinc-900 border-b border-zinc-800 flex items-center px-6 shrink-0">
           {/* Global Search / Command Palette Trigger */}
           <button
             onClick={onOpenPalette}
@@ -230,24 +230,6 @@ export const Layout: React.FC<LayoutProps> = ({
               <kbd className="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded-sm">/</kbd>
             </div>
           </button>
-
-          {/* Quick status bar items */}
-          <div className="hidden md:flex items-center gap-4">
-            <div className="flex items-center gap-2 text-xs">
-              <button
-                type="button"
-                onClick={() => onNavigate('activity')}
-                className="cursor-pointer flex items-center gap-1.5 px-2.5 py-1 rounded-sm bg-zinc-800/60 hover:bg-zinc-800 text-zinc-300 border border-zinc-700/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
-                title="Active Downloads"
-                aria-label={`Active Downloads: ${activeAcquisitionsCount}`}
-              >
-                <DownloadCloud aria-hidden="true" className="w-3.5 h-3.5 text-cyan-400" />
-                <span className="font-mono text-[11px]">{activeAcquisitionsCount}</span>
-              </button>
-            </div>
-
-
-          </div>
         </header>
 
         {/* View Viewport */}

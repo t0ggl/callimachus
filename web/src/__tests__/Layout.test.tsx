@@ -45,31 +45,16 @@ describe('Layout build version badge', () => {
   });
 });
 
-describe('Layout active downloads metric', () => {
-  it.each([[0, 0], [3, 0], [0, 2], [3, 2]])(
-    'combines %i downloads and %i conversions into one header counter',
-    (downloads, conversions) => {
-      render(<Layout {...props} activeDownloadsCount={downloads} convertingJobsCount={conversions} />);
-      const header = within(screen.getByRole('banner'));
-      const metric = header.getByRole('button', { name: `Active Downloads: ${downloads + conversions}` });
-      expect(metric).toHaveTextContent(String(downloads + conversions));
-      expect(header.queryByTitle('Active Conversions')).not.toBeInTheDocument();
-      expect(header.getAllByTitle('Active Downloads')).toHaveLength(1);
-    },
-  );
-
-  it.each(['click', 'Enter', ' '])('opens Activity using %s', async (action) => {
-    const user = userEvent.setup({ delay: null });
-    const onNavigate = vi.fn();
-    render(<Layout {...props} onNavigate={onNavigate} activeDownloadsCount={1} convertingJobsCount={2} />);
-    const metric = screen.getByRole('button', { name: 'Active Downloads: 3' });
-    if (action === 'click') await user.click(metric);
-    else {
-      metric.focus();
-      await user.keyboard(action === 'Enter' ? '{Enter}' : ' ');
-    }
-    expect(onNavigate).toHaveBeenCalledExactlyOnceWith('activity');
-  });
+it('keeps the acquisition count and navigation on Activity while the top bar only offers search', async () => {
+  const user = userEvent.setup({ delay: null });
+  const onNavigate = vi.fn();
+  render(<Layout {...props} onNavigate={onNavigate} activeDownloadsCount={1} convertingJobsCount={2} />);
+  const header = within(screen.getByRole('banner'));
+  expect(header.getAllByRole('button')).toEqual([header.getByTestId('global-search-trigger')]);
+  const activity = screen.getByRole('button', { name: 'Activity 3' });
+  activity.focus();
+  await user.keyboard('{Enter}');
+  expect(onNavigate).toHaveBeenCalledExactlyOnceWith('activity');
 });
 
 it('removes logo subtitle, mode badge and legacy labels', () => {
