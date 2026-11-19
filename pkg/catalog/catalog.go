@@ -240,7 +240,29 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 	existing, err := c.GetBookByAuthorAndTitle(ctx, book.AuthorID, cleanTitle)
 	if err == nil {
 		// Update missing series info or strictly more precise release date if newly provided.
-		var mergedRelease *string
+		updated := false
+		if existing.SeriesID == nil && book.SeriesID != nil {
+			sID := *book.SeriesID
+			existing.SeriesID = &sID
+			updated = true
+		}
+		sameOrEmptySeries := book.SeriesID == nil || existing.SeriesID == nil || *existing.SeriesID == *book.SeriesID
+		if existing.SeriesIndex == nil && book.SeriesIndex != nil && sameOrEmptySeries {
+			idx := *book.SeriesIndex
+			existing.SeriesIndex = &idx
+			if book.SeriesIndexDisplay != nil && *book.SeriesIndexDisplay != "" {
+				d := *book.SeriesIndexDisplay
+				existing.SeriesIndexDisplay = &d
+			} else {
+				d := SeriesIndexLabel(existing.SeriesIndex)
+				existing.SeriesIndexDisplay = &d
+			}
+			updated = true
+		} else if existing.SeriesIndex != nil && (existing.SeriesIndexDisplay == nil || *existing.SeriesIndexDisplay == "") {
+			d := SeriesIndexLabel(existing.SeriesIndex)
+			existing.SeriesIndexDisplay = &d
+			updated = true
+		}
 		if book.ReleaseDate != nil {
 			if cand := metadata.NormalizeReleaseDate(*book.ReleaseDate, 0); cand != "" {
 				cur := ""
@@ -249,19 +271,12 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 				}
 				normCur := metadata.NormalizeReleaseDate(cur, 0)
 				if normCur == "" || (len(cand) > len(normCur) && strings.HasPrefix(cand, normCur)) {
-					mergedRelease = &cand
+					existing.ReleaseDate = &cand
+					updated = true
 				}
 			}
 		}
-		if (existing.SeriesID == nil && book.SeriesID != nil) || mergedRelease != nil {
-			if book.SeriesID != nil {
-				existing.SeriesID = book.SeriesID
-				existing.SeriesIndex = book.SeriesIndex
-				existing.SeriesIndexDisplay = book.SeriesIndexDisplay
-			}
-			if mergedRelease != nil {
-				existing.ReleaseDate = mergedRelease
-			}
+		if updated {
 			_ = c.UpsertBook(ctx, existing)
 		}
 		return existing, nil
@@ -274,6 +289,10 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 		book.ID = uuid.NewString()
 	}
 	book.Title = cleanTitle
+	if book.SeriesIndex != nil && (book.SeriesIndexDisplay == nil || *book.SeriesIndexDisplay == "") {
+		d := SeriesIndexLabel(book.SeriesIndex)
+		book.SeriesIndexDisplay = &d
+	}
 	if book.Genres == "" {
 		book.Genres = "[]"
 	}

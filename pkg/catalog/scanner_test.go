@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"archive/zip"
 	"context"
 	"errors"
 	"os"
@@ -469,3 +470,215 @@ func TestScanLibrary_IgnoresHiddenEntries(t *testing.T) {
 		}
 	}
 }
+
+func writeTestEPUB(t *testing.T, epubPath, opfXML string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(epubPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(epubPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	zw := zip.NewWriter(f)
+	mw, err := zw.CreateHeader(&zip.FileHeader{Name: "mimetype", Method: zip.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mw.Write([]byte("application/epub+zip")); err != nil {
+		t.Fatal(err)
+	}
+	cw, err := zw.Create("META-INF/container.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cw.Write([]byte(`<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`)); err != nil {
+		t.Fatal(err)
+	}
+	ow, err := zw.Create("OEBPS/content.opf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ow.Write([]byte(opfXML)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScanLibrary_ExtractsSeriesIndexWhenTitleAndAuthorExist(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+
+	// 1. Canonical folder with EPUB3 collection/group-position and sidecar OPF missing series_index.
+	taintedDir := filepath.Join(root, "Robert Jackson Bennett", "Shadow of the Leviathan", "The Tainted Cup (2024)")
+	taintedEPUB := filepath.Join(taintedDir, "The Tainted Cup (2024) - Robert Jackson Bennett.epub")
+	writeTestEPUB(t, taintedEPUB, `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">tainted-cup</dc:identifier>
+    <dc:title>The Tainted Cup</dc:title>
+    <dc:creator>Robert Jackson Bennett</dc:creator>
+    <dc:date>2024-02-06</dc:date>
+    <meta property="belongs-to-collection" id="c1">Shadow of the Leviathan</meta>
+    <meta refines="#c1" property="collection-type">series</meta>
+    <meta refines="#c1" property="group-position">1</meta>
+  </metadata>
+  <manifest/>
+  <spine/>
+</package>`)
+	// Sidecar OPF has title/author/series, but intentionally lacks calibre:series_index.
+	if err := os.WriteFile(filepath.Join(taintedDir, "The Tainted Cup (2024) - Robert Jackson Bennett.opf"), []byte(`<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:title>The Tainted Cup</dc:title>
+    <dc:creator opf:role="aut">Robert Jackson Bennett</dc:creator>
+    <meta name="calibre:series" content="Shadow of the Leviathan"/>
+  </metadata>
+</package>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Canonical path carrying parenthesized series+book tag in title when EPUB lacks series metadata.
+	dropDir := filepath.Join(root, "Robert Jackson Bennett", "Shadow of the Leviathan", "A Drop of Corruption (Shadow of the Leviathan, Book 2)")
+	dropEPUB := filepath.Join(dropDir, "A Drop of Corruption (Shadow of the Leviathan, Book 2) - Robert Jackson Bennett.epub")
+	writeTestEPUB(t, dropEPUB, `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>A Drop of Corruption</dc:title>
+    <dc:creator>Robert Jackson Bennett</dc:creator>
+  </metadata>
+</package>`)
+
+	// 3. Volume numbers in titles/folders without hyphenated release syntax (must not collapse volumes).
+	for _, vol := range []struct {
+		dirName, fileName, title string
+	}{
+		{"Lord of Mysteries vol 1", "Lord of Mysteries vol 1 - Cuttlefish.epub", "Lord of Mysteries vol 1"},
+		{"Lord of Mysteries Vol. 2", "Lord of Mysteries Vol. 2 - Cuttlefish.epub", "Lord of Mysteries Vol. 2"},
+	} {
+		p := filepath.Join(root, "Cuttlefish", "Lord of Mysteries", vol.dirName, vol.fileName)
+		writeTestEPUB(t, p, `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>`+vol.title+`</dc:title>
+    <dc:creator>Cuttlefish</dc:creator>
+  </metadata>
+</package>`)
+	}
+
+	// 4. Numeric standalone titles must remain unindexed.
+	numEPUB := filepath.Join(root, "Ray Bradbury", "Fahrenheit 451", "Fahrenheit 451 - Ray Bradbury.epub")
+	writeTestEPUB(t, numEPUB, `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Fahrenheit 451</dc:title>
+    <dc:creator>Ray Bradbury</dc:creator>
+  </metadata>
+</package>`)
+
+	report, err := ScanLibrary(root)
+	if err != nil {
+		t.Fatalf("ScanLibrary failed: %v", err)
+	}
+	byTitle := make(map[string]*ScannedBook, len(report.Books))
+	for _, b := range report.Books {
+		byTitle[b.Title] = b
+	}
+
+	tainted := byTitle["The Tainted Cup"]
+	if tainted == nil || tainted.Series != "Shadow of the Leviathan" || tainted.SeriesIndex == nil || *tainted.SeriesIndex != 1 {
+		t.Fatalf("expected The Tainted Cup at index 1, got %+v", tainted)
+	}
+	drop := byTitle["A Drop of Corruption (Shadow of the Leviathan, Book 2)"]
+	if drop == nil || drop.Series != "Shadow of the Leviathan" || drop.SeriesIndex == nil || *drop.SeriesIndex != 2 {
+		t.Fatalf("expected A Drop of Corruption at index 2, got %+v (titles=%v)", drop, getBookTitles(report.Books))
+	}
+	lom1 := byTitle["Lord of Mysteries vol 1"]
+	if lom1 == nil || lom1.Series != "Lord of Mysteries" || lom1.SeriesIndex == nil || *lom1.SeriesIndex != 1 {
+		t.Fatalf("expected Lord of Mysteries vol 1 at index 1, got %+v", lom1)
+	}
+	lom2 := byTitle["Lord of Mysteries Vol 2"]
+	if lom2 == nil || lom2.Series != "Lord of Mysteries" || lom2.SeriesIndex == nil || *lom2.SeriesIndex != 2 {
+		t.Fatalf("expected Lord of Mysteries Vol 2 at index 2, got %+v", lom2)
+	}
+	f451 := byTitle["Fahrenheit 451"]
+	if f451 == nil || f451.Series != "" || f451.SeriesIndex != nil {
+		t.Fatalf("expected Fahrenheit 451 to remain unindexed standalone, got %+v", f451)
+	}
+}
+
+func TestCatalog_ReconcileBackfillsSeriesIndexOnRescan(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	cat := New(db)
+
+	author, err := cat.GetOrCreateAuthor(ctx, "Cuttlefish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	series, err := cat.GetOrCreateSeries(ctx, "Lord of Mysteries")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pre-existing catalog row has series_id set, but series_index is NULL ("Unindexed").
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO books (id, author_id, title, series_id, series_index, genres, monitored) VALUES ('b-lom-1', ?, 'Lord of Mysteries vol 1', ?, NULL, '[]', 1)`,
+		author.ID, series.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	for _, vol := range []string{"Lord of Mysteries vol 1", "Lord of Mysteries vol 2"} {
+		p := filepath.Join(root, "Cuttlefish", "Lord of Mysteries", vol, vol+" - Cuttlefish.epub")
+		writeTestEPUB(t, p, `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>`+vol+`</dc:title>
+    <dc:creator>Cuttlefish</dc:creator>
+  </metadata>
+</package>`)
+	}
+
+	report, err := ScanLibrary(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.ReconcileScanReport(ctx, report); err != nil {
+		t.Fatal(err)
+	}
+
+	var bookCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM books`).Scan(&bookCount); err != nil {
+		t.Fatal(err)
+	}
+	if bookCount != 2 {
+		t.Fatalf("expected 2 distinct volume rows, got %d", bookCount)
+	}
+
+	var idx1 float64
+	var disp1 string
+	if err := db.QueryRowContext(ctx, `SELECT series_index, COALESCE(series_index_display, '') FROM books WHERE id = 'b-lom-1'`).Scan(&idx1, &disp1); err != nil {
+		t.Fatal(err)
+	}
+	if idx1 != 1 || disp1 != "Book 1" {
+		t.Fatalf("expected backfilled index=1 disp='Book 1', got %v / %q", idx1, disp1)
+	}
+
+	var idx2 float64
+	var disp2 string
+	if err := db.QueryRowContext(ctx, `SELECT series_index, COALESCE(series_index_display, '') FROM books WHERE title = 'Lord of Mysteries vol 2'`).Scan(&idx2, &disp2); err != nil {
+		t.Fatal(err)
+	}
+	if idx2 != 2 || disp2 != "Book 2" {
+		t.Fatalf("expected vol 2 index=2 disp='Book 2', got %v / %q", idx2, disp2)
+	}
+}
+

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
@@ -97,12 +100,15 @@ func TestSeriesReadingOrder(t *testing.T) {
 		t.Fatalf("expected unindexed book last, got %+v", third)
 	}
 
-	// Provider errors must produce an explicitly incomplete local order while preserving local metadata.
+	// Provider errors must produce an explicitly incomplete, locally deduplicated order while preserving owned metadata.
 	mt.RegisterString("/v1/graphql", 200, `{"errors":[{"message":"Unavailable"}]}`, nil)
 	w = httptest.NewRecorder()
 	s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=Sequence", nil))
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || result.Complete || len(result.Books) != 2 || result.OwnedCount != 1 || result.TotalBooks != 4 {
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || result.Complete || len(result.Books) != 1 || result.OwnedCount != 1 || result.TotalBooks != 4 {
 		t.Fatalf("fallback: %s", w.Body.String())
+	}
+	if result.Books[0].Title != "Second: A Novel (Sequence Book 1)" || result.Books[0].Subtitle != "The Middle Volume" || result.Books[0].Description != "Local synopsis" || result.Books[0].State != "In library" {
+		t.Fatalf("fallback lost owned book metadata: %+v", result.Books[0])
 	}
 }
 
@@ -334,5 +340,317 @@ func TestSeriesBooksResolvesRenamedSeries(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSeriesBooks_LegendsOfTheRiftwarDeduplicationAndOwnedMetadata(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	root := t.TempDir()
+
+	// Create owned media + local cover files for Honoured Enemy and Murder In LaMut.
+	for _, item := range []struct {
+		relBook  string
+		relCover string
+	}{
+		{
+			relBook:  filepath.Join("Raymond E. Feist & William R. Forstchen", "Legends of the Riftwar", "Honoured Enemy (2001)", "Honoured Enemy (2001) - Raymond E. Feist & William R. Forstchen.epub"),
+			relCover: filepath.Join("Raymond E. Feist & William R. Forstchen", "Legends of the Riftwar", "Honoured Enemy (2001)", "Honoured Enemy (2001) - Raymond E. Feist & William R. Forstchen.jpg"),
+		},
+		{
+			relBook:  filepath.Join("Raymond E. Feist", "Legends of the Riftwar", "Murder In LaMut (2002)", "Murder In LaMut (2002) - Raymond E. Feist.epub"),
+			relCover: filepath.Join("Raymond E. Feist", "Legends of the Riftwar", "Murder In LaMut (2002)", "Murder In LaMut (2002) - Raymond E. Feist.jpg"),
+		},
+	} {
+		bp := filepath.Join(root, item.relBook)
+		cp := filepath.Join(root, item.relCover)
+		if err := os.MkdirAll(filepath.Dir(bp), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(bp, []byte("epub"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cp, []byte("jpg"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	book1Path := filepath.Join(root, "Raymond E. Feist & William R. Forstchen", "Legends of the Riftwar", "Honoured Enemy (2001)", "Honoured Enemy (2001) - Raymond E. Feist & William R. Forstchen.epub")
+	book2Path := filepath.Join(root, "Raymond E. Feist", "Legends of the Riftwar", "Murder In LaMut (2002)", "Murder In LaMut (2002) - Raymond E. Feist.epub")
+
+	for _, query := range []string{
+		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','test')`,
+		`INSERT INTO authors(id,name,sort_name) VALUES('a_feist_forstchen','Raymond E. Feist & William R. Forstchen','Feist, Raymond E.')`,
+		`INSERT INTO authors(id,name,sort_name) VALUES('a_feist','Raymond E. Feist','Feist, Raymond E.')`,
+		`INSERT INTO authors(id,name,sort_name) VALUES('a_feist_rosenberg','Raymond E. Feist & Joel Rosenberg','Feist, Raymond E.')`,
+		`INSERT INTO authors(id,name,sort_name) VALUES('a_feist_stirling','Raymond E. Feist & S. M. Stirling','Feist, Raymond E.')`,
+		`INSERT INTO series(id,title,description,total_books,status,monitored) VALUES('s_riftwar','Legends of the Riftwar','Three standalone novels set during the Riftwar.',3,'completed',1)`,
+		// Book 1 owned with UK spelling, co-author string, custom synopsis, custom release date.
+		`INSERT INTO books(id,author_id,title,subtitle,series_id,series_index,series_index_display,release_date,synopsis,monitored) VALUES('b1','a_feist_forstchen','Honoured Enemy','Book One Owned Subtitle','s_riftwar',1,'Book 1','2001-08-01','Owned synopsis for Honoured Enemy.',1)`,
+		// Local duplicate placeholder with US spelling + parenthesized series annotation.
+		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date) VALUES('b1_dup','a_feist_forstchen','Honored Enemy (Legends of the Riftwar, Book 1)','s_riftwar',1,'2001-09-15')`,
+		// Book 2 owned with uppercase "In", single author recorded locally.
+		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date,synopsis,monitored) VALUES('b2','a_feist','Murder In LaMut','s_riftwar',2,'2002-01-01','Owned synopsis for Murder In LaMut.',1)`,
+		// Local duplicate unowned with co-author & lowercase "in".
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b2_dup','a_feist_rosenberg','Murder in LaMut','s_riftwar',2)`,
+		// Book 3 unowned local entry with "Series, Book 3: Title" prefix.
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b3_local','a_feist_stirling','Legends of the Riftwar, Book 3: Jimmy the Hand','s_riftwar',3)`,
+		`INSERT INTO book_editions(id,book_id,format) VALUES('ed1','b1','epub')`,
+		`INSERT INTO book_editions(id,book_id,format) VALUES('ed2','b2','epub')`,
+		`INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES('ma1','ed1','` + book1Path + `',4)`,
+		`INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES('ma2','ed2','` + book2Path + `',4)`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mt := testutil.NewMockTransport()
+	mt.PanicOnUnmocked = true
+	mockSeriesLookup(t, mt, `{"data":{"named":[{"id":7,"name":"Legends of the Riftwar","books_count":3}],"linked":[{"id":7,"name":"Legends of the Riftwar","books_count":3}]}}`, `{"data":{"books":[
+		{"id":101,"title":"Honored Enemy","subtitle":"Remote US Subtitle","description":"Remote description 1","release_date":"2001-09-15","image":{"url":"https://covers.example/honored.jpg"},"contributions":[{"author":{"name":"Raymond E. Feist"}},{"author":{"name":"William R. Forstchen"}}],"book_series":[{"series_position":1,"series":{"id":7}}]},
+		{"id":102,"title":"Murder in LaMut","subtitle":"Remote Subtitle 2","description":"Remote description 2","release_date":"2002-06-01","image":{"url":"https://covers.example/lamut.jpg"},"contributions":[{"author":{"name":"Raymond E. Feist"}},{"author":{"name":"Joel Rosenberg"}}],"book_series":[{"series_position":2,"series":{"id":7}}]},
+		{"id":103,"title":"Jimmy the Hand","subtitle":"Book Three","description":"Remote description 3","release_date":"2003-07-01","image":{"url":"https://covers.example/jimmy.jpg"},"contributions":[{"author":{"name":"Raymond E. Feist"}},{"author":{"name":"S. M. Stirling"}}],"book_series":[{"series_position":3,"series":{"id":7}}]}
+	]}}`)
+
+	s := &Server{
+		db:                 db,
+		prowlarrHTTPClient: mt.Client(),
+		baseOverrides:      config.Overrides{LibraryRoot: root},
+	}
+
+	w := httptest.NewRecorder()
+	s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=Legends%20of%20the%20Riftwar", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var result seriesBooksResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Books) != 3 || result.OwnedCount != 2 || result.TotalBooks != 3 || !result.Complete {
+		t.Fatalf("expected 3 deduplicated books with 2 owned, got len=%d owned=%d total=%d complete=%v: %+v",
+			len(result.Books), result.OwnedCount, result.TotalBooks, result.Complete, result.Books)
+	}
+
+	b1, b2, b3 := result.Books[0], result.Books[1], result.Books[2]
+	if b1.Title != "Honoured Enemy" || b1.Subtitle != "Book One Owned Subtitle" || b1.Description != "Owned synopsis for Honoured Enemy." ||
+		b1.PublishDate != "2001-08-01" || b1.CoverURL != "/api/books/b1/cover" || b1.LibraryBookID != "b1" || b1.State != "In library" ||
+		len(b1.Authors) != 1 || b1.Authors[0] != "Raymond E. Feist & William R. Forstchen" {
+		t.Fatalf("owned book 1 metadata not preserved: %+v", b1)
+	}
+	if b2.Title != "Murder In LaMut" || b2.Description != "Owned synopsis for Murder In LaMut." ||
+		b2.PublishDate != "2002-01-01" || b2.CoverURL != "/api/books/b2/cover" || b2.LibraryBookID != "b2" || b2.State != "In library" ||
+		len(b2.Authors) != 1 || b2.Authors[0] != "Raymond E. Feist" {
+		t.Fatalf("owned book 2 metadata not preserved: %+v", b2)
+	}
+	// Remote backfills missing non-owned fields on b2 (e.g. Subtitle was empty locally).
+	if b2.Subtitle != "Remote Subtitle 2" {
+		t.Fatalf("expected missing subtitle backfilled on b2, got %q", b2.Subtitle)
+	}
+	if b3.Title != "Legends of the Riftwar, Book 3: Jimmy the Hand" || b3.State != "Not in library" || b3.HardcoverID != "103" {
+		t.Fatalf("unexpected book 3 merge: %+v", b3)
+	}
+
+	// Verify offline mode (Hardcover error) also deduplicates local variants while keeping owned metadata.
+	mt.RegisterString("/v1/graphql", 200, `{"errors":[{"message":"Offline"}]}`, nil)
+	w = httptest.NewRecorder()
+	s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=Legends%20of%20the%20Riftwar", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 offline, got %d", w.Code)
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Complete || len(result.Books) != 3 || result.OwnedCount != 2 {
+		t.Fatalf("offline deduplication failed: len=%d owned=%d complete=%v books=%+v",
+			len(result.Books), result.OwnedCount, result.Complete, result.Books)
+	}
+	if result.Books[0].Title != "Honoured Enemy" || result.Books[1].Title != "Murder In LaMut" {
+		t.Fatalf("offline deduplication did not prefer owned entries: %+v", result.Books)
+	}
+}
+
+func TestSeriesBooks_ProtectsDistinctBooksSharingIndex(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	root := t.TempDir()
+
+	for _, query := range []string{
+		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','test')`,
+		`INSERT INTO authors(id,name,sort_name) VALUES('a','Shared Author','Author, Shared')`,
+		`INSERT INTO series(id,title,status,monitored) VALUES('s','Shared Index Saga','ongoing',1)`,
+		// Distinct local books sharing index 1, distinct inline subtitles sharing index 2, distinct parts sharing index 3.
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b1_a','a','First Distinct Work','s',1)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b1_b','a','Companion Edition','s',1)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b2_a','a','Chronicle: Part Alpha','s',2)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b2_b','a','Chronicle: Part Beta','s',2)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b3_a','a','The Long Tale (Part 1)','s',3)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b3_b','a','The Long Tale (Part 2)','s',3)`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mt := testutil.NewMockTransport()
+	mt.PanicOnUnmocked = true
+	mockSeriesLookup(t, mt, `{"data":{"named":[{"id":7,"name":"Shared Index Saga","books_count":4}],"linked":[{"id":7,"name":"Shared Index Saga","books_count":4}]}}`, `{"data":{"books":[
+		{"id":201,"title":"Remote Unrelated Book","contributions":[{"author":{"name":"Shared Author"}}],"book_series":[{"series_position":1,"series":{"id":7}}]}
+	]}}`)
+
+	s := &Server{
+		db:                 db,
+		prowlarrHTTPClient: mt.Client(),
+		baseOverrides:      config.Overrides{LibraryRoot: root},
+	}
+
+	w := httptest.NewRecorder()
+	s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=Shared%20Index%20Saga", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var result seriesBooksResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	// Expect all 6 local distinct entries + 1 distinct remote entry at #1 = 7 books.
+	if len(result.Books) != 7 {
+		t.Fatalf("expected 7 distinct books preserved despite shared indices, got %d: %+v", len(result.Books), result.Books)
+	}
+}
+
+func writeSeriesTestEPUB(t *testing.T, epubPath, opfXML string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(epubPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(epubPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	zw := zip.NewWriter(f)
+	mw, err := zw.CreateHeader(&zip.FileHeader{Name: "mimetype", Method: zip.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mw.Write([]byte("application/epub+zip")); err != nil {
+		t.Fatal(err)
+	}
+	cw, err := zw.Create("META-INF/container.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cw.Write([]byte(`<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`)); err != nil {
+		t.Fatal(err)
+	}
+	ow, err := zw.Create("OEBPS/content.opf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ow.Write([]byte(opfXML)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSeriesBooks_ScannedVolumeIndicesEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	cat := catalog.New(db)
+	root := t.TempDir()
+
+	// Shadow of the Leviathan: Book 1 from EPUB3 metadata (even when sidecar OPF lacks series_index), Book 2 from title annotation.
+	taintedDir := filepath.Join(root, "Robert Jackson Bennett", "Shadow of the Leviathan", "The Tainted Cup (2024)")
+	writeSeriesTestEPUB(t, filepath.Join(taintedDir, "The Tainted Cup (2024) - Robert Jackson Bennett.epub"), `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">tainted-1</dc:identifier>
+    <dc:title>The Tainted Cup</dc:title>
+    <dc:creator>Robert Jackson Bennett</dc:creator>
+    <meta property="belongs-to-collection" id="c1">Shadow of the Leviathan</meta>
+    <meta refines="#c1" property="collection-type">series</meta>
+    <meta refines="#c1" property="group-position">1</meta>
+  </metadata>
+</package>`)
+	if err := os.WriteFile(filepath.Join(taintedDir, "The Tainted Cup (2024) - Robert Jackson Bennett.opf"), []byte(`<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:title>The Tainted Cup</dc:title>
+    <dc:creator opf:role="aut">Robert Jackson Bennett</dc:creator>
+    <meta name="calibre:series" content="Shadow of the Leviathan"/>
+  </metadata>
+</package>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dropDir := filepath.Join(root, "Robert Jackson Bennett", "Shadow of the Leviathan", "A Drop of Corruption (Shadow of the Leviathan, Book 2)")
+	writeSeriesTestEPUB(t, filepath.Join(dropDir, "A Drop of Corruption (Shadow of the Leviathan, Book 2) - Robert Jackson Bennett.epub"), `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>A Drop of Corruption</dc:title>
+    <dc:creator>Robert Jackson Bennett</dc:creator>
+  </metadata>
+</package>`)
+
+	// Lord of Mysteries: vol 1 and Vol. 2 in title/folder without Hardcover configured.
+	for _, vol := range []string{"Lord of Mysteries vol 1", "Lord of Mysteries Vol. 2"} {
+		p := filepath.Join(root, "Cuttlefish", "Lord of Mysteries", vol, vol+" - Cuttlefish.epub")
+		writeSeriesTestEPUB(t, p, `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>`+vol+`</dc:title>
+    <dc:creator>Cuttlefish</dc:creator>
+  </metadata>
+</package>`)
+	}
+
+	report, err := catalog.ScanLibrary(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.ReconcileScanReport(ctx, report); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{
+		db:            db,
+		baseOverrides: config.Overrides{LibraryRoot: root},
+	}
+
+	// Verify Shadow of the Leviathan API response.
+	w := httptest.NewRecorder()
+	s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=Shadow%20of%20the%20Leviathan", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var shadow seriesBooksResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &shadow); err != nil {
+		t.Fatal(err)
+	}
+	if len(shadow.Books) != 2 || shadow.OwnedCount != 2 {
+		t.Fatalf("expected 2 owned books in Shadow of the Leviathan, got %+v", shadow)
+	}
+	if shadow.Books[0].Title != "The Tainted Cup" || shadow.Books[0].SeriesIndexDisplay != "Book 1" ||
+		shadow.Books[1].SeriesIndexDisplay != "Book 2" {
+		t.Fatalf("expected Book 1 and Book 2 indices (not Unindexed), got %+v", shadow.Books)
+	}
+
+	// Verify Lord of Mysteries API response.
+	w = httptest.NewRecorder()
+	s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=Lord%20of%20Mysteries", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var lom seriesBooksResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &lom); err != nil {
+		t.Fatal(err)
+	}
+	if len(lom.Books) != 2 || lom.OwnedCount != 2 {
+		t.Fatalf("expected 2 owned volumes in Lord of Mysteries, got %+v", lom)
+	}
+	if lom.Books[0].SeriesIndexDisplay != "Book 1" || lom.Books[1].SeriesIndexDisplay != "Book 2" {
+		t.Fatalf("expected Book 1 and Book 2 displays (not Unindexed), got %+v", lom.Books)
 	}
 }

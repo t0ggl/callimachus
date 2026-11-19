@@ -323,7 +323,7 @@ func discoveryTitleParts(title string, authors []string) (string, string) {
 }
 
 func discoveryTitleKey(title string) string {
-	return strings.ToLower(strings.Join(strings.Fields(metadata.SanitizeTitle(title)), " "))
+	return metadata.NormalizeTitleKey(title)
 }
 
 func discoveryAuthor(authors []string) []string {
