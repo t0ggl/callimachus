@@ -30,6 +30,7 @@ type BookMetadata struct {
 	PublishDate   string            `json:"publish_date"`
 	Year          int               `json:"year"`
 	ISBN13        string            `json:"isbn13"`
+	ISBNs         []string          `json:"-"` // Additional identifiers returned by a search provider.
 	ASIN          string            `json:"asin"`
 	HardcoverID   string            `json:"hardcover_id"`
 	OpenLibraryID string            `json:"openlibrary_id"`

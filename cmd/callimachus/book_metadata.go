@@ -100,7 +100,7 @@ func (s *Server) repairBook(ctx context.Context, id string) (epub.Metadata, []re
 		}
 		file.library.PublishDate = cmp.Or(date, book.PublishDate)
 		file.library.Language = cmp.Or(file.library.Language, "en")
-		file.library.ISBN13 = discoveryISBN13(file.library.ISBN13)
+		file.library.ISBN13 = cmp.Or(metadata.NormalizeISBN13(file.library.ISBN13), discoveryISBN13(file.library.ISBN13))
 		files = append(files, file)
 	}
 	return book, files, rows.Err()
@@ -126,28 +126,48 @@ func (s *Server) handleMetadataCandidates(w http.ResponseWriter, r *http.Request
 	// use the search text so the original title cannot dominate the ranking.
 	match := metadata.ParsedRelease{Title: book.Title, Author: strings.Join(book.Authors, " & ")}
 	fmt.Sscanf(book.PublishDate, "%d", &match.Year)
+	isbns := make(map[string]bool)
 	if custom != "" {
 		match = metadata.ParsedRelease{Title: custom}
-	}
-	score := func(candidate metadata.BookMetadata) float64 {
-		priority := metadata.Score(match, candidate)
-		isbn := discoveryISBN13(candidate.ISBN13)
-		if custom == "" && isbn != "" && slices.ContainsFunc(files, func(file repairFile) bool {
-			return file.library.ISBN13 == isbn
-		}) {
-			priority++
+	} else {
+		for _, file := range files {
+			if isbn := metadata.NormalizeISBN13(file.library.ISBN13); isbn != "" {
+				isbns[isbn] = true
+			}
 		}
-		return priority
 	}
-	slices.SortStableFunc(books, func(a, b metadata.BookMetadata) int {
-		return cmp.Compare(score(b), score(a))
+
+	type rankedCandidate struct {
+		book     metadata.BookMetadata
+		priority float64
+	}
+	ranked := make([]rankedCandidate, 0, len(books))
+	for _, b := range books {
+		b.ISBN13 = metadata.NormalizeISBN13(b.ISBN13)
+		if len(isbns) > 0 && !isbns[b.ISBN13] {
+			for _, alternate := range b.ISBNs {
+				if isbn := metadata.NormalizeISBN13(alternate); isbns[isbn] {
+					b.ISBN13 = isbn
+					break
+				}
+			}
+		}
+		priority := metadata.Score(match, b)
+		if isbns[b.ISBN13] {
+			priority += 2 // Text scores range from 0 to 1.
+		}
+		ranked = append(ranked, rankedCandidate{b, priority})
+	}
+	slices.SortStableFunc(ranked, func(a, b rankedCandidate) int {
+		return cmp.Compare(b.priority, a.priority)
 	})
 	candidates := make([]epub.Metadata, 0, 5)
-	for _, b := range books {
+	for _, result := range ranked {
+		b := result.book
 		candidate := epub.Metadata{
 			Title: strings.TrimSpace(b.Title), Subtitle: b.Subtitle, Authors: b.Authors,
 			Series: b.Series, SeriesIndex: b.SeriesIndex, PublishDate: b.PublishDate,
-			Publisher: b.Publisher, Language: b.Language, ISBN13: discoveryISBN13(b.ISBN13),
+			Publisher: b.Publisher, Language: b.Language, ISBN13: b.ISBN13,
 			Description: b.Description,
 		}
 		if candidate.Title == "" {
