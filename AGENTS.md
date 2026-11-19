@@ -74,3 +74,10 @@ Welcome to the **Callimachus** project codebase. These guidelines govern all sub
    - Tag a new version on the merge commit after every merged PR.
    - Increment the minor version for new features and the patch version for bug fixes.
    - The release preceding issue #21 is `v0.6.0`; this feature releases as `v0.7.0`.
+
+10. **Home Cluster Deployment:**
+   - After making changes to Callimachus (merging to `main` and pushing the new `v*` release tag), wait for the `Build and Push to GHCR` GitHub Actions workflow (`.github/workflows/build-ghcr.yml`) for that tag to finish pushing `ghcr.io/t0ggl/callimachus:latest`.
+   - Then cycle `deployment/callimachus` in namespace `downloads` on the `home-cluster` Kubernetes cluster (which pulls `ghcr.io/t0ggl/callimachus:latest` with `imagePullPolicy: Always`) by running inside the `home-cluster` project/environment (loading its `direnv`/Nix kubeconfig):
+     - `kubectl rollout restart deployment/callimachus -n downloads`
+     - `kubectl rollout status deployment/callimachus -n downloads --timeout=180s`
+   - Verify the restarted pod's `imageID`, `Ready` status, and startup `server listening` log match the new release `version` and `commit`. Do not modify files or commit changes in `home-cluster` unless manifest changes are specifically required.
