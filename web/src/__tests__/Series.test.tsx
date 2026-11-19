@@ -68,7 +68,7 @@ it('opens reading order from discovery with series details, covers, formats, and
               description: 'Owned side story.',
               cover_url: '/api/books/book-25/cover',
               series_index: 2.5,
-              series_index_display: 'Book 2.5',
+              series_index_display: '#2.5',
               publish_date: '2020-01-02',
               formats: ['EPUB', 'M4B'],
               monitored: true,
@@ -106,7 +106,9 @@ it('opens reading order from discovery with series details, covers, formats, and
   expect(within(items[0]).getByText('Not in library')).toBeInTheDocument();
   expect(within(items[0]).getByText('Not monitored')).toBeInTheDocument();
 
+  expect(within(dialog).getAllByText('Book 2.5')).toHaveLength(1);
   expect(within(items[1]).getByText('Book 2.5')).toBeInTheDocument();
+  expect(within(dialog).queryByText('#2.5')).not.toBeInTheDocument();
   expect(within(items[1]).getByText('EPUB')).toBeInTheDocument();
   expect(within(items[1]).getByText('M4B')).toBeInTheDocument();
   expect(within(items[1]).getByText('2020-01-02')).toBeInTheDocument();
@@ -184,7 +186,7 @@ it('opens owned catalog book from SeriesDetailModal inside CatalogView', async (
     seriesId: 'ser-1',
     seriesTitle: 'Dune Saga',
     seriesIndex: 1,
-    seriesIndexDisplay: 'Book 1',
+    seriesIndexDisplay: '#1',
     releaseDate: '1965-08-01',
     formats: ['EPUB'],
     editions: [],
@@ -276,7 +278,7 @@ it('bundles series books in grid and list views by default while keeping standal
       seriesId: 'ser-dune',
       seriesTitle: 'Dune Chronicles',
       seriesIndex: 1,
-      seriesIndexDisplay: 'Book 1',
+      seriesIndexDisplay: '#1',
       coverUrl: '/api/books/book-dune-1/cover',
       releaseDate: '1965-08-01',
       formats: ['EPUB'],

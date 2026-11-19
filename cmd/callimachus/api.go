@@ -15,6 +15,7 @@ import (
 
 	"github.com/t0ggl/callimachus/internal/logging"
 	"github.com/t0ggl/callimachus/pkg/auth"
+	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/requests"
 )
@@ -243,7 +244,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 	query := `
 		SELECT b.id, b.title, COALESCE(b.subtitle, ''), b.author_id, COALESCE(a.name, ''),
 		       COALESCE(b.series_id, ''), COALESCE(s.title, ''), b.series_index,
-		       COALESCE(b.series_index_display, ''), COALESCE(b.release_date, ''),
+		       COALESCE(b.release_date, ''),
 		       COALESCE(b.synopsis, '')
 		FROM books b
 		LEFT JOIN authors a ON b.author_id = a.id
@@ -270,7 +271,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(
 			&b.ID, &b.Title, &b.Subtitle, &b.AuthorID, &b.AuthorName,
 			&b.SeriesID, &b.SeriesTitle, &seriesIdx,
-			&b.SeriesIndexDisplay, &b.ReleaseDate, &b.Synopsis,
+			&b.ReleaseDate, &b.Synopsis,
 		); err != nil {
 			slog.Error("scan book failed")
 			continue
@@ -279,6 +280,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 			val := seriesIdx.Float64
 			b.SeriesIndex = &val
 		}
+		b.SeriesIndexDisplay = catalog.SeriesIndexLabel(b.SeriesIndex)
 		b.Formats = make([]string, 0)
 		b.Editions = make([]APIBookEdition, 0)
 		if s.bookCover(r, b.ID) != "" {

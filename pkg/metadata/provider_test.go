@@ -359,7 +359,7 @@ func TestHardcoverCatalogPagination(t *testing.T) {
 				books := []map[string]interface{}{}
 				if calls == 1 {
 					for i := 0; i < 100; i++ {
-						books = append(books, map[string]interface{}{"id": i + 1, "title": "Book", "release_date": "2028-01-01", "contributions": []map[string]interface{}{{"author": map[string]string{"name": "Author"}}}})
+						books = append(books, map[string]interface{}{"id": i + 1, "title": "Book", "release_date": "2028-01-01", "book_series": []map[string]any{{"series": map[string]string{"name": "Sequence"}}}, "contributions": []map[string]interface{}{{"author": map[string]string{"name": "Author"}}}})
 					}
 				}
 				json.NewEncoder(w).Encode(map[string]interface{}{"data": map[string]interface{}{"books": books}})
@@ -377,5 +377,34 @@ func TestHardcoverCatalogPagination(t *testing.T) {
 				t.Fatalf("pagination: %d books, %d calls: %v", len(found), calls, err)
 			}
 		})
+	}
+}
+
+func TestHardcoverSeriesCanonicalEnglishVolumes(t *testing.T) {
+	mt := testutil.NewMockTransport()
+	mt.PanicOnUnmocked = true
+	mt.RegisterString("/v1/graphql", 200, `{"data":{"books":[
+  {"id":1,"title":"Cour de roses","default_cover_edition":{"language":{"code2":"fr"}},"book_series":[{"series_position":1,"series":{"name":"Court"}}]},
+  {"id":2,"title":"Court: Alternate Edition","canonical_id":5,"book_series":[{"series_position":1,"series":{"name":"Court"}}]},
+  {"id":3,"title":"Court Books 1-4","book_series":[{"series_position":4,"series":{"name":"Court"}}]},
+  {"id":4,"title":"Court Books 1–5","book_series":[{"series":{"name":"Court"}}]},
+  {"id":5,"title":"Court of Roses","image":{"url":"https://example.com/cover.jpg"},"default_cover_edition":{"language":{"code3":"eng"}},"book_series":[{"series_position":1,"series":{"name":"Another Series"}},{"series_position":1,"series":{"name":"Court"}}]},
+  {"id":6,"title":"Court Three Book Set","book_series":[{"series_position":1.5,"series":{"name":"Court"}}]},
+  {"id":7,"title":"Court Saga","compilation":true,"book_series":[{"series_position":7,"series":{"name":"Court"}}]},
+  {"id":8,"title":"Corte de rosas","default_cover_edition":{"language":{"code2":"es"}},"book_series":[{"series_position":8,"series":{"name":"Court"}}]},
+  {"id":9,"title":"Wrong Series","book_series":[{"series_position":9,"series":{"name":"Another Series"}}]},
+  {"id":10,"title":"Court variant","users_count":1000,"book_series":[{"series_position":1,"series":{"name":"Court"}}]},
+  {"id":11,"title":"Court Novella","book_series":[{"series_position":2.5,"series":{"name":"Court"}}]},
+  {"id":12,"title":"Court Companion","book_series":[{"series":{"name":"Court"}}]},
+  {"id":13,"title":"Court","subtitle":"Boxed Set","book_series":[{"series":{"name":"Court"}}]}
+ ]}}`, nil)
+	p := metadata.NewHardcoverProvider("mock", metadata.WithHardcoverClient(mt.Client()))
+	books, err := p.SeriesBooks(context.Background(), "Court")
+	if err != nil || len(books) != 3 {
+		t.Fatalf("expected three canonical volumes, got %+v: %v", books, err)
+	}
+	if books[0].HardcoverID != "5" || books[0].Series != "Court" || books[0].CoverURL == "" ||
+		books[1].SeriesIndex == nil || *books[1].SeriesIndex != 2.5 || books[2].SeriesIndex != nil {
+		t.Fatalf("unexpected series volumes: %+v", books)
 	}
 }

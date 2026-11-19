@@ -31,7 +31,8 @@ func TestSeriesReadingOrder(t *testing.T) {
 		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','test')`,
 		`INSERT INTO authors(id,name,sort_name) VALUES('a','Author','Author')`,
 		`INSERT INTO series(id,title,description,total_books,status,monitored) VALUES('s','Sequence','A sprawling fantasy sequence.',4,'ongoing',1)`,
-		`INSERT INTO books(id,author_id,title,subtitle,series_id,series_index,series_index_display,synopsis,monitored) VALUES('b','a','Second','The Middle Volume','s',2.5,'Book 2.5','Local synopsis',1)`,
+		`INSERT INTO books(id,author_id,title,subtitle,series_id,series_index,series_index_display,synopsis,monitored) VALUES('b','a','Second: A Novel (Sequence Book 1)','The Middle Volume','s',1,'#1','Local synopsis',1)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('placeholder','a','Second','s',1)`,
 		`INSERT INTO book_editions(id,book_id,format) VALUES('e1','b','epub')`,
 		`INSERT INTO book_editions(id,book_id,format) VALUES('e2','b','m4b')`,
 		`INSERT INTO book_editions(id,book_id,format) VALUES('e_unowned','b','pdf')`,
@@ -43,9 +44,10 @@ func TestSeriesReadingOrder(t *testing.T) {
 		}
 	}
 	mt := testutil.NewMockTransport()
+	mt.PanicOnUnmocked = true
 	mt.RegisterString("/v1/graphql", 200, `{"data":{"books":[
 		{"id":3,"title":"Companion Tale","contributions":[{"author":{"name":"Co-Author"}}],"book_series":[{"series_position":null,"series":{"name":"Sequence","books_count":4}}]},
-		{"id":2,"title":"Second","subtitle":"Remote Subtitle","description":"Remote description","release_date":"2020-01-01","image":{"url":"https://covers.example/second.jpg"},"contributions":[{"author":{"name":"Author"}}],"book_series":[{"series_position":2.5,"series":{"name":"Sequence","books_count":4}}]},
+		{"id":2,"title":"Second","subtitle":"Remote Subtitle","description":"Remote description","release_date":"2020-01-01","image":{"url":"https://covers.example/second.jpg"},"contributions":[{"author":{"name":"Author"}}],"book_series":[{"series_position":1,"series":{"name":"Sequence","books_count":4}}]},
 		{"id":1,"title":"First","subtitle":"Origins","description":"The prequel novella.","release_date":"2018-05-01","image":{"url":"https://covers.example/first.jpg"},"contributions":[{"author":{"name":"Author"}}],"book_series":[{"series_position":0.5,"series":{"name":"Sequence","books_count":4}}]}
 	]}}`, nil)
 	s := &Server{
@@ -74,12 +76,12 @@ func TestSeriesReadingOrder(t *testing.T) {
 	if len(result.Books) != 3 {
 		t.Fatalf("expected 3 books, got %d: %+v", len(result.Books), result.Books)
 	}
-	// Ordered: 0.5 -> 2.5 -> nil (unindexed)
+	// Ordered: 0.5 -> 1 -> nil (unindexed)
 	first, second, third := result.Books[0], result.Books[1], result.Books[2]
-	if first.Title != "First" || first.SeriesIndex == nil || *first.SeriesIndex != 0.5 || first.CoverURL != "https://covers.example/first.jpg" || first.Description != "The prequel novella." || first.Subtitle != "Origins" || first.LibraryBookID != "" || len(first.Formats) != 0 {
+	if first.Title != "First" || first.SeriesIndexDisplay != "Book 0.5" || first.SeriesIndex == nil || *first.SeriesIndex != 0.5 || first.CoverURL != "https://covers.example/first.jpg" || first.Description != "The prequel novella." || first.Subtitle != "Origins" || first.LibraryBookID != "" || len(first.Formats) != 0 {
 		t.Fatalf("unexpected first book: %+v", first)
 	}
-	if second.Title != "Second" || second.LibraryBookID != "b" || !second.Monitored || second.PublishDate != "2020-01-01" || second.SeriesIndexDisplay != "Book 2.5" || second.Subtitle != "The Middle Volume" || second.Description != "Local synopsis" {
+	if second.Title != "Second: A Novel (Sequence Book 1)" || second.LibraryBookID != "b" || !second.Monitored || second.PublishDate != "2020-01-01" || second.SeriesIndexDisplay != "Book 1" || second.HardcoverID != "2" || second.Subtitle != "The Middle Volume" || second.Description != "Local synopsis" {
 		t.Fatalf("unexpected second book: %+v", second)
 	}
 	// Local cover takes precedence over remote cover, and only owned formats are listed.
@@ -97,7 +99,7 @@ func TestSeriesReadingOrder(t *testing.T) {
 	mt.RegisterString("/v1/graphql", 200, `{"errors":[{"message":"Unavailable"}]}`, nil)
 	w = httptest.NewRecorder()
 	s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=Sequence", nil))
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || result.Complete || len(result.Books) != 1 || result.OwnedCount != 1 || result.TotalBooks != 4 {
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || result.Complete || len(result.Books) != 2 || result.OwnedCount != 1 || result.TotalBooks != 4 {
 		t.Fatalf("fallback: %s", w.Body.String())
 	}
 }
@@ -154,4 +156,3 @@ func TestSeriesBooksMissingMetadataAndValidation(t *testing.T) {
 		t.Fatalf("unexpected unindexed ordering: %+v", result.Books)
 	}
 }
-

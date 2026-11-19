@@ -171,7 +171,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
                     <Layers className="w-4 h-4 text-purple-400 shrink-0" />
                     <span className="text-zinc-500">Series:</span>
                     <span className="font-medium text-zinc-200">
-                      <EntityLink kind="series" name={book.seriesTitle} />{book.seriesIndex != null && ` (${book.seriesIndexDisplay || `#${book.seriesIndex}`})`}
+                      <EntityLink kind="series" name={book.seriesTitle} />{book.seriesIndex != null && ` (Book ${book.seriesIndex})`}
                     </span>
                   </div>
                 )}
