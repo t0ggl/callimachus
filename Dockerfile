@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Stage 1: Build Web UI
-FROM --platform=$BUILDPLATFORM node:26-bookworm-slim AS web-builder
+FROM --platform=$BUILDPLATFORM node:26-slim AS web-builder
 RUN apt-get update && apt-get install -y --no-install-recommends make \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
@@ -10,7 +10,7 @@ COPY web/ ./web/
 RUN make build-frontend
 
 # Stage 2: Build Go Server & Worker
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.26 AS go-builder
 WORKDIR /app
 
 COPY go.mod go.sum ./
@@ -28,7 +28,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     make build-backend BIN_DIR=/bin
 
 # Stage 3: Runtime
-FROM debian:bookworm-slim AS runner
+FROM debian:12-slim AS runner
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata ffmpeg curl calibre \
     && rm -rf /var/lib/apt/lists/*
 ENV QT_QPA_PLATFORM=offscreen
