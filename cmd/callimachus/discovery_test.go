@@ -311,3 +311,64 @@ func TestDiscoverReportsActiveRequestsAndIgnoresFailedOrCancelled(t *testing.T) 
 		t.Errorf("Cancelled Book should have no active request state, got formats=%v status=%q", matches[3].RequestedFormats, matches[3].RequestStatus)
 	}
 }
+
+func TestGroupDiscoveryBooksWithAuthorPrefixedTitles(t *testing.T) {
+	scott := []string{"Scott Reintgens"}
+	books := []metadata.BookMetadata{
+		{Title: "Bloodsworn", Authors: scott},
+		{Title: "Scott Reintgens Bloodsworn", Authors: scott},
+		{Title: "Scott Reintgens - Bloodsworn", Authors: scott},
+		{Title: "Reintgens, Scott - Bloodsworn", Authors: scott},
+		{Title: "Scott Reintgens Bloodsworn", Authors: []string{"Other Writer"}},
+		{Title: "Bloodsworn", Authors: []string{"Other Writer"}},
+		{Title: "Scott Reintgensson Bloodsworn", Authors: scott},
+	}
+	groups := groupDiscoveryBooks(books)
+	if len(groups) != 4 || len(groups[0]) != 4 {
+		t.Fatalf("expected only the four Bloodsworn titles by Scott Reintgens to merge, got %+v", groups)
+	}
+}
+
+func TestDiscoverMatchesAuthorPrefixedTitlesToLibraryAndRequests(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	for _, query := range []string{
+		`INSERT INTO users(id,username,email,role,auth_source) VALUES('u','u','u@example.test','requester','local')`,
+		`INSERT INTO authors(id,name,sort_name) VALUES('a','Scott Reintgens','Reintgens, Scott')`,
+		`INSERT INTO books(id,author_id,title) VALUES('owned','a','Bloodsworn'),('reverse','a','Scott Reintgens - Other Book')`,
+		`INSERT INTO book_editions(id,book_id,format) VALUES('e1','owned','epub'),('e2','reverse','epub')`,
+		`INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES('m1','e1','book.epub',1),('m2','e2','other.epub',1)`,
+		`INSERT INTO book_requests(user_id,title,author,format,status) VALUES
+			('u','Bloodsworn','Scott Reintgens','m4b','searching'),
+			('u','Reintgens, Scott - Other Book','Scott Reintgens','m4b','searching')`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mt := testutil.NewMockTransport()
+	mt.RegisterString("/search.json", 200, `{"docs":[
+		{"key":"/works/OL1W","title":"Scott Reintgens Bloodsworn","author_name":["Scott Reintgens"]},
+		{"key":"/works/OL2W","title":"Other Book","author_name":["Scott Reintgens"]},
+		{"key":"/works/OL3W","title":"Scott Reintgens Bloodsworn","author_name":["Other Writer"]},
+		{"key":"/works/OL4W","title":"Scott Reintgensson Bloodsworn","author_name":["Scott Reintgens"]}
+	]}`, nil)
+
+	matches := discoverTestMatches(t, &Server{db: db, prowlarrHTTPClient: mt.Client()})
+	if len(matches) != 4 {
+		t.Fatalf("expected four distinct matches, got %+v", matches)
+	}
+	for i, id := range []string{"owned", "reverse", "", ""} {
+		match := matches[i]
+		if match.LibraryBookID != id {
+			t.Errorf("%q library ID = %q, want %q", match.Title, match.LibraryBookID, id)
+		}
+		if id != "" {
+			if match.RequestStatus != "searching" || !slices.Equal(match.RequestedFormats, []string{"m4b"}) {
+				t.Errorf("expected an active M4B request, got %+v", match)
+			}
+		} else if match.RequestStatus != "" || len(match.RequestedFormats) != 0 {
+			t.Errorf("expected no active requests, got %+v", match)
+		}
+	}
+}

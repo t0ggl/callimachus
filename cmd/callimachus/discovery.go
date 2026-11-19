@@ -293,8 +293,9 @@ var (
 	discoveryISBNSeparators    = strings.NewReplacer("-", "", " ", "")
 )
 
-func discoveryTitleParts(title string) (string, string) {
+func discoveryTitleParts(title string, authors []string) (string, string) {
 	title = discoveryEditionSuffix.ReplaceAllString(title, "")
+	title = metadata.StripDiscoveryAuthorPrefix(title, authors...)
 	if separator := discoverySubtitleSeparator.FindStringIndex(title); separator != nil {
 		return title[:separator[0]], strings.TrimSpace(title[separator[1]:])
 	}
@@ -356,7 +357,7 @@ func groupDiscoveryBooks(books []metadata.BookMetadata) [][]metadata.BookMetadat
 	for i, book := range books {
 		parents[i] = i
 		authors[i] = discoveryAuthor(book.Authors)
-		title, subtitle := discoveryTitleParts(book.Title)
+		title, subtitle := discoveryTitleParts(book.Title, book.Authors)
 		subtitles[i] = discoveryTitleKey(cmp.Or(book.Subtitle, subtitle))
 		if title := discoveryTitleKey(title); title != "" && len(authors[i]) > 0 {
 			for _, j := range byTitle[title] {
@@ -401,8 +402,8 @@ func groupDiscoveryBooks(books []metadata.BookMetadata) [][]metadata.BookMetadat
 func mergeDiscoveryBook(dst *metadata.BookMetadata, src metadata.BookMetadata) {
 	dst.Subtitle = cmp.Or(dst.Subtitle, src.Subtitle)
 	if dst.Subtitle == "" {
-		dstTitle, dstSubtitle := discoveryTitleParts(dst.Title)
-		srcTitle, srcSubtitle := discoveryTitleParts(src.Title)
+		dstTitle, dstSubtitle := discoveryTitleParts(dst.Title, dst.Authors)
+		srcTitle, srcSubtitle := discoveryTitleParts(src.Title, src.Authors)
 		if dstSubtitle == "" && discoveryTitleKey(dstTitle) == discoveryTitleKey(srcTitle) {
 			dst.Subtitle = srcSubtitle
 		}
