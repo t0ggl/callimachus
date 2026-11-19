@@ -150,15 +150,21 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 		if client == nil {
 			client = &http.Client{Timeout: 20 * time.Second}
 		}
-		found, lookupErr := metadata.NewHardcoverProvider(cfg.Settings.HardcoverAPIKey, metadata.WithHardcoverClient(client)).SeriesBooks(r.Context(), seriesTitle)
-		if lookupErr == nil {
+		known := make([]metadata.BookMetadata, 0, len(books))
+		for _, b := range books {
+			title := seriesTitleAnnotation.ReplaceAllString(b.Title, "")
+			title = metadata.StripDiscoveryAuthorPrefix(title, b.Authors...)
+			known = append(known, metadata.BookMetadata{Title: strings.TrimSpace(title), Authors: b.Authors})
+		}
+		found, lookupErr := metadata.NewHardcoverProvider(cfg.Settings.HardcoverAPIKey, metadata.WithHardcoverClient(client)).SeriesBooks(r.Context(), seriesTitle, known...)
+		if lookupErr == nil && len(found) > 0 {
 			complete = true
+			if found[0].SeriesTotal > 0 {
+				seriesTotalBooks = found[0].SeriesTotal
+			}
 			localCount := len(books)
 			redundant := make(map[int]bool)
 			for _, remote := range found {
-				if remote.SeriesTotal > seriesTotalBooks {
-					seriesTotalBooks = remote.SeriesTotal
-				}
 				best, bestScore := -1, 0
 				positionMatches, titleMatch := 0, -1
 				for i := range books[:localCount] {

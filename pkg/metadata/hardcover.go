@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -80,13 +79,15 @@ type hardcoverTag struct {
 }
 
 type hardcoverSeries struct {
-	ID         int    `json:"id"`
-	Name       string `json:"name"`
-	Slug       string `json:"slug"`
-	BooksCount int    `json:"books_count"`
+	CanonicalID int    `json:"canonical_id"`
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	Slug        string `json:"slug"`
+	BooksCount  int    `json:"books_count"`
 }
 
 type hardcoverBookSeries struct {
+	Compilation    bool            `json:"compilation"`
 	SeriesPosition *float64        `json:"series_position"`
 	Series         hardcoverSeries `json:"series"`
 }
@@ -114,8 +115,10 @@ type hardcoverImage struct {
 }
 
 type hardcoverBookNode struct {
-	CanonicalID         int  `json:"canonical_id"`
-	Compilation         bool `json:"compilation"`
+	Canonical           *hardcoverBookNode `json:"canonical"`
+	EnglishEditions     []hardcoverEdition `json:"english_editions"`
+	CanonicalID         int                `json:"canonical_id"`
+	Compilation         bool               `json:"compilation"`
 	DefaultCoverEdition *struct {
 		Language *struct {
 			Code2 string `json:"code2"`
@@ -496,88 +499,6 @@ query BookByASIN($asin: String!) {
 		return nil, err
 	}
 	return p.parseBookResponse(res)
-}
-
-var seriesBundleTitle = regexp.MustCompile(`(?i)\b(?:(?:books?|volumes?|vols\.?)\s*#?\s*)?\d+\s*(?:[-–—&]|\bto\b)\s*#?\s*\d+\b|\b(?:(?:\d+|two|three|four|five|six|seven|eight|nine|ten)[\s-]+book[\s-]+set|box(?:ed)?[\s-]+set|omnibus|collection(?:\s+set)?|anthology|complete\s+series)\b`)
-
-// SeriesBooks returns canonical English volumes in the requested series.
-func (p *HardcoverProvider) SeriesBooks(ctx context.Context, title string) ([]BookMetadata, error) {
-	const query = `query SeriesBooks($title: String!, $offset: Int!) {
- books(where: {book_series: {series: {name: {_eq: $title}}}}, limit: 100, offset: $offset, order_by: {id: asc}) {
- id title subtitle description release_date release_year image: cached_image
- canonical_id compilation users_count
- default_cover_edition { language { code2 code3 } }
- contributions { author { name } contribution }
- book_series { series_position: position series { name books_count } }
- }
- }`
-	raw, err := p.catalogBooks(ctx, query, map[string]interface{}{"title": title})
-	if err != nil {
-		return nil, err
-	}
-
-	books := make([]BookMetadata, 0, len(raw))
-	positions := make(map[float64]int)
-	ranked := make([]hardcoverBookNode, 0, len(raw))
-	for _, b := range raw {
-		if b.Compilation || (b.CanonicalID != 0 && b.CanonicalID != b.ID) ||
-			seriesBundleTitle.MatchString(b.Title) || seriesBundleTitle.MatchString(b.Subtitle) {
-			continue
-		}
-		english, known := hardcoverSeriesLanguage(b)
-		if known && !english {
-			continue
-		}
-
-		// A book can belong to several series. Only use the requested membership.
-		for _, membership := range b.BookSeries {
-			if !strings.EqualFold(membership.Series.Name, title) {
-				continue
-			}
-			b.BookSeries = []hardcoverBookSeries{membership}
-			book := mapHardcoverBookNode(&b)
-			if book.SeriesIndex != nil {
-				position := *book.SeriesIndex
-				if i, ok := positions[position]; ok {
-					if preferHardcoverSeriesBook(b, ranked[i]) {
-						books[i], ranked[i] = book, b
-					}
-					break
-				}
-				positions[position] = len(books)
-			}
-			books = append(books, book)
-			ranked = append(ranked, b)
-			break
-		}
-	}
-	return books, nil
-}
-
-func hardcoverSeriesLanguage(b hardcoverBookNode) (english, known bool) {
-	if b.DefaultCoverEdition == nil || b.DefaultCoverEdition.Language == nil {
-		return false, false
-	}
-	language := b.DefaultCoverEdition.Language
-	return strings.EqualFold(language.Code2, "en") || strings.EqualFold(language.Code3, "eng"),
-		language.Code2 != "" || language.Code3 != ""
-}
-
-func preferHardcoverSeriesBook(candidate, current hardcoverBookNode) bool {
-	candidateEnglish, _ := hardcoverSeriesLanguage(candidate)
-	currentEnglish, _ := hardcoverSeriesLanguage(current)
-	if candidateEnglish != currentEnglish {
-		return candidateEnglish
-	}
-	if candidate.UsersCount != current.UsersCount {
-		return candidate.UsersCount > current.UsersCount
-	}
-	candidateCover := candidate.Image != nil && candidate.Image.URL != ""
-	currentCover := current.Image != nil && current.Image.URL != ""
-	if candidateCover != currentCover {
-		return candidateCover
-	}
-	return candidate.Description != "" && current.Description == ""
 }
 
 // AuthorBooks fetches works credited to an exact author, including announcements.
