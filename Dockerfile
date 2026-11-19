@@ -28,7 +28,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     make build-backend BIN_DIR=/bin
 
 # Stage 3: Runtime
-FROM debian:12-slim AS runner
+FROM debian:13-slim AS runner
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata ffmpeg curl calibre \
     && rm -rf /var/lib/apt/lists/*
 ENV QT_QPA_PLATFORM=offscreen
