@@ -1,6 +1,6 @@
 import { EntityLink } from './EntityLink';
 import React, { useEffect, useState } from 'react';
-import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers } from 'lucide-react';
+import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download } from 'lucide-react';
 import { ManualSearch } from './ManualSearch';
 import { Book } from '../types';
 
@@ -246,9 +246,15 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose 
                         role="listitem"
                         className="flex flex-col sm:flex-row sm:items-start justify-between p-2 rounded-sm bg-zinc-900/80 border border-zinc-800/60 text-xs gap-2"
                       >
-                        <div className="min-w-0 flex-1 text-xs text-zinc-200 [overflow-wrap:anywhere]">
-                          {asset.filename || 'Filename unknown'}
-                        </div>
+                        <a
+                          href={`/api/books/${encodeURIComponent(book.id)}/files/${encodeURIComponent(asset.id)}`}
+                          download={asset.filename || true}
+                          aria-label={asset.filename ? `Download ${asset.filename}` : 'Download file'}
+                          className="flex min-w-0 flex-1 items-start gap-2 rounded-sm text-xs text-blue-300 underline decoration-blue-300/50 underline-offset-2 hover:text-blue-100 hover:decoration-current focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300"
+                        >
+                          <Download aria-hidden="true" className="h-4 w-4 shrink-0" />
+                          <span className="min-w-0 [overflow-wrap:anywhere]">{asset.filename || 'Filename unknown'}</span>
+                        </a>
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 sm:shrink-0 text-zinc-400 text-xs">
                           <span>{asset.format?.toUpperCase() || edition.format.toUpperCase()}</span>
                           {edition.language && <span>{edition.language}</span>}
