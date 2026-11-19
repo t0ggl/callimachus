@@ -36,7 +36,10 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
 	}
-	providers := []metadata.Provider{metadata.NewOpenLibraryProvider(metadata.WithOpenLibraryClient(client))}
+	var providers []metadata.Provider
+	if cfg.Settings.OpenLibraryEnabled {
+		providers = append(providers, metadata.NewOpenLibraryProvider(metadata.WithOpenLibraryClient(client)))
+	}
 	if cfg.Settings.HardcoverAPIKey != "" {
 		providers = append(providers, metadata.NewHardcoverProvider(cfg.Settings.HardcoverAPIKey, metadata.WithHardcoverClient(client)))
 	}

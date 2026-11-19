@@ -54,6 +54,7 @@ export interface SettingsUpdatePayload {
 interface SettingsViewProps {
   indexers: IndexerConfig[];
   logLevel?: LogLevel;
+  metadata?: Record<string, boolean>;
   librarySettings?: LibrarySettings;
   prowlarrSettings?: ProwlarrSettings;
   qualityProfile: QualityProfile;
@@ -78,6 +79,7 @@ const DEFAULT_PROWLARR: ProwlarrSettings = {
 export const SettingsView: React.FC<SettingsViewProps> = ({
   indexers: initialIndexers,
   logLevel: initialLogLevel = 'info',
+  metadata: initialMetadata,
   librarySettings: initialLibrary = DEFAULT_LIBRARY,
   prowlarrSettings: initialProwlarr = DEFAULT_PROWLARR,
   qualityProfile: initialQuality,
@@ -98,7 +100,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [librarySettings, setLibrarySettings] = useState<LibrarySettings>(initialLibrary);
   const [prowlarrSettings, setProwlarrSettings] = useState<ProwlarrSettings>(initialProwlarr);
   const [prowlarrApiKeyDraft, setProwlarrApiKeyDraft] = useState('');
- const [metadataKeys,setMetadataKeys]=useState<Record<string,string>>({});
+  const [metadataKeys, setMetadataKeys] = useState<Record<string, string>>({});
+  const [openLibraryEnabled, setOpenLibraryEnabled] = useState<boolean>(
+    initialMetadata?.openlibrary_enabled ?? true
+  );
   const [connectionTests, setConnectionTests] = useState<Record<string, { pending: boolean; ok?: boolean; message?: string }>>({});
 
   const [qualityProfile, setQualityProfile] = useState<QualityProfile>({
@@ -120,6 +125,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setIndexers(initialIndexers);
   }, [initialIndexers]);
 
+  useEffect(() => {
+    setOpenLibraryEnabled(initialMetadata?.openlibrary_enabled ?? true);
+  }, [initialMetadata]);
 
   useEffect(() => {
     setLibrarySettings(initialLibrary);
@@ -196,9 +204,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setSaveSuccess(false);
     setSaveError(null);
 
+    const metadataPayload: Record<string, string> = Object.fromEntries(
+      Object.entries(metadataKeys).filter(([key, value]) => !isOverridden(key) && value.trim())
+    );
+    if (!isOverridden('openlibrary_enabled')) {
+      metadataPayload.openlibrary_enabled = String(openLibraryEnabled);
+    }
+
     const payload: SettingsUpdatePayload = {
       ...(!isOverridden('log_level') && logLevel !== initialLogLevel ? { logLevel } : {}),
- metadata: Object.fromEntries(Object.entries(metadataKeys).filter(([key,value])=>!isOverridden(key)&&value.trim())),
+      metadata: metadataPayload,
       library: {
         ...(!isOverridden("completed_download_root") ? { completedDownloadRoot: librarySettings.completedDownloadRoot ?? "" } : {}),
         ...(!isOverridden('library_root') ? { rootPath: librarySettings.rootPath } : {}),
@@ -288,6 +303,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setConnectionTests(prev => ({ ...prev, [service]: { pending: true } }));
     const payload = service === 'prowlarr'
       ? { url: prowlarrSettings.url, apiKey: prowlarrApiKeyDraft }
+      : service === 'openlibrary'
+      ? {}
       : { apiKey: metadataKeys[service === 'google-books' ? 'google_books_api_key' : 'hardcover_api_key'] || '' };
     try {
       const response = await fetch(`/api/settings/${service}/test`, {
@@ -540,6 +557,40 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
           <section aria-label="Metadata providers" className="space-y-4">
             <h2 className="text-sm font-semibold text-zinc-100">Metadata providers</h2>
+            <section aria-label="OpenLibrary" className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-zinc-100">OpenLibrary</h3>
+                <OverrideBadge settingKey="openlibrary_enabled" />
+              </div>
+              <div className="max-w-lg space-y-1.5">
+                <label
+                  htmlFor="openlibrary_enabled"
+                  className={`flex items-center gap-2.5 text-xs text-zinc-200 font-medium ${
+                    isOverridden('openlibrary_enabled') ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'
+                  }`}
+                >
+                  <input
+                    id="openlibrary_enabled"
+                    type="checkbox"
+                    checked={openLibraryEnabled}
+                    disabled={isOverridden('openlibrary_enabled')}
+                    aria-describedby={
+                      isOverridden('openlibrary_enabled')
+                        ? 'openlibrary-help override-note-openlibrary_enabled'
+                        : 'openlibrary-help'
+                    }
+                    onChange={(e) => setOpenLibraryEnabled(e.target.checked)}
+                    className="rounded-sm bg-zinc-950 border-zinc-700 text-blue-500 focus:ring-0 disabled:cursor-not-allowed"
+                  />
+                  <span>Enable OpenLibrary metadata provider</span>
+                </label>
+                <p id="openlibrary-help" className="text-xs text-zinc-400">
+                  No API key required. Uses the public OpenLibrary API for book discovery and author lookups.
+                </p>
+                <OverrideNote settingKey="openlibrary_enabled" />
+              </div>
+              {connectionControl('openlibrary', 'OpenLibrary')}
+            </section>
             {(['google_books_api_key', 'hardcover_api_key'] as const).map(key => {
               const google = key === 'google_books_api_key';
               const label = google ? 'Google Books' : 'Hardcover';

@@ -85,6 +85,9 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
     maxEbookSizeBytes: 100 * 1024 * 1024,
   });
   const [logLevel, setLogLevel] = useState<LogLevel>('info');
+  const [metadataSettings, setMetadataSettings] = useState<Record<string, boolean>>({
+    openlibrary_enabled: true,
+  });
   const [settingsOverrides, setSettingsOverrides] = useState<SettingsOverridesMap>({});
 
   // Real-time activity stream for live pipeline updates
@@ -230,6 +233,9 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
           ? data.qualityProfile.allowedFormats
           : prev.allowedFormats,
       }));
+    }
+    if (data.metadata && typeof data.metadata === 'object') {
+      setMetadataSettings((prev) => ({ ...prev, ...data.metadata }));
     }
     if (data.overrides && typeof data.overrides === 'object') {
       setSettingsOverrides(data.overrides);
@@ -448,6 +454,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
           isAdmin ? (
             <SettingsView
               indexers={indexers}
+              metadata={metadataSettings}
               librarySettings={librarySettings}
               prowlarrSettings={prowlarrSettings}
               qualityProfile={qualityProfile}

@@ -117,3 +117,33 @@ func TestCatalogMonitoringReusesAcquisitionRequest(t *testing.T) {
 		t.Fatal("active acquisition searched again")
 	}
 }
+
+func TestCatalogMonitoringRespectsOpenLibraryEnabled(t *testing.T) {
+	t.Run("author discovery uses OpenLibrary when enabled and no Hardcover key", func(t *testing.T) {
+		db := testutil.NewTestDB(t)
+		mt := testutil.NewMockTransportForTest(t)
+		mt.RegisterString("/search.json", 200, `{"docs":[{"key":"/works/OL1W","title":"OpenLibrary Work","author_name":["Author"],"first_publish_year":2024}]}`, nil)
+		s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
+		m := s.newCatalogMonitor()
+		books, err := m.Discover(context.Background(), "authors", "Author")
+		if err != nil {
+			t.Fatalf("Discover failed: %v", err)
+		}
+		if len(books) != 1 || books[0].Title != "OpenLibrary Work" {
+			t.Fatalf("unexpected books: %+v", books)
+		}
+	})
+
+	t.Run("author discovery skips OpenLibrary when disabled", func(t *testing.T) {
+		db := testutil.NewTestDB(t)
+		if _, err := db.Exec(`INSERT INTO settings(key,value) VALUES('openlibrary_enabled','false')`); err != nil {
+			t.Fatal(err)
+		}
+		mt := testutil.NewMockTransportForTest(t) // PanicOnUnmocked is true; /search.json is NOT registered
+		s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
+		m := s.newCatalogMonitor()
+		if _, err := m.Discover(context.Background(), "authors", "Author"); err == nil {
+			t.Fatal("expected error when OpenLibrary is disabled and Hardcover is unconfigured")
+		}
+	})
+}

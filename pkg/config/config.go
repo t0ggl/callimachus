@@ -23,6 +23,7 @@ import (
 const (
 	KeyGoogleBooksAPIKey      = "google_books_api_key"
 	KeyHardcoverAPIKey        = "hardcover_api_key"
+	KeyOpenLibraryEnabled     = "openlibrary_enabled"
 	KeyCompletedDownloadRoot  = "completed_download_root"
 	KeyLogLevel               = "log_level"
 	KeyLibraryRoot            = "library_root"
@@ -83,6 +84,7 @@ var registry = []SettingSpec{
 	{Key: KeyEbookTargetFormat, Kind: KindString, Default: "EPUB"},
 	{Key: KeyGoogleBooksAPIKey, Kind: KindString, Secret: true},
 	{Key: KeyHardcoverAPIKey, Kind: KindString, Secret: true},
+	{Key: KeyOpenLibraryEnabled, Kind: KindBool, Default: "true"},
 	{Key: KeyLibraryRoot, Kind: KindString},
 	{Key: KeyLogLevel, Kind: KindString, Default: "info"},
 	{Key: KeyCompletedDownloadRoot, Kind: KindString},
@@ -135,6 +137,7 @@ type Settings struct {
 	EbookTargetFormat      string        `json:"ebookTargetFormat"`
 	GoogleBooksAPIKey      string        `json:"-"`
 	HardcoverAPIKey        string        `json:"-"`
+	OpenLibraryEnabled     bool          `json:"openlibraryEnabled"`
 	CompletedDownloadRoot  string        `json:"completedDownloadRoot"`
 	LibraryRoot            string        `json:"libraryRoot"`
 	ProwlarrURL            string        `json:"prowlarrUrl"`
@@ -539,6 +542,7 @@ func materializeSettings(vals map[string]string) Settings {
 	return Settings{
 		GoogleBooksAPIKey:      vals[KeyGoogleBooksAPIKey],
 		HardcoverAPIKey:        vals[KeyHardcoverAPIKey],
+		OpenLibraryEnabled:     parseBoolOr(vals[KeyOpenLibraryEnabled], true),
 		LibraryRoot:            vals[KeyLibraryRoot],
 		CompletedDownloadRoot:  vals[KeyCompletedDownloadRoot],
 		ProwlarrURL:            strings.TrimRight(vals[KeyProwlarrURL], "/"),

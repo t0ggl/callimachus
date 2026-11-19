@@ -125,6 +125,34 @@ describe('App Integration', () => {
     });
   });
 
+  it('loads OpenLibrary enabled state and applies the server response after saving', async () => {
+    const user = userEvent.setup({ delay: null });
+    const fetchMock = vi.mocked(global.fetch);
+    const existingFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url, options) => {
+      if (url !== '/api/settings') return existingFetch(url, options);
+      const envVar = 'CALLIMACHUS_OPENLIBRARY_ENABLED';
+      const data = options?.method === 'PUT'
+        ? { metadata: { openlibrary_enabled: true }, overrides: { openlibrary_enabled: { isOverridden: true, overriddenBy: envVar, envVar } } }
+        : { metadata: { openlibrary_enabled: false } };
+      return Promise.resolve(new Response(JSON.stringify(data)));
+    });
+
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: /^Settings/ }));
+    const toggle = await screen.findByRole('checkbox', { name: 'Enable OpenLibrary metadata provider' });
+    await waitFor(() => expect(toggle).not.toBeChecked());
+    await user.click(toggle);
+    await user.click(screen.getByTestId('save-settings-btn'));
+
+    const put = fetchMock.mock.calls.find(([url, options]) => url === '/api/settings' && options?.method === 'PUT');
+    expect(JSON.parse(String(put?.[1]?.body))).toMatchObject({ metadata: { openlibrary_enabled: 'true' } });
+    await waitFor(() => {
+      expect(toggle).toBeChecked();
+      expect(toggle).toBeDisabled();
+    });
+  });
+
   it('renders Callimachus brand and default catalog view with real data', async () => {
     render(<App />);
 

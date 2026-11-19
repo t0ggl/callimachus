@@ -192,6 +192,7 @@ func TestServer_StartupHealthAndShutdown(t *testing.T) {
 		{http.MethodPost, "/api/settings/prowlarr/test"},
 		{http.MethodPost, "/api/settings/google-books/test"},
 		{http.MethodPost, "/api/settings/hardcover/test"},
+		{http.MethodPost, "/api/settings/openlibrary/test"},
 		{http.MethodGet, "/api/events"},
 		{http.MethodGet, "/api/requests"},
 		{http.MethodGet, "/api/auth/me"},
@@ -1218,3 +1219,101 @@ func TestSettingsBundleSeriesRoundTripAndAuthMePreferences(t *testing.T) {
 	}
 }
 
+func TestOpenLibrarySettingsAPI(t *testing.T) {
+	t.Setenv("CALLIMACHUS_OPENLIBRARY_ENABLED", "")
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "openlibrary_settings.db")
+	testutil.PrepareTestDBFile(t, dbPath)
+
+	srv, err := NewServer(Config{
+		ConfigDir:           tempDir,
+		DBPath:              dbPath,
+		LibraryPath:         tempDir,
+		Host:                "127.0.0.1",
+		Port:                0,
+		IndexerSyncInterval: 1 * time.Hour,
+		StagingPollInterval: 1 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	adminCookie := createTestSessionCookie(t, srv, "ol-admin", "oladmin", auth.RoleAdmin)
+
+	getSettings := func() APISettingsResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+		req.AddCookie(adminCookie)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/settings = %d: %s", rec.Code, rec.Body.String())
+		}
+		var out APISettingsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	putSettings := func(body string, wantCode int) APISettingsResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(adminCookie)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != wantCode {
+			t.Fatalf("PUT /api/settings = %d, want %d: %s", rec.Code, wantCode, rec.Body.String())
+		}
+		var out APISettingsResponse
+		if wantCode == http.StatusOK {
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return out
+	}
+
+	// Default is enabled=true
+	initial := getSettings()
+	if enabled, ok := initial.Metadata[config.KeyOpenLibraryEnabled]; !ok || !enabled {
+		t.Fatalf("expected metadata.openlibrary_enabled=true by default, got %+v", initial.Metadata)
+	}
+
+	// Disable via boolean payload
+	updated := putSettings(`{"metadata":{"openlibrary_enabled":false}}`, http.StatusOK)
+	if updated.Metadata[config.KeyOpenLibraryEnabled] {
+		t.Fatalf("expected metadata.openlibrary_enabled=false after boolean PUT, got %+v", updated.Metadata)
+	}
+
+	// Re-enable via string payload
+	updated = putSettings(`{"metadata":{"openlibrary_enabled":"true"}}`, http.StatusOK)
+	if !updated.Metadata[config.KeyOpenLibraryEnabled] {
+		t.Fatalf("expected metadata.openlibrary_enabled=true after string PUT, got %+v", updated.Metadata)
+	}
+
+	// Disable again and verify invalid values fail with 400
+	putSettings(`{"metadata":{"openlibrary_enabled":"false"}}`, http.StatusOK)
+	putSettings(`{"metadata":{"openlibrary_enabled":"maybe"}}`, http.StatusBadRequest)
+	putSettings(`{"metadata":{"openlibrary_enabled":123}}`, http.StatusBadRequest)
+
+	// Env override takes precedence and prevents DB mutation
+	t.Setenv("CALLIMACHUS_OPENLIBRARY_ENABLED", "true")
+	overridden := putSettings(`{"metadata":{"openlibrary_enabled":false}}`, http.StatusOK)
+	if !overridden.Metadata[config.KeyOpenLibraryEnabled] {
+		t.Fatalf("expected env override true to win")
+	}
+	ov := overridden.Overrides[config.KeyOpenLibraryEnabled]
+	if !ov.IsOverridden || ov.OverriddenBy != "CALLIMACHUS_OPENLIBRARY_ENABLED" {
+		t.Fatalf("unexpected override metadata: %+v", ov)
+	}
+
+	// Clearing env override restores persisted false
+	t.Setenv("CALLIMACHUS_OPENLIBRARY_ENABLED", "")
+	if getSettings().Metadata[config.KeyOpenLibraryEnabled] {
+		t.Fatal("expected persisted false after clearing env override")
+	}
+}
