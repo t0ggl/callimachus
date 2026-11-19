@@ -171,6 +171,12 @@ func TestLibraryScanPreservesBookMatchedByCatalogMonitor(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	mux := http.NewServeMux()
+	s.registerAPIRoutes(mux)
+	review := reviewTitles(t, mux)
+	if len(review) != 1 || review[0].ID != imported.Book.ID || review[0].RemovalBlock != "" {
+		t.Fatalf("expected one pending review for the discovered title with two hidden files, got %+v", review)
+	}
 	book, err := c.GetBookByID(ctx, imported.Book.ID)
 	if err != nil || !book.Monitored {
 		t.Fatalf("monitored book was not preserved: %+v, %v", book, err)
@@ -266,6 +272,24 @@ func TestLibraryScanPurgesHiddenPathAssetsWithoutDeletingCatalog(t *testing.T) {
 	}
 
 	s := &Server{db: db, baseOverrides: config.Overrides{LibraryRoot: root}}
+	// Losing the inventory row before recording review evidence would make
+	// it impossible for the next scan to rediscover this candidate.
+	if _, err := db.Exec(`
+		CREATE TRIGGER fail_hidden_review BEFORE INSERT ON hidden_library_review
+		BEGIN SELECT RAISE(ABORT, 'review insert failed'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.scanLibrary(context.Background()); err == nil {
+		t.Fatal("expected review write failure to abort hidden inventory cleanup")
+	}
+	var hiddenAssets int
+	if err := db.QueryRow("SELECT COUNT(*) FROM media_assets WHERE id='m-red-rising'").Scan(&hiddenAssets); err != nil || hiddenAssets != 1 {
+		t.Fatalf("hidden inventory was lost when the review insert failed: %d, %v", hiddenAssets, err)
+	}
+	if _, err := db.Exec("DROP TRIGGER fail_hidden_review"); err != nil {
+		t.Fatal(err)
+	}
+
 	n, err := s.scanLibrary(context.Background())
 	if err != nil {
 		t.Fatalf("scanLibrary failed: %v", err)
@@ -402,6 +426,78 @@ func TestLibraryScanPurgesHiddenPathAssetsWithoutDeletingCatalog(t *testing.T) {
 			t.Errorf("%s books = %+v, want one unowned book with no formats", url, entityResp.Books)
 		}
 	}
+
+	mux := http.NewServeMux()
+	s.registerAPIRoutes(mux)
+	for _, route := range []struct{ method, path string }{
+		{"GET", "/api/library/review"},
+		{"PUT", "/api/library/review/b-red-rising/keep"},
+		{"DELETE", "/api/library/review/b-red-rising"},
+	} {
+		reviewRequest(t, mux, "", route.method, route.path, http.StatusUnauthorized)
+		reviewRequest(t, mux, auth.RoleCurator, route.method, route.path, http.StatusForbidden)
+	}
+	for range 2 {
+		if _, err := s.scanLibrary(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	review := make(map[string]libraryReviewTitle)
+	for _, candidate := range reviewTitles(t, mux) {
+		review[candidate.ID] = candidate
+	}
+	if len(review) != 4 || review["b-req"].RemovalBlock == "" ||
+		review["b-red-rising"].HiddenPath != filepath.Join(".agents", "Red Rising #1", "Red Rising #1.epub") {
+		t.Fatalf("unexpected pending reviews: %+v", review)
+	}
+
+	reviewRequest(t, mux, auth.RoleAdmin, "DELETE", "/api/library/review/b-unowned", http.StatusNotFound)
+	reviewRequest(t, mux, auth.RoleAdmin, "DELETE", "/api/library/review/b-req", http.StatusConflict)
+	reviewRequest(t, mux, auth.RoleAdmin, "PUT", "/api/library/review/b-req/keep", http.StatusNoContent)
+	reviewRequest(t, mux, auth.RoleAdmin, "PUT", "/api/library/review/b-dotfile/keep", http.StatusNoContent)
+	reviewRequest(t, mux, auth.RoleAdmin, "DELETE", "/api/library/review/b-dotfile", http.StatusNotFound)
+	reviewRequest(t, mux, auth.RoleAdmin, "DELETE", "/api/library/review/b-red-rising", http.StatusNoContent)
+	reviewRequest(t, mux, auth.RoleAdmin, "DELETE", "/api/library/review/b-red-rising", http.StatusNotFound)
+	// Reintroduce a hidden inventory row for a kept title and scan again.
+	if _, err := db.Exec("INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES('m-dotfile','e-dotfile',?,7)", hiddenDotfilePath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.scanLibrary(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if pending := reviewTitles(t, mux); len(pending) != 1 || pending[0].ID != "b-hidden-vol" {
+		t.Fatalf("unexpected pending reviews after decisions and rescan: %+v", pending)
+	}
+	assertExists("books", "b-red-rising", false)
+	assertExists("book_editions", "e-red-rising", false)
+	assertExists("authors", "a-agents", false)
+	assertExists("series", "s-red-rising", false)
+	assertExists("books", "b-unowned", true)
+	assertExists("books", "b-dotfile", true)
+	assertExists("media_assets", "m-dotfile", false)
+	assertExists("books", "b-req", true)
+	var requestBook string
+	if err := db.QueryRow("SELECT book_id FROM book_requests WHERE id=1").Scan(&requestBook); err != nil || requestBook != "b-req" {
+		t.Fatalf("request link changed: %q, %v", requestBook, err)
+	}
+	for _, view := range []struct{ path, title string }{
+		{"/api/books", "Red Rising #1"},
+		{"/api/authors", ".agents"},
+		{"/api/series", "Red Rising"},
+		{"/api/series/books?title=Red+Rising", "Red Rising #1"},
+		{"/api/catalog/entity?kind=authors&name=.agents", "Red Rising #1"},
+		{"/api/catalog/entity?kind=series&name=Red+Rising", "Red Rising #1"},
+	} {
+		body := reviewRequest(t, mux, auth.RoleAdmin, "GET", view.path, http.StatusOK).Body.String()
+		if strings.Contains(body, view.title) {
+			t.Errorf("removed record still appears in %s: %s", view.path, body)
+		}
+	}
+	for _, path := range []string{hiddenAgentsPath, hiddenDotfilePath, hiddenRequestedPath, visiblePath, outsideAgentsPath} {
+		if data, err := os.ReadFile(path); err != nil || string(data) != "fixture" {
+			t.Errorf("file changed at %q: %q, %v", path, data, err)
+		}
+	}
 }
 
 func TestLibraryScanPreservesSharedCatalogEntriesWhenPurgingHiddenAsset(t *testing.T) {
@@ -489,4 +585,81 @@ func TestLibraryScanPreservesSharedCatalogEntriesWhenPurgingHiddenAsset(t *testi
 	assertCount("SELECT COUNT(*) FROM books WHERE id='b-queued'", 1)
 	assertCount("SELECT COUNT(*) FROM authors WHERE id='a-queued'", 1)
 	assertCount("SELECT COUNT(*) FROM download_queue WHERE id='dq-1' AND edition_id='e-queued'", 1)
+
+	mux := http.NewServeMux()
+	s.registerAPIRoutes(mux)
+	pending := reviewTitles(t, mux)
+	if len(pending) != 2 || pending[0].ID != "b-mixed-hidden" || pending[0].RemovalBlock != "" ||
+		pending[1].ID != "b-queued" || pending[1].RemovalBlock == "" {
+		t.Fatalf("unexpected reviews for mixed and queued titles: %+v", pending)
+	}
+	reviewRequest(t, mux, auth.RoleAdmin, "DELETE", "/api/library/review/b-shared", http.StatusNotFound)
+	reviewRequest(t, mux, auth.RoleAdmin, "DELETE", "/api/library/review/b-queued", http.StatusConflict)
+
+	// A different edition can acquire media after the admin loads the review.
+	lateMedia := filepath.Join(t.TempDir(), "Late acquisition.m4b")
+	if err := os.WriteFile(lateMedia, []byte("late media"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO book_editions(id,book_id,format) VALUES('e-late','b-mixed-hidden','m4b')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES('m-late','e-late',?,10)", lateMedia); err != nil {
+		t.Fatal(err)
+	}
+	w := reviewRequest(t, mux, auth.RoleAdmin, "DELETE", "/api/library/review/b-mixed-hidden", http.StatusConflict)
+	if !strings.Contains(w.Body.String(), "indexed media") {
+		t.Fatalf("wrong removal block: %s", w.Body)
+	}
+	assertCount("SELECT COUNT(*) FROM media_assets WHERE id='m-late' AND edition_id='e-late'", 1)
+
+	if _, err := db.Exec("DELETE FROM media_assets WHERE id='m-late'"); err != nil {
+		t.Fatal(err)
+	}
+	reviewRequest(t, mux, auth.RoleAdmin, "DELETE", "/api/library/review/b-mixed-hidden", http.StatusNoContent)
+	assertCount("SELECT COUNT(*) FROM book_editions WHERE book_id='b-mixed-hidden'", 0)
+	assertCount("SELECT COUNT(*) FROM books WHERE id='b-mixed-unowned'", 1)
+	assertCount("SELECT COUNT(*) FROM authors WHERE id='a-mixed'", 1)
+	assertCount("SELECT COUNT(*) FROM series WHERE id='s-mixed'", 1)
+	assertCount("SELECT COUNT(*) FROM media_assets WHERE id='m-shared-m4b'", 1)
+
+	if _, err := db.Exec("DELETE FROM download_queue WHERE id='dq-1'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO conversion_queue(id,edition_id,source_path,target_path)
+		VALUES('cq-1','e-queued','source','target')`); err != nil {
+		t.Fatal(err)
+	}
+	reviewRequest(t, mux, auth.RoleAdmin, "DELETE", "/api/library/review/b-queued", http.StatusConflict)
+	assertCount("SELECT COUNT(*) FROM conversion_queue WHERE id='cq-1' AND edition_id='e-queued'", 1)
+	if _, err := db.Exec("DELETE FROM conversion_queue WHERE id='cq-1'"); err != nil {
+		t.Fatal(err)
+	}
+	reviewRequest(t, mux, auth.RoleAdmin, "DELETE", "/api/library/review/b-queued", http.StatusNoContent)
+	assertCount("SELECT COUNT(*) FROM authors WHERE id='a-queued'", 1)
+	assertCount("SELECT COUNT(*) FROM catalog_actions WHERE kind='authors' AND entity_id='a-queued'", 1)
+}
+
+func reviewRequest(t *testing.T, mux *http.ServeMux, role, method, path string, status int) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(method, path, nil)
+	if role != "" {
+		r = r.WithContext(auth.ContextWithUser(r.Context(), &auth.User{ID: "user", Role: role}))
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != status {
+		t.Fatalf("%s %s as %q: got %d, want %d: %s", method, path, role, w.Code, status, w.Body)
+	}
+	return w
+}
+
+func reviewTitles(t *testing.T, mux *http.ServeMux) []libraryReviewTitle {
+	t.Helper()
+	w := reviewRequest(t, mux, auth.RoleAdmin, "GET", "/api/library/review", http.StatusOK)
+	var titles []libraryReviewTitle
+	if err := json.Unmarshal(w.Body.Bytes(), &titles); err != nil || titles == nil {
+		t.Fatalf("invalid review list: %s, %v", w.Body, err)
+	}
+	return titles
 }

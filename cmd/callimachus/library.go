@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -52,14 +54,11 @@ func (s *Server) scanLibrary(ctx context.Context) (books int, scanErr error) {
 	if err != nil {
 		return 0, err
 	}
-	// Reconcile file inventory only. Legacy scans and catalog monitoring share
-	// book and edition rows, with no provenance to distinguish a hidden-only
-	// import from a catalog entry that happened to have a hidden file.
 	rows, err := s.db.QueryContext(ctx, "SELECT id, file_path FROM media_assets")
 	if err != nil {
 		return 0, err
 	}
-	type asset struct{ id, path string }
+	type asset struct{ id, path, hiddenPath string }
 	var stale []asset
 	for rows.Next() {
 		var a asset
@@ -72,6 +71,7 @@ func (s *Server) scanLibrary(ctx context.Context) (books int, scanErr error) {
 			continue
 		}
 		if hasHiddenPathSegment(rel) {
+			a.hiddenPath = rel
 			stale = append(stale, a)
 			continue
 		}
@@ -93,8 +93,34 @@ func (s *Server) scanLibrary(ctx context.Context) (books int, scanErr error) {
 	}
 	defer tx.Rollback()
 
+	type hiddenAsset struct{ edition, path string }
+	var hidden []hiddenAsset
 	for _, a := range stale {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM media_assets WHERE id=? AND file_path=?", a.id, a.path); err != nil {
+		var edition string
+		err := tx.QueryRowContext(ctx, "DELETE FROM media_assets WHERE id=? AND file_path=? RETURNING edition_id", a.id, a.path).Scan(&edition)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if a.hiddenPath != "" {
+			hidden = append(hidden, hiddenAsset{edition, a.hiddenPath})
+		}
+	}
+
+	// Legacy scans and catalog discovery could reuse the same records. Save
+	// evidence for review only when the title has no remaining media, after all
+	// stale inventory is gone. A prior Keep decision survives another purge.
+	for _, a := range hidden {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO hidden_library_review(book_id, hidden_path)
+			SELECT e.book_id, ? FROM book_editions e
+			WHERE e.id=? AND NOT EXISTS (
+				SELECT 1 FROM book_editions other JOIN media_assets m ON m.edition_id=other.id
+				WHERE other.book_id=e.book_id
+			)
+			ON CONFLICT(book_id) DO NOTHING`, a.path, a.edition); err != nil {
 			return 0, err
 		}
 	}

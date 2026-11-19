@@ -196,7 +196,10 @@ func (m *Monitor) persist(ctx context.Context, kind, name string, found []metada
 }
 
 func (m *Monitor) checkBooks(ctx context.Context, now time.Time, column, id string, force bool) error {
-	query := `SELECT b.id FROM books b WHERE b.monitored=1 AND (b.release_date IS NULL OR b.release_date='' OR b.release_date<=?) AND NOT EXISTS(SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id WHERE e.book_id=b.id)`
+	query := `SELECT b.id FROM books b WHERE b.monitored=1
+		AND (b.release_date IS NULL OR b.release_date='' OR b.release_date<=?)
+		AND NOT EXISTS(SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id WHERE e.book_id=b.id)
+		AND NOT EXISTS(SELECT 1 FROM hidden_library_review review WHERE review.book_id=b.id AND review.kept=0)`
 	args := []any{now.Format("2006-01-02")}
 	if column != "" {
 		query += " AND b." + column + "=?"
