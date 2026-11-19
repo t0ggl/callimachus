@@ -44,7 +44,7 @@ interface SeriesDetailModalProps {
   onOpenBook?: (bookId: string) => void;
 }
 
-function SeriesBookCover({ coverUrl, title }: { coverUrl?: string; title: string }) {
+export function SeriesBookCover({ coverUrl, title }: { coverUrl?: string; title: string }) {
   const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
   const broken = Boolean(coverUrl) && brokenUrl === coverUrl;
 

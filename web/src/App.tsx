@@ -321,6 +321,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
     itemsCount: catalogDisplayItems.length,
     enabled:
       currentView === 'catalog' &&
+      !match &&
       !isPaletteOpen &&
       selectedBook === null &&
       selectedSeries === null,
@@ -432,7 +433,14 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
         convertingJobsCount={convertingJobsCount}
         onLogout={handleLogout}
       >
-        {match && entityName ? <EntityView key={entityHash} kind={match[1] as 'authors' | 'series'} name={entityName} canManage={currentUser?.role === 'admin' || currentUser?.role === 'curator'} onOpenBook={(id) => { void fetch('/api/books').then(async res => { if (res.ok) { const loaded: Book[] = await res.json(); setBooks(loaded); setSelectedBook(loaded.find(b => b.id === id) || null); } }).catch(console.error); }} /> : currentView === 'catalog' && (
+        {match && entityName ? (
+          <EntityView
+            key={entityHash}
+            kind={match[1] as 'authors' | 'series'}
+            name={entityName}
+            canManage={currentUser?.role === 'admin' || currentUser?.role === 'curator'}
+          />
+        ) : currentView === 'catalog' && (
           <CatalogView
             books={books}
             authors={authors}

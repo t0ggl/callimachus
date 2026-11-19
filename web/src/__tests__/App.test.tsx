@@ -311,6 +311,31 @@ describe('App Integration', () => {
     });
   });
 
+  it('opens author book details with the keyboard from the library', async () => {
+    const user = userEvent.setup({ delay: null });
+    const book = testBooks[0];
+    const fetchMock = vi.mocked(global.fetch);
+    const originalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url, options) => {
+      if (String(url).startsWith('/api/catalog/entity?kind=authors&')) {
+        return Promise.resolve(new Response(JSON.stringify({ monitored: false, books: [book] })));
+      }
+      return originalFetch(url, options);
+    });
+    const originalUrl = window.location.href;
+    window.history.replaceState(null, '', `#/authors/${encodeURIComponent(book.authorName)}`);
+    try {
+      render(<App />);
+      const title = await screen.findByRole('button', { name: book.title });
+      title.focus();
+      await user.keyboard('{Enter}');
+      expect(fetchMock).toHaveBeenCalledWith(`/api/books?id=${book.id}`, expect.anything());
+      expect(await screen.findByRole('dialog', { name: `Details for ${book.title}` })).toBeInTheDocument();
+    } finally {
+      window.history.replaceState(null, '', originalUrl);
+    }
+  });
+
   it('opens SeriesDetailModal when clicking a bundled series card and opens owned BookDetailModal from it', async () => {
     const user = userEvent.setup({ delay: null });
     const originalFetch = vi.mocked(global.fetch).getMockImplementation()!;
