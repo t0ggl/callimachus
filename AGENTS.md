@@ -71,14 +71,15 @@ Welcome to the **Callimachus** project codebase. These guidelines govern all sub
    - **Write Protection:** `PUT /api/settings` must ignore/refuse database mutations for any setting currently overridden by an environment variable, and `PUT`/`POST /api/settings` must reject any auth/OIDC payload.
 
 9. **Release Rules:**
-   - Tag a new version on the merge commit after every merged PR.
+   - Keep `main` history linear: rebase feature branches onto current `main` and fast-forward them; never create merge commits. When integrating via GitHub, use rebase merge. Resolve conflicts and repeat relevant checks after rebasing.
+   - Tag a new version on the resulting release commit after every merged PR.
    - Increment the minor version for new features and the patch version for bug fixes.
    - When pushing a new release commit to `main`, create its release tag locally before pushing. With `HEAD` at the release commit and `release_tag` set to the new version (for example, `v0.35.1`), push both refs in one transaction with `git push --atomic origin HEAD:refs/heads/main "refs/tags/$release_tag"`.
-   - If GitHub has already merged the PR into `main`, tag the merge commit and push the tag. That merge has already triggered the `main` workflow.
+   - If GitHub has already merged the PR into `main`, tag the resulting commit and push the tag. That merge has already triggered the `main` workflow.
    - The release preceding issue #21 is `v0.6.0`; this feature releases as `v0.7.0`.
 
 10. **Home Cluster Deployment:**
-   - After making changes to Callimachus (merging to `main` and pushing the new `v*` release tag), wait for the `Build and Push to GHCR` GitHub Actions workflow (`.github/workflows/build-ghcr.yml`) for that tag to finish pushing `ghcr.io/t0ggl/callimachus:latest`.
+   - After completing a batch of changes and pushing its final `v*` release tag, wait for the `Build and Push to GHCR` GitHub Actions workflow (`.github/workflows/build-ghcr.yml`) for that tag to finish before deploying. Do not restart for each individual release in a batch.
    - Then cycle `deployment/callimachus` in namespace `downloads` on the `home-cluster` Kubernetes cluster (which pulls `ghcr.io/t0ggl/callimachus:latest` with `imagePullPolicy: Always`) by running inside the `home-cluster` project/environment (loading its `direnv`/Nix kubeconfig):
      - `kubectl rollout restart deployment/callimachus -n downloads`
      - `kubectl rollout status deployment/callimachus -n downloads --timeout=180s`
