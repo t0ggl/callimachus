@@ -33,51 +33,40 @@ const TestVimList: React.FC<{ itemsCount: number; onSelect?: (idx: number) => vo
 };
 
 describe('Vim Keyboard Navigation (useKeyboardNav)', () => {
-  it('navigates down and up using j and k keys', () => {
-    render(<TestVimList itemsCount={5} />);
+  it.each([
+    ['j', 'k'],
+    ['ArrowDown', 'ArrowUp'],
+  ])('starts clear and navigates with %s and %s', (down, up) => {
+    const onSelect = vi.fn();
+    render(<TestVimList itemsCount={3} onSelect={onSelect} />);
+    expect(screen.queryByText(/ACTIVE/)).not.toBeInTheDocument();
 
-    // Initially 0 is selected
-    expect(screen.getByTestId('item-0')).toHaveAttribute('data-selected', 'true');
-
-    // Press 'j' -> index 1
-    fireEvent.keyDown(window, { key: 'j' });
-    expect(screen.getByTestId('item-1')).toHaveAttribute('data-selected', 'true');
-
-    // Press 'j' again -> index 2
-    fireEvent.keyDown(window, { key: 'j' });
-    expect(screen.getByTestId('item-2')).toHaveAttribute('data-selected', 'true');
-
-    // Press 'k' -> back to index 1
-    fireEvent.keyDown(window, { key: 'k' });
-    expect(screen.getByTestId('item-1')).toHaveAttribute('data-selected', 'true');
-  });
-
-  it('wraps around circularly when pressing j past the end and k before start', () => {
-    render(<TestVimList itemsCount={3} />);
-
-    // Initially at 0
-    expect(screen.getByTestId('item-0')).toHaveAttribute('data-selected', 'true');
-
-    // Press 'k' -> wraps to last index (2)
-    fireEvent.keyDown(window, { key: 'k' });
-    expect(screen.getByTestId('item-2')).toHaveAttribute('data-selected', 'true');
-
-    // Press 'j' -> wraps to 0
-    fireEvent.keyDown(window, { key: 'j' });
-    expect(screen.getByTestId('item-0')).toHaveAttribute('data-selected', 'true');
-  });
-
-  it('triggers onSelect when Enter is pressed on active item', () => {
-    const onSelectMock = vi.fn();
-    render(<TestVimList itemsCount={4} onSelect={onSelectMock} />);
-
-    // Navigate to index 2
-    fireEvent.keyDown(window, { key: 'j' });
-    fireEvent.keyDown(window, { key: 'j' });
-
-    // Press Enter
     fireEvent.keyDown(window, { key: 'Enter' });
-    expect(onSelectMock).toHaveBeenCalledWith(2);
+    expect(onSelect).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(window, { key: down });
+    expect(screen.getByTestId('item-0')).toHaveClass('selected');
+    fireEvent.keyDown(window, { key: up });
+    expect(screen.getByTestId('item-2')).toHaveClass('selected');
+    fireEvent.keyDown(window, { key: down });
+    expect(screen.getByTestId('item-0')).toHaveClass('selected');
+    fireEvent.keyDown(window, { key: down });
+    expect(screen.getByTestId('item-1')).toHaveClass('selected');
+    fireEvent.keyDown(window, { key: 'Enter' });
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith(1);
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByText(/ACTIVE/)).not.toBeInTheDocument();
+    fireEvent.keyDown(window, { key: up });
+    expect(screen.getByTestId('item-2')).toHaveClass('selected');
+  });
+
+  it('clears selection when the list empties', () => {
+    const { rerender } = render(<TestVimList itemsCount={2} />);
+    fireEvent.keyDown(window, { key: 'j' });
+    rerender(<TestVimList itemsCount={0} />);
+    rerender(<TestVimList itemsCount={2} />);
+    expect(screen.queryByText(/ACTIVE/)).not.toBeInTheDocument();
   });
 
   it('does NOT hijack typing in an input element', async () => {
@@ -91,7 +80,6 @@ describe('Vim Keyboard Navigation (useKeyboardNav)', () => {
     // Input should contain 'jkjk'
     expect(input).toHaveValue('jkjk');
 
-    // Selection should remain at index 0 without being moved by typing 'j' and 'k' in input
-    expect(screen.getByTestId('item-0')).toHaveAttribute('data-selected', 'true');
+    expect(screen.queryByText(/ACTIVE/)).not.toBeInTheDocument();
   });
 });

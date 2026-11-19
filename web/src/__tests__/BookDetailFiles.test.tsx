@@ -152,7 +152,7 @@ it('shows a pending book in the Library and explains the absence of files in its
   const select = vi.fn();
   const user = userEvent.setup({ delay: null });
   const { rerender } = render(<CatalogView books={[pending]} authors={[]} series={[]}
-    bundleSeriesInLibrary={false} selectedIndex={-1} onSelectBook={select} />);
+    bundleSeriesInLibrary={false} onSelectBook={select} />);
   expect(screen.getByText('Downloading')).toBeVisible();
   await user.click(screen.getByRole('heading', { name: pending.title }));
   expect(select).toHaveBeenCalledWith(pending);

@@ -256,7 +256,6 @@ it('opens owned catalog book from SeriesDetailModal inside CatalogView', async (
       authors={[{ id: 'auth-1', name: 'Frank Herbert', sortName: 'Herbert, Frank', bookCount: 1 }]}
       series={[{ id: 'ser-1', title: 'Dune Saga', totalBooks: 1, status: 'completed' }]}
       onSelectBook={onSelectBook}
-      selectedIndex={-1}
     />
   );
 
@@ -355,7 +354,6 @@ it('bundles series books in grid and list views by default while keeping standal
       ]}
       series={[{ id: 'ser-dune', title: 'Dune Chronicles', totalBooks: 6, status: 'ongoing' }]}
       onSelectBook={onSelectBook}
-      selectedIndex={-1}
     />
   );
 
@@ -452,7 +450,6 @@ it('renders every book individually in grid and list views when bundling is disa
       series={[{ id: 'ser-dune', title: 'Dune Chronicles', totalBooks: 6, status: 'ongoing' }]}
       bundleSeriesInLibrary={false}
       onSelectBook={onSelectBook}
-      selectedIndex={-1}
     />
   );
 
