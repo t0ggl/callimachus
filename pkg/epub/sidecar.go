@@ -106,6 +106,15 @@ func GenerateSidecarXML(m Metadata, targetOpfPath string) []byte {
 	return generateSidecarXML(m, targetOpfPath)
 }
 
+// ReplaceSidecarMetadata updates a companion OPF's metadata while preserving its guide.
+func ReplaceSidecarMetadata(source []byte, m Metadata) ([]byte, error) {
+	parsed, err := parseOPF(source)
+	if err != nil {
+		return nil, err
+	}
+	return replacementMetadataXML(source, m, parsed)
+}
+
 // WriteSidecarFile writes the Calibre-compatible companion XML sidecar file.
 func WriteSidecarFile(m Metadata, targetOpfPath string) error {
 	return writeSidecarFile(m, targetOpfPath)

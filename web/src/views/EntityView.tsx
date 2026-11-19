@@ -15,7 +15,13 @@ const availableBadge = 'border-emerald-800/60 bg-emerald-950/80 text-emerald-300
 const blueBadge = 'border-blue-800/60 bg-blue-950/80 text-blue-300';
 const purpleBadge = 'border-purple-800/60 bg-purple-950/80 text-purple-300';
 
-export function EntityView({ kind, name, canManage }: { kind: 'authors' | 'series'; name: string; canManage: boolean }) {
+export function EntityView({ kind, name, canManage, isAdmin, onMetadataApplied }: {
+  kind: 'authors' | 'series';
+  name: string;
+  canManage: boolean;
+  isAdmin?: boolean;
+  onMetadataApplied?: () => void;
+}) {
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
@@ -53,7 +59,7 @@ export function EntityView({ kind, name, canManage }: { kind: 'authors' | 'serie
         }
       });
     return () => controller.abort();
-  }, [bookID]);
+  }, [bookID, attempt]);
   useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(''), 6000);
@@ -193,7 +199,9 @@ export function EntityView({ kind, name, canManage }: { kind: 'authors' | 'serie
           </ol>
         )}
       </div>
-      {selectedBook && <BookDetailModal book={selectedBook} onClose={() => { setSelectedBook(null); setBookID(null); }} />}
+      {selectedBook && <BookDetailModal book={selectedBook} isAdmin={isAdmin}
+        onMetadataApplied={() => { setAttempt((value) => value + 1); onMetadataApplied?.(); }}
+        onClose={() => { setSelectedBook(null); setBookID(null); }} />}
     </section>
   );
 }
