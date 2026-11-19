@@ -67,6 +67,11 @@ func TestSanitizeTitle(t *testing.T) {
 			input:    "L'Étranger: Édition Définitive",
 			expected: "L'Étranger: Édition Définitive",
 		},
+		{
+			name:     "Preserves balanced parenthesized series tag",
+			input:    "A Drop of Corruption (Shadow of the Leviathan, Book 2)",
+			expected: "A Drop of Corruption (Shadow of the Leviathan, Book 2)",
+		},
 	}
 
 	for _, tt := range tests {
@@ -605,3 +610,124 @@ func TestDiscoveryKeyAuthorPrefix(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractSeriesFromTitle(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		wantSeries string
+		wantIndex  *float64
+	}{
+		{
+			name:      "Volume abbreviation in title (vol 1)",
+			input:     "Lord of Mysteries vol 1",
+			wantIndex: floatPtr(1),
+		},
+		{
+			name:      "Volume with dot and capital (Vol. 2)",
+			input:     "Lord of Mysteries Vol. 2",
+			wantIndex: floatPtr(2),
+		},
+		{
+			name:      "Full word Volume in title",
+			input:     "Lord of Mysteries Volume 3",
+			wantIndex: floatPtr(3),
+		},
+		{
+			name:      "Book N in title",
+			input:     "Chronicle Book 4",
+			wantIndex: floatPtr(4),
+		},
+		{
+			name:      "Bk abbreviation in title",
+			input:     "Chronicle Bk. 2.5",
+			wantIndex: floatPtr(2.5),
+		},
+		{
+			name:       "Parenthesized series and book",
+			input:      "The Tainted Cup (Shadow of the Leviathan, Book 1)",
+			wantSeries: "Shadow of the Leviathan",
+			wantIndex:  floatPtr(1),
+		},
+		{
+			name:       "Bracketed series and hash",
+			input:      "A Drop of Corruption [Shadow of the Leviathan #2]",
+			wantSeries: "Shadow of the Leviathan",
+			wantIndex:  floatPtr(2),
+		},
+		{
+			name:      "Parenthesized index only",
+			input:     "Novella (#2.5)",
+			wantIndex: floatPtr(2.5),
+		},
+		{
+			name:      "Numeric title Fahrenheit 451 must not false match",
+			input:     "Fahrenheit 451",
+			wantIndex: nil,
+		},
+		{
+			name:      "Numeric title Catch-22 must not false match",
+			input:     "Catch-22",
+			wantIndex: nil,
+		},
+		{
+			name:      "Word ending in no must not false match",
+			input:     "Piano 1",
+			wantIndex: nil,
+		},
+		{
+			name:      "Word ending in book must not false match",
+			input:     "Yearbook 2024",
+			wantIndex: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ser, idx := ExtractSeriesFromTitle(tc.input)
+			if ser != tc.wantSeries {
+				t.Errorf("ExtractSeriesFromTitle(%q) series = %q; want %q", tc.input, ser, tc.wantSeries)
+			}
+			if (idx == nil) != (tc.wantIndex == nil) {
+				t.Fatalf("ExtractSeriesFromTitle(%q) index nil mismatch: got %v, want %v", tc.input, idx, tc.wantIndex)
+			}
+			if idx != nil && *idx != *tc.wantIndex {
+				t.Errorf("ExtractSeriesFromTitle(%q) index = %v; want %v", tc.input, *idx, *tc.wantIndex)
+			}
+		})
+	}
+}
+
+func TestNormalizeTitleKey(t *testing.T) {
+	equalPairs := [][2]string{
+		{"Honoured Enemy", "Honored Enemy"},
+		{"Murder In LaMut", "Murder in LaMut"},
+		{"The Colour of Magic", "The Color of Magic"},
+		{"Grey Sister", "Gray Sister"},
+		{"Centre of the Storm", "Center of the Storm"},
+		{"Armour of Light", "Armor of Light"},
+		{"Dishonoured Crown", "Dishonored Crown"},
+	}
+	for _, pair := range equalPairs {
+		a := NormalizeTitleKey(pair[0])
+		b := NormalizeTitleKey(pair[1])
+		if a == "" || a != b {
+			t.Errorf("NormalizeTitleKey(%q)=%q != NormalizeTitleKey(%q)=%q", pair[0], a, pair[1], b)
+		}
+	}
+
+	distinctPairs := [][2]string{
+		{"Four Kingdoms", "For Kingdoms"},
+		{"The Dark Hour", "The Dark Hor"},
+		{"Grand Tour", "Grand Tor"},
+		{"Your Shadow", "Yor Shadow"},
+	}
+	for _, pair := range distinctPairs {
+		a := NormalizeTitleKey(pair[0])
+		b := NormalizeTitleKey(pair[1])
+		if a == b {
+			t.Errorf("NormalizeTitleKey false collision: %q and %q both normalized to %q", pair[0], pair[1], a)
+		}
+	}
+}
+

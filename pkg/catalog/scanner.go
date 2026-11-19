@@ -247,11 +247,14 @@ func reconcileBook(root, dir, base string, media []ScannedMediaFile, sidecarPath
 		CoverPath:   coverPath,
 	}
 
+	var rawTitle string
+
 	// 1. Try parsing companion OPF if available
 	if sidecarPath != "" {
 		if data, err := os.ReadFile(sidecarPath); err == nil {
 			if meta, err := epub.ParseOPF(data); err == nil && meta.Title != "" {
 				sb.OPFMetadata = &meta
+				rawTitle = meta.Title
 				sb.Title = meta.Title
 				if len(meta.Authors) > 0 {
 					sb.Author = meta.Authors[0]
@@ -270,6 +273,7 @@ func reconcileBook(root, dir, base string, media []ScannedMediaFile, sidecarPath
 	}
 
 	// 2. Canonical Directory Structure Analysis relative to libraryRoot
+	var titleDir string
 	rel, err := filepath.Rel(root, dir)
 	if err == nil && rel != "." && rel != "" {
 		parts := strings.Split(rel, string(filepath.Separator))
@@ -318,6 +322,7 @@ func reconcileBook(root, dir, base string, media []ScannedMediaFile, sidecarPath
 		// Resolve Series and Title Directory based on path depth
 		if len(parts) == 3 {
 			// [Author, Series, TitleDir]
+			titleDir = parts[2]
 			if sb.Series == "" {
 				sb.Series = parts[1]
 			}
@@ -357,12 +362,14 @@ func reconcileBook(root, dir, base string, media []ScannedMediaFile, sidecarPath
 		}
 	}
 
-	// 3. If title or author still missing, inspect EPUB media file if present
-	if sb.Title == "" || sb.Author == "" {
+	// 3. If title, author, series, or series index is still missing, inspect EPUB media file if present
+	var epubTitle string
+	if sb.Title == "" || sb.Author == "" || sb.Series == "" || sb.SeriesIndex == nil {
 		for _, m := range media {
 			if m.Format == "epub" {
 				if ep, err := epub.Open(m.Path); err == nil {
 					meta := ep.Metadata()
+					epubTitle = meta.Title
 					if sb.Title == "" && meta.Title != "" {
 						sb.Title = meta.Title
 					}
@@ -372,8 +379,10 @@ func reconcileBook(root, dir, base string, media []ScannedMediaFile, sidecarPath
 					if sb.Series == "" && meta.Series != "" {
 						sb.Series = meta.Series
 					}
-					if sb.SeriesIndex == nil && meta.SeriesIndex != nil {
-						sb.SeriesIndex = meta.SeriesIndex
+					if sb.SeriesIndex == nil && meta.SeriesIndex != nil &&
+						(meta.Series == "" || sb.Series == "" || strings.EqualFold(meta.Series, sb.Series)) {
+						idx := *meta.SeriesIndex
+						sb.SeriesIndex = &idx
 					}
 					if sb.Year <= 0 && meta.PublishDate != "" {
 						if ym := reYearInString.FindString(meta.PublishDate); ym != "" {
@@ -405,6 +414,26 @@ func reconcileBook(root, dir, base string, media []ScannedMediaFile, sidecarPath
 		}
 		if sb.Year <= 0 && parsed.Year > 0 {
 			sb.Year = parsed.Year
+		}
+	}
+
+	// Extract parenthesized series or explicit volume/book index even when title and author exist.
+	if sb.Series == "" || sb.SeriesIndex == nil {
+		for _, candidate := range []string{rawTitle, sb.Title, base, titleDir, epubTitle} {
+			if candidate == "" {
+				continue
+			}
+			ser, idx := metadata.ExtractSeriesFromTitle(candidate)
+			if sb.Series == "" && ser != "" {
+				sb.Series = ser
+			}
+			if sb.SeriesIndex == nil && idx != nil && (ser == "" || sb.Series == "" || strings.EqualFold(ser, sb.Series)) {
+				v := *idx
+				sb.SeriesIndex = &v
+			}
+			if sb.Series != "" && sb.SeriesIndex != nil {
+				break
+			}
 		}
 	}
 

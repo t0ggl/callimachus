@@ -60,11 +60,11 @@ var (
 
 	// Series patterns
 	reParenSeries   = regexp.MustCompile(`(?i)[\(\[]([^()\[\]]*?(?:book|bk|volume|vol|part|no|#)[^()\[\]]*?)[\)\]]`)
-	reSeriesPattern = regexp.MustCompile(`(?i)^(.*?)[,_\s\-\(\[]*(?:book|bk|volume|vol|part|no)\.?[._\s#]*(\d+(?:\.\d+)?)\s*[\)\]]?`)
+	reSeriesPattern = regexp.MustCompile(`(?i)^(.*?)(?:^|[,_\s\-\(\[.]+)(?:book|bk|volume|vol|part|no)\.?[._\s#]*(\d+(?:\.\d+)?)\s*[\)\]]?`)
 	reSeriesHash    = regexp.MustCompile(`(?i)^(.*?)\s*#\s*(\d+(?:\.\d+)?)\s*[\)\]]?$`)
 	reSeriesNumOnly = regexp.MustCompile(`(?i)^(?:book|bk|volume|vol|part|no|#)\.?[._\s#]*(\d+(?:\.\d+)?)$`)
 	reSeriesTailNum = regexp.MustCompile(`^(.*?)[,_\s\-]+(\d+(?:\.\d+)?)$`)
-	reVolumeInTitle = regexp.MustCompile(`(?i)\b(?:vol(?:ume)?|book)\.?\s*(\d+(?:\.\d+)?)\b`)
+	reVolumeInTitle = regexp.MustCompile(`(?i)\b(?:vol(?:ume)?|book|bk)\.?\s*(\d+(?:\.\d+)?)\b`)
 
 	// Authors
 	reCoAuthorSplit = regexp.MustCompile(`(?i)\s+(?:&|and|with|feat\.?|ft\.?)\s+|;\s*|\s*/\s*`)
@@ -241,6 +241,11 @@ func ParseRelease(raw string) ParsedRelease {
 					res.Title = SanitizeTitle(p1)
 				} else {
 					res.Title = SanitizeTitle(p1)
+					if res.SeriesIndex == nil && reParenSeries.MatchString(p1) {
+						if _, idx := ExtractSeries(p1); idx != nil {
+							res.SeriesIndex = idx
+						}
+					}
 				}
 			}
 		} else if len(parts) >= 3 {
@@ -308,8 +313,10 @@ func ParseRelease(raw string) ParsedRelease {
 			idxStr := res.Title[m[2]:m[3]]
 			if val, err := strconv.ParseFloat(idxStr, 64); err == nil {
 				res.SeriesIndex = &val
-				// Strip Vol.X from title
-				res.Title = SanitizeTitle(res.Title[:m[0]] + " " + res.Title[m[1]:])
+				// Strip Vol.X from title if a non-empty title remains
+				if stripped := SanitizeTitle(res.Title[:m[0]] + " " + res.Title[m[1]:]); stripped != "" {
+					res.Title = stripped
+				}
 			}
 		}
 	}
@@ -397,15 +404,111 @@ func SanitizeTitle(title string) string {
 		t = reMultipleSpace.ReplaceAllString(t, " ")
 	}
 
-	// Trim edge punctuation (hyphens, colons, commas, parens, brackets, spaces)
-	return strings.Trim(t, " -:,_./()[]{}#")
+	// Trim edge punctuation and any unmatched opening/closing delimiters without breaking balanced "(Series, Book 2)"
+	t = strings.Trim(t, " -:,_./#")
+	t = strings.TrimLeft(t, ")]}")
+	t = strings.TrimRight(t, "([{")
+	for strings.HasSuffix(t, ")") && strings.Count(t, ")") > strings.Count(t, "(") {
+		t = strings.TrimRight(strings.TrimSuffix(t, ")"), " -:,_./#")
+	}
+	for strings.HasSuffix(t, "]") && strings.Count(t, "]") > strings.Count(t, "[") {
+		t = strings.TrimRight(strings.TrimSuffix(t, "]"), " -:,_./#")
+	}
+	return strings.Trim(t, " -:,_./#")
+}
+
+var (
+	reASCIIWord = regexp.MustCompile(`[a-z]+`)
+
+	ukToUSWords = map[string]string{
+		"grey": "gray", "greys": "grays", "greyish": "grayish",
+		"centre": "center", "centres": "centers", "centred": "centered", "centring": "centering",
+		"theatre": "theater", "theatres": "theaters",
+		"spectre": "specter", "spectres": "specters",
+		"sceptre": "scepter", "sceptres": "scepters",
+		"sombre": "somber", "sabre": "saber", "sabres": "sabers",
+		"fibre": "fiber", "fibres": "fibers",
+		"calibre": "caliber", "lustre": "luster", "meagre": "meager",
+		"sepulchre": "sepulcher", "sepulchres": "sepulchers",
+		"manoeuvre": "maneuver", "manoeuvres": "maneuvers", "manoeuvred": "maneuvered",
+		"defence": "defense", "defences": "defenses",
+		"offence": "offense", "offences": "offenses",
+		"pretence": "pretense", "pretences": "pretenses",
+		"judgement": "judgment", "judgements": "judgments",
+		"acknowledgement": "acknowledgment", "acknowledgements": "acknowledgments",
+		"artefact": "artifact", "artefacts": "artifacts",
+		"catalogue": "catalog", "catalogues": "catalogs", "catalogued": "cataloged",
+		"dialogue": "dialog", "dialogues": "dialogs",
+		"prologue": "prolog", "epilogue": "epilog", "monologue": "monolog", "analogue": "analog",
+		"travelled": "traveled", "traveller": "traveler", "travellers": "travelers", "travelling": "traveling",
+		"cancelled": "canceled", "cancelling": "canceling",
+		"labelled": "labeled", "labelling": "labeling",
+		"marvellous": "marvelous",
+		"counsellor": "counselor", "counsellors": "counselors",
+		"jeweller": "jeweler", "jewellers": "jewelers",
+		"plough": "plow", "ploughed": "plowed", "ploughing": "plowing",
+		"draught": "draft", "draughts": "drafts",
+		"aeon": "eon", "aeons": "eons",
+		"mediaeval": "medieval", "encyclopaedia": "encyclopedia",
+		"fulfil": "fulfill", "fulfilment": "fulfillment",
+		"skilful": "skillful", "wilful": "willful", "enthral": "enthrall",
+		"realise": "realize", "realised": "realized", "realises": "realizes", "realising": "realizing",
+		"recognise": "recognize", "recognised": "recognized", "recognises": "recognizes", "recognising": "recognizing",
+		"organise": "organize", "organised": "organized", "organises": "organizes", "organising": "organizing",
+		"criticise": "criticize", "criticised": "criticized", "criticises": "criticizes",
+		"apologise": "apologize", "apologised": "apologized",
+		"memorise": "memorize", "memorised": "memorized",
+		"symbolise": "symbolize", "symbolised": "symbolized",
+		"civilise": "civilize", "civilised": "civilized",
+		"modernise": "modernize", "modernised": "modernized",
+	}
+
+	ukOurRoots    = []string{"honour", "colour", "favour", "armour", "rumour", "valour", "harbour", "splendour", "saviour", "endeavour", "behaviour", "neighbour", "flavour", "humour", "labour", "odour", "parlour", "rancour", "rigour", "clamour", "candour", "fervour", "glamour", "vigour", "tumour", "ardour", "demeanour", "enamour", "succour", "vapour"}
+	ukOurPrefixes = []string{"", "dis", "un", "mis", "re", "non", "in"}
+	ukOurSuffixes = []string{"", "s", "ed", "ing", "er", "ers", "able", "ably", "ite", "ites", "less", "ful", "hood", "y", "ily", "ist", "ists"}
+)
+
+func normalizeUSUKWord(w string) string {
+	if us, ok := ukToUSWords[w]; ok {
+		return us
+	}
+	if len(w) >= 6 && strings.Contains(w, "our") {
+		for _, pre := range ukOurPrefixes {
+			if pre != "" && !strings.HasPrefix(w, pre) {
+				continue
+			}
+			rest := w[len(pre):]
+			for _, root := range ukOurRoots {
+				if !strings.HasPrefix(rest, root) {
+					continue
+				}
+				tail := rest[len(root):]
+				for _, suf := range ukOurSuffixes {
+					if tail == suf {
+						return pre + strings.Replace(root, "our", "or", 1) + suf
+					}
+				}
+			}
+		}
+	}
+	return w
+}
+
+// NormalizeTitleKey returns a normalized comparison key for matching book titles across
+// casing, whitespace, scene noise, and common US/UK spelling variations.
+func NormalizeTitleKey(title string) string {
+	cleaned := strings.ToLower(strings.Join(strings.Fields(SanitizeTitle(title)), " "))
+	if cleaned == "" {
+		return ""
+	}
+	return reASCIIWord.ReplaceAllStringFunc(cleaned, normalizeUSUKWord)
 }
 
 // DiscoveryKey returns a normalized comparison key for matching a book by title and author.
 func DiscoveryKey(title, author string) string {
 	author = NormalizeAuthor(author)
 	title = StripDiscoveryAuthorPrefix(title, author)
-	return strings.ToLower(strings.Join(strings.Fields(SanitizeTitle(title)), " ")) + "\x00" + strings.ToLower(author)
+	return NormalizeTitleKey(title) + "\x00" + strings.ToLower(author)
 }
 
 // StripDiscoveryAuthorPrefix removes a leading credited name from a comparison title.
@@ -558,6 +661,33 @@ func ExtractSeries(raw string) (series string, index *float64) {
 		}
 	}
 
+	return "", nil
+}
+
+// ExtractSeriesFromTitle conservatively extracts a parenthesized series name and/or
+// an explicit volume/book index from a book title or filename without misinterpreting
+// numeric titles like "Fahrenheit 451" or "Catch-22".
+func ExtractSeriesFromTitle(raw string) (series string, index *float64) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", nil
+	}
+	if m := reParenSeries.FindStringSubmatch(s); len(m) > 1 {
+		ser, idx := ExtractSeries(m[1])
+		if idx != nil {
+			return ser, idx
+		}
+	}
+	if m := reSeriesNumOnly.FindStringSubmatch(s); len(m) > 1 {
+		if val, err := strconv.ParseFloat(m[1], 64); err == nil {
+			return "", &val
+		}
+	}
+	if m := reVolumeInTitle.FindStringSubmatch(s); len(m) > 1 {
+		if val, err := strconv.ParseFloat(m[1], 64); err == nil {
+			return "", &val
+		}
+	}
 	return "", nil
 }
 
