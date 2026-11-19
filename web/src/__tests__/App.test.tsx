@@ -93,6 +93,7 @@ describe('App Integration', () => {
   });
 
   afterEach(() => {
+    window.location.hash = '';
     vi.restoreAllMocks();
   });
 
@@ -685,5 +686,113 @@ describe('App Integration', () => {
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByRole('list', { name: 'Book activity' })).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('allows guests to view unowned series book details from discovery without triggering catalog writes', async () => {
+    const user = userEvent.setup({ delay: null });
+    const fetchMock = vi.mocked(global.fetch);
+    const originalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url, options) => {
+      if (String(url).includes('/api/auth/me')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ ...testUser, role: 'guest' }),
+        } as unknown as Response);
+      }
+      if (String(url).startsWith('/api/discover?')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              { title: 'Guest Discovery Book', authors: ['Guest Author'], year: 2024, series: 'Guest Chronicle', series_index: 2 },
+            ])
+          )
+        );
+      }
+      if (String(url).startsWith('/api/series/books?')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              title: 'Guest Chronicle',
+              monitored: false,
+              authors: ['Guest Author'],
+              total_books: 1,
+              owned_count: 0,
+              complete: true,
+              books: [
+                {
+                  title: 'Guest Discovery Book',
+                  authors: ['Guest Author'],
+                  description: 'Unowned blurb visible to guests.',
+                  publish_date: '2024-06',
+                  series_index: 2,
+                  state: 'Not in library',
+                  monitored: false,
+                  formats: [],
+                },
+              ],
+            })
+          )
+        );
+      }
+      if (String(url).startsWith('/api/catalog/entity?kind=series&name=Guest%20Chronicle')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              monitored: false,
+              books: [
+                {
+                  id: '',
+                  title: 'Guest Discovery Book',
+                  authorName: 'Guest Author',
+                  seriesTitle: 'Guest Chronicle',
+                  seriesIndex: 2,
+                  releaseDate: '2024-06',
+                  synopsis: 'Unowned blurb visible to guests.',
+                  state: 'Not in library',
+                  monitored: false,
+                  formats: [],
+                },
+              ],
+            })
+          )
+        );
+      }
+      return originalFetch(url, options);
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('The Obsidian Archive')).toBeInTheDocument());
+
+    await user.click(screen.getByTestId('global-search-trigger'));
+    await user.type(screen.getByTestId('command-palette-input'), 'Guest Discovery');
+
+    const seriesButton = await screen.findByRole('button', { name: 'Guest Chronicle' });
+    expect(screen.queryByRole('button', { name: /Add Guest Discovery Book/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Format' })).not.toBeInTheDocument();
+
+    await user.click(seriesButton);
+
+    const modalReadingOrder = await screen.findByRole('list', { name: 'Series reading order' });
+    expect(within(modalReadingOrder).queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
+    expect(within(modalReadingOrder).queryByRole('button', { name: /Monitor/i })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Manage monitoring' }));
+
+    const readingOrder = await screen.findByRole('list', { name: 'Reading Order' });
+    expect(within(readingOrder).queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
+    expect(within(readingOrder).queryByRole('button', { name: /Monitor/i })).not.toBeInTheDocument();
+    await user.click(within(readingOrder).getByRole('button', { name: 'Guest Discovery Book' }));
+
+    const detailDialog = await screen.findByRole('dialog', { name: 'Details for Guest Discovery Book' });
+    expect(within(detailDialog).getByText('Unowned blurb visible to guests.')).toBeInTheDocument();
+    expect(within(detailDialog).getByText('No files available.')).toBeInTheDocument();
+    expect(within(detailDialog).queryByRole('button', { name: 'Show Download Options' })).not.toBeInTheDocument();
+    expect(within(detailDialog).queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
+
+    const writeCalls = fetchMock.mock.calls.filter(([u, opts]) => {
+      const method = opts?.method?.toUpperCase() ?? 'GET';
+      return method !== 'GET' || String(u).includes('/api/books/resolve');
+    });
+    expect(writeCalls).toEqual([]);
   });
 });

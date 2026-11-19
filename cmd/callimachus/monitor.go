@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -222,17 +224,36 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 	var id, photoURL string
 	var monitored bool
 	var err error
+	var known []metadata.BookMetadata
+	lookup := true
+	seriesTitle := name
+	var seriesAuthor string
+	var hardcoverID int
 	if kind == "series" {
 		var series *database.Series
-		seriesID, author, hardcoverID := requestedSeriesIdentity(r)
-		series, err = catalog.New(s.db).FindSeries(r.Context(), seriesID, name, author, hardcoverID)
+		var seriesID string
+		seriesID, seriesAuthor, hardcoverID = requestedSeriesIdentity(r)
+		c := catalog.New(s.db)
+		series, err = c.FindSeries(r.Context(), seriesID, name, seriesAuthor, hardcoverID)
 		if errors.Is(err, catalog.ErrAmbiguousSeries) {
 			http.Error(w, "Choose a series by catalog ID", http.StatusConflict)
 			return
 		}
 		if err == nil {
 			id = series.ID
+			seriesTitle = series.Title
 			err = s.db.QueryRowContext(r.Context(), "SELECT monitored FROM series WHERE id=?", id).Scan(&monitored)
+			if err == nil {
+				known, err = c.SeriesEvidence(r.Context(), id)
+				if errors.Is(err, catalog.ErrAmbiguousSeries) {
+					lookup = false
+					err = nil
+				} else if err == nil {
+					lookup = len(known) > 0
+				}
+			}
+		} else if errors.Is(err, sql.ErrNoRows) && seriesID != "" {
+			lookup = false
 		}
 	} else {
 		err = s.db.QueryRowContext(r.Context(), "SELECT id,monitored,"+photo+" FROM "+kind+" WHERE "+column+"=? COLLATE NOCASE", name).Scan(&id, &monitored, &photoURL)
@@ -250,6 +271,8 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 		SeriesTitle string   `json:"seriesTitle,omitempty"`
 		Date        string   `json:"releaseDate"`
 		Index       *float64 `json:"seriesIndex"`
+		Synopsis    string   `json:"synopsis,omitempty"`
+		Monitored   bool     `json:"monitored"`
 		State       string   `json:"state"`
 		Formats     []string `json:"formats"`
 		CoverURL    string   `json:"coverUrl,omitempty"`
@@ -257,7 +280,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 	books := []entry{}
 	rows, err := s.db.QueryContext(r.Context(), `
 		SELECT b.id, b.title, COALESCE(b.subtitle,''), a.name, COALESCE(s.title,''), COALESCE(s.id,''),
-		       COALESCE(b.release_date,''), b.series_index, `+bookAvailabilitySQL+`,
+		       COALESCE(b.release_date,''), b.series_index, COALESCE(b.synopsis,''), b.monitored, `+bookAvailabilitySQL+`,
 		       (SELECT json_group_array(format) FROM (
 		           SELECT DISTINCT UPPER(e.format) AS format
 		           FROM book_editions e JOIN media_assets m ON m.edition_id=e.id
@@ -275,7 +298,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var b entry
 		var formats string
-		if err := rows.Scan(&b.ID, &b.Title, &b.Subtitle, &b.AuthorName, &b.SeriesTitle, &b.SeriesID, &b.Date, &b.Index, &b.State, &formats); err != nil {
+		if err := rows.Scan(&b.ID, &b.Title, &b.Subtitle, &b.AuthorName, &b.SeriesTitle, &b.SeriesID, &b.Date, &b.Index, &b.Synopsis, &b.Monitored, &b.State, &formats); err != nil {
 			http.Error(w, "Unable to load books", 500)
 			return
 		}
@@ -295,7 +318,421 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 		if len(books[i].Formats) > 0 && s.bookCover(r, books[i].ID) != "" {
 			books[i].CoverURL = "/api/books/" + books[i].ID + "/cover"
 		}
+		if kind == "series" && books[i].Index == nil {
+			if ser, idx := metadata.ExtractSeriesFromTitle(books[i].Title); idx != nil && (ser == "" || seriesTitleKey(ser) == seriesTitleKey(seriesTitle)) {
+				books[i].Index = idx
+			}
+		}
 	}
+
+	if kind == "series" {
+		toSeriesBook := func(b entry) seriesBook {
+			var authors []string
+			if b.AuthorName != "" {
+				authors = []string{b.AuthorName}
+			}
+			return seriesBook{
+				BookMetadata: metadata.BookMetadata{
+					Title:       b.Title,
+					Subtitle:    b.Subtitle,
+					Authors:     authors,
+					Description: b.Synopsis,
+					CoverURL:    b.CoverURL,
+					PublishDate: b.Date,
+					Series:      b.SeriesTitle,
+					SeriesIndex: b.Index,
+				},
+				BookID: b.ID,
+				LibraryBookID: func() string {
+					if b.State != "Not in library" && b.State != "Scheduled" {
+						return b.ID
+					}
+					return ""
+				}(),
+				State:     b.State,
+				Monitored: b.Monitored,
+				Formats:   b.Formats,
+			}
+		}
+		mergeLocalEntry := func(dst *entry, src entry) {
+			owned := dst.State == "In library"
+			if dst.Subtitle == "" && src.Subtitle != "" {
+				dst.Subtitle = src.Subtitle
+			}
+			if dst.Synopsis == "" && src.Synopsis != "" {
+				dst.Synopsis = src.Synopsis
+			}
+			if dst.CoverURL == "" && src.CoverURL != "" {
+				dst.CoverURL = src.CoverURL
+			}
+			if src.Date != "" && (dst.Date == "" || !owned) {
+				dst.Date = metadata.MergeReleaseDate(dst.Date, src.Date)
+				if dst.State == "Not in library" || dst.State == "Scheduled" {
+					dst.State = bookAvailability("", dst.Date, 0, today)
+				}
+			}
+			if src.Index != nil && (dst.Index == nil || !owned) {
+				idx := *src.Index
+				dst.Index = &idx
+			}
+			if dst.AuthorName == "" && src.AuthorName != "" {
+				dst.AuthorName = src.AuthorName
+			}
+			if dst.SeriesID == "" && src.SeriesID != "" {
+				dst.SeriesID = src.SeriesID
+			}
+			if !owned && src.State != "In library" {
+				dst.Monitored = dst.Monitored || src.Monitored
+			}
+			if src.State == "In library" && len(src.Formats) > 0 {
+				seen := make(map[string]bool, len(dst.Formats))
+				for _, f := range dst.Formats {
+					seen[f] = true
+				}
+				for _, f := range src.Formats {
+					if !seen[f] {
+						seen[f] = true
+						dst.Formats = append(dst.Formats, f)
+					}
+				}
+				sort.Strings(dst.Formats)
+			}
+		}
+		if len(books) > 1 {
+			kept := make([]entry, 0, len(books))
+			for _, b := range books {
+				sb := toSeriesBook(b)
+				bestIdx, bestScore := -1, 0
+				for i := range kept {
+					score := seriesBookMatch(toSeriesBook(kept[i]), sb.BookMetadata, seriesTitle)
+					if score > bestScore {
+						bestIdx, bestScore = i, score
+					}
+				}
+				if bestIdx >= 0 {
+					if preferLocalSeriesBook(sb, toSeriesBook(kept[bestIdx])) {
+						prev := kept[bestIdx]
+						kept[bestIdx] = b
+						mergeLocalEntry(&kept[bestIdx], prev)
+					} else {
+						mergeLocalEntry(&kept[bestIdx], b)
+					}
+					continue
+				}
+				kept = append(kept, b)
+			}
+			books = kept
+		}
+
+		if len(known) == 0 && seriesAuthor != "" {
+			known = append(known, metadata.BookMetadata{Authors: []string{seriesAuthor}})
+		}
+		for i := range known {
+			clean := stripSeriesTitleAnnotation(known[i].Title)
+			known[i].Title = strings.TrimSpace(metadata.StripDiscoveryAuthorPrefix(clean, known[i].Authors...))
+		}
+		if hardcoverID > 0 && id == "" {
+			known = append(known, metadata.BookMetadata{HardcoverSeriesID: hardcoverID})
+		}
+
+		if lookup {
+			if cfg, cfgErr := config.Load(r.Context(), s.db, s.baseOverrides); cfgErr == nil && cfg.Settings.HardcoverAPIKey != "" {
+				client := s.prowlarrHTTPClient
+				if client == nil {
+					client = &http.Client{Timeout: 20 * time.Second}
+				}
+				if found, lookupErr := metadata.NewHardcoverProvider(cfg.Settings.HardcoverAPIKey, metadata.WithHardcoverClient(client)).SeriesBooks(r.Context(), seriesTitle, known...); lookupErr == nil {
+					localBooks := make([]seriesBook, len(books))
+					for i, b := range books {
+						localBooks[i] = toSeriesBook(b)
+					}
+					localCount := len(localBooks)
+					redundant := make(map[int]bool)
+					for _, remote := range found {
+						if remote.SeriesIndex == nil {
+							if ser, idx := metadata.ExtractSeriesFromTitle(remote.Title); idx != nil && (ser == "" || seriesTitleKey(ser) == seriesTitleKey(seriesTitle)) {
+								remote.SeriesIndex = idx
+							}
+						}
+						best, bestScore := -1, 0
+						for i := range localBooks {
+							if i < localCount && redundant[i] {
+								continue
+							}
+							score := seriesBookMatch(localBooks[i], remote, seriesTitle)
+							if score > bestScore || (score > 0 && score == bestScore && localBooks[best].LibraryBookID == "" && localBooks[i].LibraryBookID != "") {
+								best, bestScore = i, score
+							}
+						}
+						if best >= 0 {
+							if localBooks[best].State == "In library" {
+								for i := range localBooks[:localCount] {
+									if i != best && localBooks[i].LibraryBookID == "" && seriesBookMatch(localBooks[i], remote, seriesTitle) > 0 {
+										redundant[i] = true
+									}
+								}
+							}
+							owned := books[best].State == "In library"
+							if books[best].Subtitle == "" && remote.Subtitle != "" {
+								books[best].Subtitle = remote.Subtitle
+							}
+							if books[best].Synopsis == "" && remote.Description != "" {
+								books[best].Synopsis = remote.Description
+							}
+							if books[best].CoverURL == "" && remote.CoverURL != "" {
+								books[best].CoverURL = remote.CoverURL
+							}
+							if remoteDate := metadata.NormalizeReleaseDate(remote.PublishDate, remote.Year); remoteDate != "" && (books[best].Date == "" || !owned) {
+								books[best].Date = metadata.MergeReleaseDate(books[best].Date, remoteDate)
+								if books[best].State == "Not in library" || books[best].State == "Scheduled" {
+									books[best].State = bookAvailability("", books[best].Date, remote.Year, today)
+								}
+							}
+							if remote.SeriesIndex != nil && (books[best].Index == nil || !owned) {
+								idx := *remote.SeriesIndex
+								books[best].Index = &idx
+							}
+							mergeSeriesBookMetadata(&localBooks[best], remote)
+							continue
+						}
+						authorName := ""
+						if len(remote.Authors) > 0 {
+							authorName = remote.Authors[0]
+						}
+						entrySeriesTitle := remote.Series
+						if entrySeriesTitle == "" {
+							entrySeriesTitle = seriesTitle
+						}
+						remoteDate := cmp.Or(metadata.NormalizeReleaseDate(remote.PublishDate, remote.Year), remote.PublishDate)
+						newEntry := entry{
+							Title:       remote.Title,
+							Subtitle:    remote.Subtitle,
+							AuthorName:  authorName,
+							SeriesID:    id,
+							SeriesTitle: entrySeriesTitle,
+							Date:        remoteDate,
+							Index:       remote.SeriesIndex,
+							Synopsis:    remote.Description,
+							State:       bookAvailability("", remoteDate, remote.Year, today),
+							Formats:     []string{},
+							CoverURL:    remote.CoverURL,
+						}
+						books = append(books, newEntry)
+						localBooks = append(localBooks, toSeriesBook(newEntry))
+					}
+					visible := books[:0]
+					for i, b := range books {
+						if !redundant[i] {
+							visible = append(visible, b)
+						}
+					}
+					books = visible
+				}
+			}
+		}
+		sort.SliceStable(books, func(i, j int) bool {
+			ai, bi := books[i].Index, books[j].Index
+			if ai != nil && bi != nil {
+				if *ai != *bi {
+					return *ai < *bi
+				}
+			} else if ai != nil || bi != nil {
+				return ai != nil
+			}
+			if books[i].Date != books[j].Date {
+				if books[i].Date == "" {
+					return false
+				}
+				if books[j].Date == "" {
+					return true
+				}
+				return books[i].Date < books[j].Date
+			}
+			if c := strings.Compare(strings.ToLower(books[i].Title), strings.ToLower(books[j].Title)); c != 0 {
+				return c < 0
+			}
+			return books[i].ID < books[j].ID
+		})
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"monitored": monitored, "photoUrl": photoURL, "books": books})
+}
+
+type resolveBookRequest struct {
+	BookID            string   `json:"book_id,omitempty"`
+	Title             string   `json:"title"`
+	Subtitle          string   `json:"subtitle,omitempty"`
+	Author            string   `json:"author"`
+	Series            string   `json:"series,omitempty"`
+	SeriesID          string   `json:"series_id,omitempty"`
+	HardcoverSeriesID int      `json:"hardcover_series_id,omitempty"`
+	SeriesIndex       *float64 `json:"series_index,omitempty"`
+	ReleaseDate       string   `json:"release_date,omitempty"`
+	Synopsis          string   `json:"synopsis,omitempty"`
+	CoverURL          string   `json:"cover_url,omitempty"`
+}
+
+func validExternalCoverURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil {
+		return ""
+	}
+	return u.String()
+}
+
+func (s *Server) handleResolveBook(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		http.Error(w, "Database unavailable", http.StatusInternalServerError)
+		return
+	}
+	var req resolveBookRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&req); err != nil {
+		http.Error(w, "Invalid book request", http.StatusBadRequest)
+		return
+	}
+	c := catalog.New(s.db)
+	bookID := strings.TrimSpace(req.BookID)
+	if bookID != "" {
+		existing, err := c.GetBookByID(r.Context(), bookID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				http.Error(w, "Book not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "Unable to resolve book", http.StatusInternalServerError)
+			return
+		}
+		bookID = existing.ID
+	} else {
+		title := strings.TrimSpace(req.Title)
+		authorName := strings.TrimSpace(req.Author)
+		if authorName == "" {
+			authorName = "Unknown"
+		}
+		seriesTitle := strings.TrimSpace(req.Series)
+		requestedSeriesID := strings.TrimSpace(req.SeriesID)
+		if title == "" || len(title) > 500 || len(authorName) > 500 || len(seriesTitle) > 500 {
+			http.Error(w, "Invalid book metadata", http.StatusBadRequest)
+			return
+		}
+		author, err := c.GetOrCreateAuthor(r.Context(), authorName)
+		if err != nil {
+			http.Error(w, "Unable to resolve author", http.StatusInternalServerError)
+			return
+		}
+		var seriesID *string
+		if requestedSeriesID != "" {
+			series, err := c.GetSeriesByID(r.Context(), requestedSeriesID)
+			if err == nil && series != nil {
+				seriesID = &series.ID
+			} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				http.Error(w, "Unable to resolve series", http.StatusInternalServerError)
+				return
+			}
+		}
+		if seriesID == nil && seriesTitle != "" {
+			series, err := c.GetOrCreateSeries(r.Context(), seriesTitle, author.ID, req.HardcoverSeriesID)
+			if err != nil {
+				http.Error(w, "Unable to resolve series", http.StatusInternalServerError)
+				return
+			}
+			if series != nil {
+				seriesID = &series.ID
+			}
+		}
+		var indexDisplay *string
+		if req.SeriesIndex != nil {
+			label := catalog.SeriesIndexLabel(req.SeriesIndex)
+			indexDisplay = &label
+		}
+		var releaseDate *string
+		if norm := metadata.NormalizeReleaseDate(req.ReleaseDate, 0); norm != "" {
+			releaseDate = &norm
+		}
+		var subtitle *string
+		if sub := strings.TrimSpace(req.Subtitle); sub != "" {
+			subtitle = &sub
+		}
+		var synopsis *string
+		if syn := strings.TrimSpace(req.Synopsis); syn != "" {
+			synopsis = &syn
+		}
+		saved, err := c.GetOrCreateBook(r.Context(), &database.Book{
+			AuthorID:           author.ID,
+			SeriesID:           seriesID,
+			SeriesIndex:        req.SeriesIndex,
+			SeriesIndexDisplay: indexDisplay,
+			Title:              title,
+			Subtitle:           subtitle,
+			ReleaseDate:        releaseDate,
+			Synopsis:           synopsis,
+			Monitored:          false,
+		})
+		if err != nil {
+			http.Error(w, "Unable to save book", http.StatusInternalServerError)
+			return
+		}
+		bookID = saved.ID
+	}
+
+	books, err := s.queryBooks(r.Context(), r, bookID)
+	if err != nil || len(books) == 0 {
+		http.Error(w, "Unable to load resolved book", http.StatusInternalServerError)
+		return
+	}
+	book := books[0]
+	if book.CoverURL == "" {
+		book.CoverURL = validExternalCoverURL(req.CoverURL)
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(book)
+}
+
+func (s *Server) handleBookMonitor(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		http.Error(w, "Database unavailable", http.StatusInternalServerError)
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		trimmed := strings.TrimPrefix(r.URL.Path, "/api/books/")
+		if strings.HasSuffix(trimmed, "/monitor") {
+			id = strings.TrimSpace(strings.TrimSuffix(trimmed, "/monitor"))
+		}
+	}
+	if id == "" || strings.Contains(id, "/") {
+		http.Error(w, "Invalid book id", http.StatusBadRequest)
+		return
+	}
+	var input struct {
+		Monitored *bool `json:"monitored"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&input) != nil || input.Monitored == nil {
+		http.Error(w, "monitored is required", http.StatusBadRequest)
+		return
+	}
+	result, err := s.db.ExecContext(r.Context(), `
+		UPDATE books
+		SET monitored = ?,
+		    availability_checked_at = CASE WHEN ? THEN NULL ELSE availability_checked_at END,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?`, *input.Monitored, *input.Monitored, id)
+	if err != nil {
+		http.Error(w, "Unable to update book monitoring", http.StatusInternalServerError)
+		return
+	}
+	n, err := result.RowsAffected()
+	if err == nil && n == 0 {
+		http.Error(w, "Book not found", http.StatusNotFound)
+		return
+	}
+	if *input.Monitored {
+		s.wakeMonitor()
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"id":        id,
+		"monitored": *input.Monitored,
+	})
 }

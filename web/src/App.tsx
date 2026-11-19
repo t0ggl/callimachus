@@ -62,6 +62,8 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
   // Real backend state
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const isAdmin = currentUser?.role === 'admin';
+  const canManage = currentUser?.role === 'admin' || currentUser?.role === 'curator';
+  const canRequest = canManage || currentUser?.role === 'requester';
   const [books, setBooks] = useState<Book[]>([]);
   const [authors, setAuthors] = useState<Author[]>([]);
   const [series, setSeries] = useState<Series[]>([]);
@@ -424,7 +426,8 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
             seriesID={entityParams.get('id') ?? undefined}
             seriesAuthor={entityParams.get('author') ?? undefined}
             hardcoverID={entityParams.get('hardcover_id') ?? undefined}
-            canManage={currentUser?.role === 'admin' || currentUser?.role === 'curator'}
+            canManage={canManage}
+            canRequest={canRequest}
             isAdmin={isAdmin}
             onMetadataApplied={fetchCatalog}
           />
@@ -434,6 +437,9 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
             authors={authors}
             series={series}
             bundleSeriesInLibrary={bundleSeriesInLibrary}
+            canManage={canManage}
+            canRequest={canRequest}
+            isAdmin={isAdmin}
             onSelectBook={(b) => setSelectedBook(b)}
             keyboardNavigationEnabled={!isPaletteOpen && selectedBook === null}
             selectedSeries={selectedSeries}
@@ -445,7 +451,8 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
         {!match && currentView === 'activity' && (
           <ActivityView
             requests={requests}
-            canManageJobs={currentUser?.role === 'admin' || currentUser?.role === 'curator'}
+            canManageJobs={canManage}
+            canRequest={canRequest}
             isAdmin={isAdmin}
             onMetadataApplied={fetchCatalog}
             conversionJobs={conversionJobs}
@@ -499,13 +506,30 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
       <CommandPalette
         defaultSearchFormat={defaultSearchFormat}
         onSubmitRequest={handleSubmitRequest}
-        onOpenBook={(id) => { setSelectedBook(books.find((b) => b.id === id) ?? null); setIsPaletteOpen(false); }}
+        onOpenBook={(id) => {
+          setIsPaletteOpen(false);
+          const local = books.find((b) => b.id === id);
+          if (local) {
+            setSelectedBook(local);
+            return;
+          }
+          void fetch(`/api/books?id=${encodeURIComponent(id)}`)
+            .then((res) => (res.ok ? res.json() : []))
+            .then((list: Book[]) => {
+              const fetched = Array.isArray(list) ? list.find((b) => b.id === id) : undefined;
+              if (fetched) setSelectedBook(fetched);
+            })
+            .catch(() => {});
+        }}
         isOpen={isPaletteOpen}
         onClose={() => setIsPaletteOpen(false)}
         books={books}
         authors={authors}
         series={series}
         canAccessSettings={isAdmin}
+        canManage={canManage}
+        canRequest={canRequest}
+        isAdmin={isAdmin}
         onNavigate={(v) => {
           navigateTo(v as NavView);
           setIsPaletteOpen(false);
@@ -521,6 +545,12 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
         <BookDetailModal
           book={selectedBook}
           isAdmin={isAdmin}
+          canManage={canManage}
+          canRequest={canRequest}
+          onBookUpdated={(updated) => {
+            setSelectedBook(updated);
+            setBooks((prev) => prev.map((b) => (b.id === updated.id ? updated : b)));
+          }}
           onMetadataApplied={fetchCatalog}
           onClose={() => setSelectedBook(null)}
         />

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -42,6 +43,7 @@ type APIBookEdition struct {
 }
 
 type APIBook struct {
+	Monitored          bool             `json:"monitored"`
 	State              string           `json:"state"`
 	CoverURL           string           `json:"coverUrl,omitempty"`
 	ID                 string           `json:"id"`
@@ -211,6 +213,8 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.Handle("PUT /api/catalog/entity", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleCatalogMonitor)))
 	mux.Handle("POST /api/catalog/entity", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleCatalogAction)))
 	mux.HandleFunc("GET /api/discover", s.handleDiscover)
+	mux.Handle("POST /api/books/resolve", auth.RequireRole(auth.RoleRequester)(http.HandlerFunc(s.handleResolveBook)))
+	mux.Handle("PUT /api/books/{id}/monitor", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleBookMonitor)))
 	mux.HandleFunc("GET /api/books/{id}/cover", s.handleBookCover)
 	mux.Handle("GET /api/books/{id}/files/{assetId}", auth.RequireAuth()(http.HandlerFunc(s.handleBookFile)))
 	mux.Handle("POST /api/library/scan", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleScanLibrary)))
@@ -277,24 +281,36 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode([]APIBook{})
 		return
 	}
+	books, err := s.queryBooks(r.Context(), r, r.URL.Query().Get("id"))
+	if err != nil {
+		if errors.Is(err, errBookAssetsQuery) {
+			http.Error(w, "Unable to load book files", http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]APIBook{})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(books)
+}
 
+var errBookAssetsQuery = fmt.Errorf("book assets query failed")
+
+func (s *Server) queryBooks(ctx context.Context, r *http.Request, id string) ([]APIBook, error) {
 	query := `
 		SELECT b.id, b.title, COALESCE(b.subtitle, ''), b.author_id, COALESCE(a.name, ''),
 		       COALESCE(b.series_id, ''), COALESCE(s.title, ''), b.series_index,
 		       COALESCE(b.release_date, ''),
-		       COALESCE(b.synopsis, ''), ` + bookAvailabilitySQL + `
+		       COALESCE(b.synopsis, ''), b.monitored, ` + bookAvailabilitySQL + `
 		FROM books b
 		LEFT JOIN authors a ON b.author_id = a.id
 		LEFT JOIN series s ON b.series_id = s.id
 		WHERE (? = '' OR b.id = ?)
 		ORDER BY b.title ASC
 	`
-	id := r.URL.Query().Get("id")
-	rows, err := s.db.QueryContext(r.Context(), query, id, id)
+	rows, err := s.db.QueryContext(ctx, query, id, id)
 	if err != nil {
 		slog.Error("get books query failed")
-		_ = json.NewEncoder(w).Encode([]APIBook{})
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -309,7 +325,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(
 			&b.ID, &b.Title, &b.Subtitle, &b.AuthorID, &b.AuthorName,
 			&b.SeriesID, &b.SeriesTitle, &seriesIdx,
-			&b.ReleaseDate, &b.Synopsis, &b.State,
+			&b.ReleaseDate, &b.Synopsis, &b.Monitored, &b.State,
 		); err != nil {
 			slog.Error("scan book failed")
 			continue
@@ -338,14 +354,13 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 	if len(bookIDs) > 0 {
 		// Keep server paths private; only send the basename and display metadata.
 		assetsByEdition := make(map[string][]APIMediaAsset)
-		assetRows, err := s.db.QueryContext(r.Context(), `
+		assetRows, err := s.db.QueryContext(ctx, `
 			SELECT id, edition_id, file_path, file_size
 			FROM media_assets ORDER BY file_path, id
 		`)
 		if err != nil {
 			slog.Error("get book assets query failed")
-			http.Error(w, "Unable to load book files", http.StatusInternalServerError)
-			return
+			return nil, fmt.Errorf("%w: %w", errBookAssetsQuery, err)
 		}
 		defer assetRows.Close()
 		for assetRows.Next() {
@@ -353,8 +368,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 			var serverPath string
 			if err := assetRows.Scan(&asset.ID, &asset.EditionID, &serverPath, &asset.FileSizeBytes); err != nil {
 				slog.Error("scan book asset failed")
-				http.Error(w, "Unable to load book files", http.StatusInternalServerError)
-				return
+				return nil, fmt.Errorf("%w: %w", errBookAssetsQuery, err)
 			}
 			asset.Filename = bookAssetFilename(serverPath)
 			asset.Format = strings.ToUpper(strings.TrimPrefix(filepath.Ext(asset.Filename), "."))
@@ -365,8 +379,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := assetRows.Err(); err != nil {
 			slog.Error("read book assets failed")
-			http.Error(w, "Unable to load book files", http.StatusInternalServerError)
-			return
+			return nil, fmt.Errorf("%w: %w", errBookAssetsQuery, err)
 		}
 		edQuery := `
 			SELECT id, book_id, format, COALESCE(isbn13, ''), COALESCE(asin, ''),
@@ -374,7 +387,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 			FROM book_editions
 			ORDER BY format ASC
 		`
-		edRows, err := s.db.QueryContext(r.Context(), edQuery)
+		edRows, err := s.db.QueryContext(ctx, edQuery)
 		if err == nil {
 			defer edRows.Close()
 			for edRows.Next() {
@@ -414,7 +427,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	_ = json.NewEncoder(w).Encode(books)
+	return books, nil
 }
 
 func (s *Server) handleGetAuthors(w http.ResponseWriter, r *http.Request) {

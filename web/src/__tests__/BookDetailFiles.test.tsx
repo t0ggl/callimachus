@@ -164,3 +164,158 @@ it('shows a pending book in the Library and explains the absence of files in its
   expect(screen.getByText('No files available.')).toBeVisible();
   expect(screen.queryByRole('link', { name: /^Download/ })).not.toBeInTheDocument();
 });
+
+it('shows and toggles Monitor Book only for unowned books when user can manage', async () => {
+  const user = userEvent.setup({ delay: null });
+  const unowned: Book = {
+    ...book,
+    id: 'unowned-1',
+    state: 'Not in library',
+    monitored: false,
+    formats: [],
+    editions: [],
+  };
+  const onBookUpdated = vi.fn();
+  const fetchMock = vi.fn().mockResolvedValue(Response.json({ id: 'unowned-1', monitored: true }));
+  vi.stubGlobal('fetch', fetchMock);
+
+  const { rerender } = render(<BookDetailModal book={book} onClose={vi.fn()} canManage onBookUpdated={onBookUpdated} />);
+  expect(screen.queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
+
+  rerender(<BookDetailModal book={unowned} onClose={vi.fn()} canManage={false} onBookUpdated={onBookUpdated} />);
+  expect(screen.queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
+
+  rerender(<BookDetailModal book={unowned} onClose={vi.fn()} canManage onBookUpdated={onBookUpdated} />);
+  const toggle = screen.getByRole('button', { name: 'Monitor Book' });
+  expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await user.click(toggle);
+  expect(fetchMock).toHaveBeenCalledWith(
+    '/api/books/unowned-1/monitor',
+    expect.objectContaining({ method: 'PUT', body: '{"monitored":true}' }),
+  );
+  expect(screen.getByRole('button', { name: 'Monitoring Book' })).toHaveAttribute('aria-pressed', 'true');
+  expect(onBookUpdated).toHaveBeenCalledWith(expect.objectContaining({ id: 'unowned-1', monitored: true }));
+});
+
+it('hides write controls from guests and lazily resolves unpersisted books for requester and curator actions', async () => {
+  const user = userEvent.setup({ delay: null });
+  const unpersisted: Book = {
+    id: '',
+    title: 'Remote Chronicle',
+    subtitle: 'Part Two',
+    authorId: '',
+    authorName: 'Jane Author',
+    seriesTitle: 'Remote Saga',
+    seriesIndex: 2,
+    releaseDate: '2099-09',
+    synopsis: 'Preserved remote blurb.',
+    coverUrl: 'https://covers.example/remote.jpg',
+    state: 'Scheduled',
+    monitored: false,
+    formats: [],
+    editions: [],
+  };
+
+  // Guest / unprivileged sees metadata and "No files available." with zero write controls
+  const { rerender } = render(
+    <BookDetailModal book={unpersisted} canManage={false} canRequest={false} onClose={vi.fn()} />
+  );
+  expect(screen.getByText('Preserved remote blurb.')).toBeVisible();
+  expect(screen.getByText('2099-09')).toBeVisible();
+  expect(screen.getByText('No files available.')).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Show Download Options' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
+
+  // Requester sees Show Download Options (no Monitor Book) and clicking resolves once with full metadata
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === '/api/books/resolve' && init?.method === 'POST') {
+      return Response.json({
+        id: 'persisted-remote',
+        title: 'Remote Chronicle',
+        authorId: 'a-1',
+        authorName: 'Jane Author',
+        monitored: false,
+        formats: [],
+        editions: [],
+      });
+    }
+    if (url === '/api/books/persisted-remote/monitor' && init?.method === 'PUT') {
+      return Response.json({ id: 'persisted-remote', monitored: true });
+    }
+    if (url === '/api/requests') {
+      return Response.json([{ id: 88, book_id: 'persisted-remote', format: 'epub' }]);
+    }
+    if (url === '/api/requests/88/candidates') {
+      return Response.json([]);
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  const onBookUpdated = vi.fn();
+  rerender(
+    <BookDetailModal book={unpersisted} canManage={false} canRequest onBookUpdated={onBookUpdated} onClose={vi.fn()} />
+  );
+  expect(screen.queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Show Download Options' }));
+
+  const resolveCall = fetchMock.mock.calls.find(([url]) => url === '/api/books/resolve');
+  expect(resolveCall).toBeDefined();
+  expect(JSON.parse(String(resolveCall?.[1]?.body))).toEqual({
+    title: 'Remote Chronicle',
+    subtitle: 'Part Two',
+    author: 'Jane Author',
+    series: 'Remote Saga',
+    series_index: 2,
+    release_date: '2099-09',
+    synopsis: 'Preserved remote blurb.',
+    cover_url: 'https://covers.example/remote.jpg',
+  });
+  expect(onBookUpdated).toHaveBeenCalledWith(expect.objectContaining({
+    id: 'persisted-remote',
+    coverUrl: 'https://covers.example/remote.jpg',
+    synopsis: 'Preserved remote blurb.',
+    subtitle: 'Part Two',
+    releaseDate: '2099-09',
+  }));
+  expect(await screen.findByRole('dialog', { name: 'Download Options' })).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Close' }));
+
+  // Curator clicking Monitor Book on an unpersisted book resolves then PUTs /monitor
+  onBookUpdated.mockClear();
+  fetchMock.mockClear();
+  rerender(
+    <BookDetailModal book={{ ...unpersisted, title: 'Another Remote' }} canManage canRequest onBookUpdated={onBookUpdated} onClose={vi.fn()} />
+  );
+  await user.click(screen.getByRole('button', { name: 'Monitor Book' }));
+  expect(await screen.findByRole('button', { name: 'Monitoring Book' })).toHaveAttribute('aria-pressed', 'true');
+  expect(fetchMock.mock.calls.map(([u, opts]) => `${opts?.method ?? 'GET'} ${u}`)).toEqual([
+    'POST /api/books/resolve',
+    'PUT /api/books/persisted-remote/monitor',
+  ]);
+  expect(onBookUpdated).toHaveBeenLastCalledWith(expect.objectContaining({
+    id: 'persisted-remote',
+    monitored: true,
+    synopsis: 'Preserved remote blurb.',
+  }));
+});
+
+it('shows an error alert and keeps Download/Monitor closed if /api/books/resolve fails', async () => {
+  const user = userEvent.setup({ delay: null });
+  const unpersisted: Book = {
+    id: '',
+    title: 'Forbidden Chronicle',
+    authorId: '',
+    authorName: 'Jane Author',
+    state: 'Not in library',
+    formats: [],
+    editions: [],
+  };
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 })));
+  render(<BookDetailModal book={unpersisted} canManage canRequest onClose={vi.fn()} />);
+
+  await user.click(screen.getByRole('button', { name: 'Show Download Options' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Check permissions and retry');
+  expect(screen.queryByRole('dialog', { name: 'Download Options' })).not.toBeInTheDocument();
+});
+

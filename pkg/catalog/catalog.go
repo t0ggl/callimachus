@@ -197,7 +197,7 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 
 	existing, err := c.GetBookByAuthorAndTitle(ctx, book.AuthorID, cleanTitle)
 	if err == nil {
-		// Update missing series info or strictly more precise release date if newly provided.
+		// Backfill missing or strictly more precise metadata without overwriting existing fields or monitoring state.
 		updated := false
 		if existing.SeriesID == nil && book.SeriesID != nil {
 			sID := *book.SeriesID
@@ -234,6 +234,14 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 				}
 			}
 		}
+		if (existing.Subtitle == nil || *existing.Subtitle == "") && book.Subtitle != nil && *book.Subtitle != "" {
+			existing.Subtitle = book.Subtitle
+			updated = true
+		}
+		if (existing.Synopsis == nil || *existing.Synopsis == "") && book.Synopsis != nil && *book.Synopsis != "" {
+			existing.Synopsis = book.Synopsis
+			updated = true
+		}
 		if updated {
 			if err := c.UpsertBook(ctx, existing); err != nil {
 				return nil, err
@@ -263,7 +271,6 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 			book.ReleaseDate = nil
 		}
 	}
-	book.Monitored = true
 
 	query := `
 		INSERT INTO books (id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, monitored, created_at, updated_at)
@@ -483,6 +490,13 @@ func (c *Catalog) UpsertMediaAsset(ctx context.Context, ma *database.MediaAsset)
 		ma.AudioCodec, ma.Bitrate, ma.SampleRate, ma.Channels, ma.DurationSeconds,
 		ma.Chapters, ma.IsVerified,
 	)
+	if err != nil {
+		return err
+	}
+	_, err = c.db.ExecContext(ctx, `
+		UPDATE books SET monitored = 0, updated_at = CURRENT_TIMESTAMP
+		WHERE id = (SELECT book_id FROM book_editions WHERE id = ?) AND monitored = 1
+	`, ma.EditionID)
 	return err
 }
 
@@ -649,6 +663,7 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 	if err := c.UpsertMediaAsset(ctx, &asset); err != nil {
 		return nil, fmt.Errorf("persist media asset: %w", err)
 	}
+	dbBook.Monitored = false
 
 	// Only remove superseded files after the new media and inventory are committed.
 	for _, old := range previous {
@@ -780,6 +795,10 @@ func (c *Catalog) ReconcileScannedBook(ctx context.Context, sb *ScannedBook) (*I
 			return nil, fmt.Errorf("reconcile media asset: %w", err)
 		}
 		assets = append(assets, asset)
+	}
+
+	if len(assets) > 0 {
+		dbBook.Monitored = false
 	}
 
 	return &IngestResult{

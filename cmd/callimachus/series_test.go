@@ -166,8 +166,8 @@ func TestSeriesBooksMissingMetadataAndValidation(t *testing.T) {
 		t.Fatalf("unexpected unindexed ordering: %+v", result.Books)
 	}
 	pending := result.Books[0]
-	if pending.State != "Searching" || pending.LibraryBookID != "b_one" || len(pending.Formats) != 0 || result.Books[1].State != "Not in library" {
-		t.Fatalf("unexpected availability: %+v", result.Books)
+	if pending.State != "Searching" || pending.LibraryBookID != "b_one" || pending.BookID != "b_one" || !pending.Monitored || len(pending.Formats) != 0 || result.Books[1].State != "Not in library" || result.Books[1].BookID != "b_nil_early" || result.Books[1].Monitored {
+		t.Fatalf("unexpected availability/monitoring: %+v", result.Books)
 	}
 }
 

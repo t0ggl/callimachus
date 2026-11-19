@@ -159,6 +159,127 @@ func TestMonitoringRetriesFailedDiscovery(t *testing.T) {
 	}
 }
 
+func TestIndividualBookMonitoringAndAutoUnmonitorOnAcquisition(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	c := catalog.New(db)
+
+	author, err := c.GetOrCreateAuthor(ctx, "Series Author")
+	if err != nil {
+		t.Fatal(err)
+	}
+	series, err := c.GetOrCreateSeries(ctx, "Long Saga", author.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Unowned future book in an unmonitored series, individually monitored.
+	futureDate := "2030-06-15"
+	book, err := c.GetOrCreateBook(ctx, &database.Book{
+		AuthorID:    author.ID,
+		SeriesID:    &series.ID,
+		Title:       "Volume Three",
+		ReleaseDate: &futureDate,
+		Monitored:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var searched []string
+	discoverCount := 0
+	m := &catalog.Monitor{
+		DB: db,
+		Discover: func(context.Context, string, string, []metadata.BookMetadata) ([]metadata.BookMetadata, error) {
+			discoverCount++
+			if discoverCount == 1 {
+				return []metadata.BookMetadata{
+					{Title: "Volume Three", Authors: []string{"Series Author"}, Series: "Long Saga", PublishDate: futureDate},
+				}, nil
+			}
+			// Future release announced later while series remains monitored after previous books were acquired.
+			return []metadata.BookMetadata{
+				{Title: "Volume Three", Authors: []string{"Series Author"}, Series: "Long Saga", PublishDate: futureDate},
+				{Title: "Volume Four", Authors: []string{"Series Author"}, Series: "Long Saga", PublishDate: "2030-08-01"},
+			}, nil
+		},
+		Search: func(_ context.Context, id string) error {
+			searched = append(searched, id)
+			return nil
+		},
+	}
+
+	// Before release date: individually monitored book is not searched.
+	if err := m.Tick(ctx, time.Date(2030, 6, 14, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	if len(searched) != 0 {
+		t.Fatalf("expected no searches before release date, got %v", searched)
+	}
+
+	// On release date: individually monitored book is searched even though series.monitored = 0.
+	if err := m.Tick(ctx, time.Date(2030, 6, 15, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	if len(searched) != 1 || searched[0] != book.ID {
+		t.Fatalf("expected %q to be searched on release day, got %v", book.ID, searched)
+	}
+
+	// Enable series monitoring (as curator would for upcoming releases), then acquire Volume Three via UpsertMediaAsset.
+	if err := m.SetMonitored(ctx, "series", series.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	ed, err := c.GetOrCreateEdition(ctx, &database.BookEdition{BookID: book.ID, Format: "epub", Language: "en"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.UpsertMediaAsset(ctx, &database.MediaAsset{EditionID: ed.ID, FilePath: "/library/VolumeThree.epub"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Book is automatically unmonitored when downloaded, while series remains monitored.
+	var bookMonitored, seriesMonitored bool
+	if err := db.QueryRowContext(ctx, `SELECT monitored FROM books WHERE id=?`, book.ID).Scan(&bookMonitored); err != nil {
+		t.Fatal(err)
+	}
+	if bookMonitored {
+		t.Fatal("expected acquired book to be unmonitored automatically")
+	}
+	if err := db.QueryRowContext(ctx, `SELECT monitored FROM series WHERE id=?`, series.ID).Scan(&seriesMonitored); err != nil {
+		t.Fatal(err)
+	}
+	if !seriesMonitored {
+		t.Fatal("expected series monitoring to remain enabled after acquiring all current books")
+	}
+
+	// First monthly discovery tick finds only Volume Three (already owned -> stays unmonitored).
+	if err := m.Tick(ctx, time.Date(2030, 6, 16, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT monitored FROM books WHERE id=?`, book.ID).Scan(&bookMonitored); err != nil {
+		t.Fatal(err)
+	}
+	if bookMonitored {
+		t.Fatal("expected owned book to remain unmonitored after discovery tick")
+	}
+
+	// Next monthly discovery tick discovers newly announced Volume Four as monitored and searches it on release day.
+	if err := m.Tick(ctx, time.Date(2030, 8, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	var volFourID string
+	var volFourMonitored bool
+	if err := db.QueryRowContext(ctx, `SELECT id, monitored FROM books WHERE title='Volume Four'`).Scan(&volFourID, &volFourMonitored); err != nil {
+		t.Fatal(err)
+	}
+	if !volFourMonitored {
+		t.Fatal("expected newly discovered book in monitored series to start monitored")
+	}
+	if len(searched) != 2 || searched[1] != volFourID {
+		t.Fatalf("expected Volume Four (%q) to be searched on release day, got %v", volFourID, searched)
+	}
+}
+
 func TestMonitoringPreservesPartialAndYearOnlyDates(t *testing.T) {
 	ctx := context.Background()
 	db := testutil.NewTestDB(t)

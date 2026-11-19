@@ -200,7 +200,7 @@ func (s *RequestService) insertRequests(ctx context.Context, input CreateRequest
 		if err != nil {
 			return nil, err
 		}
-		book := &database.Book{AuthorID: author.ID, Title: input.Title, Synopsis: &input.Synopsis, SeriesIndex: input.SeriesIndex}
+		book := &database.Book{AuthorID: author.ID, Title: input.Title, Synopsis: &input.Synopsis, SeriesIndex: input.SeriesIndex, Monitored: !input.ManualOnly}
 		if input.Year > 0 {
 			date := fmt.Sprintf("%04d", input.Year)
 			book.ReleaseDate = &date
@@ -255,14 +255,22 @@ func (s *RequestService) insertRequests(ctx context.Context, input CreateRequest
 			return nil, err
 		}
 		created = append(created, &BookRequest{ID: id, UserID: input.UserID, Username: username, BookID: input.BookID,
-			Title: input.Title, Author: input.Author, Format: format, Status: status, Monitored: true,
+			Title: input.Title, Author: input.Author, Format: format, Status: status, Monitored: !input.ManualOnly,
 			CreatedAt: now, UpdatedAt: now, Year: input.Year, CoverURL: input.CoverURL, Stage: "queued"})
-		if _, err := tx.ExecContext(ctx, "UPDATE book_editions SET monitored=1, updated_at=? WHERE book_id=? AND format=?", now, input.BookID, format); err != nil {
-			return nil, err
+		if !input.ManualOnly {
+			if _, err := tx.ExecContext(ctx, "UPDATE book_editions SET monitored=1, updated_at=? WHERE book_id=? AND format=?", now, input.BookID, format); err != nil {
+				return nil, err
+			}
 		}
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE books SET monitored=1, synopsis=COALESCE(NULLIF(synopsis,''), NULLIF(?,'')), updated_at=? WHERE id=?", input.Synopsis, now, input.BookID); err != nil {
-		return nil, err
+	if input.ManualOnly {
+		if _, err := tx.ExecContext(ctx, "UPDATE books SET synopsis=COALESCE(NULLIF(synopsis,''), NULLIF(?,'')), updated_at=? WHERE id=?", input.Synopsis, now, input.BookID); err != nil {
+			return nil, err
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, "UPDATE books SET monitored=1, synopsis=COALESCE(NULLIF(synopsis,''), NULLIF(?,'')), updated_at=? WHERE id=?", input.Synopsis, now, input.BookID); err != nil {
+			return nil, err
+		}
 	}
 	return created, tx.Commit()
 }

@@ -160,7 +160,7 @@ func TestLibraryScanPreservesBookMatchedByCatalogMonitor(t *testing.T) {
 	if discoveries != 1 {
 		t.Fatalf("got %d discovery calls, want 1", discoveries)
 	}
-	// Disabling series discovery clears its timestamp and leaves book monitoring enabled.
+	// Disabling series discovery clears its timestamp while owned books remain unmonitored.
 	if err := m.SetMonitored(ctx, "series", imported.Series.ID, false); err != nil {
 		t.Fatal(err)
 	}
@@ -178,8 +178,8 @@ func TestLibraryScanPreservesBookMatchedByCatalogMonitor(t *testing.T) {
 		t.Fatalf("expected one pending review for the discovered title with two hidden files, got %+v", review)
 	}
 	book, err := c.GetBookByID(ctx, imported.Book.ID)
-	if err != nil || !book.Monitored {
-		t.Fatalf("monitored book was not preserved: %+v, %v", book, err)
+	if err != nil || book.Monitored {
+		t.Fatalf("catalog book was not preserved as unmonitored: %+v, %v", book, err)
 	}
 	for _, asset := range imported.MediaAssets {
 		edition, err := c.GetEditionByID(ctx, asset.EditionID)

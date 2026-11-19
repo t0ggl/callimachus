@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { BookState, SeriesSelection } from '../types';
+import type { Book, BookState, SeriesSelection } from '../types';
 import {
   X,
   Layers,
@@ -9,10 +9,16 @@ import {
   Check,
   Info,
   SlidersHorizontal,
+  Download,
+  Bell,
 } from 'lucide-react';
 import { EntityLink, entityURL } from './EntityLink';
+import { BookDetailModal, resolveCatalogBook, type ResolveBookInput } from './BookDetailModal';
+export { resolveCatalogBook, type ResolveBookInput };
+import { ManualSearch } from './ManualSearch';
 
 export interface SeriesBookEntry {
+  book_id?: string;
   title: string;
   subtitle?: string;
   authors?: string[];
@@ -21,9 +27,11 @@ export interface SeriesBookEntry {
   publish_date?: string;
   series_index?: number | null;
   series_index_display?: string;
+  hardcover_series_id?: number;
   formats?: string[];
   library_book_id?: string;
   state?: BookState;
+  monitored?: boolean;
 }
 
 export interface SeriesBooksData {
@@ -42,6 +50,9 @@ export interface SeriesBooksData {
 interface SeriesDetailModalProps extends SeriesSelection {
   onClose: () => void;
   onOpenBook?: (bookId: string) => void;
+  canManage?: boolean;
+  canRequest?: boolean;
+  isAdmin?: boolean;
 }
 
 export function SeriesBookCover({ coverUrl, title }: { coverUrl?: string; title: string }) {
@@ -71,11 +82,27 @@ export function SeriesBookCover({ coverUrl, title }: { coverUrl?: string; title:
   );
 }
 
-export function SeriesDetailModal({ title, id, author, hardcoverID, onClose, onOpenBook }: SeriesDetailModalProps) {
+export function SeriesDetailModal({
+  title,
+  id,
+  author,
+  hardcoverID,
+  onClose,
+  onOpenBook,
+  canManage = false,
+  canRequest,
+  isAdmin,
+}: SeriesDetailModalProps) {
+  const allowRequest = Boolean(canRequest ?? canManage);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [data, setData] = useState<SeriesBooksData | null>(null);
   const [error, setError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [busyIndex, setBusyIndex] = useState<number | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [detailIndex, setDetailIndex] = useState<number | null>(null);
+  const [detailBook, setDetailBook] = useState<Book | null>(null);
+  const [downloadBook, setDownloadBook] = useState<{ id: string; title: string; author: string } | null>(null);
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -87,6 +114,7 @@ export function SeriesDetailModal({ title, id, author, hardcoverID, onClose, onO
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (detailBook || downloadBook) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
@@ -95,12 +123,13 @@ export function SeriesDetailModal({ title, id, author, hardcoverID, onClose, onO
     };
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [onClose]);
+  }, [onClose, detailBook, downloadBook]);
 
   useEffect(() => {
     const controller = new AbortController();
     setData(null);
     setError('');
+    setActionError('');
     const params = new URLSearchParams({ title });
     if (id) params.set('id', id);
     if (author) params.set('author', author);
@@ -130,7 +159,147 @@ export function SeriesDetailModal({ title, id, author, hardcoverID, onClose, onO
           )
         );
 
+  const updateBookEntry = (index: number, patch: Partial<SeriesBookEntry>) => {
+    setData((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        books: prev.books.map((entry, idx) => (idx === index ? { ...entry, ...patch } : entry)),
+      };
+    });
+  };
+
+  const ensureBookRecord = async (book: SeriesBookEntry, index: number): Promise<Book> => {
+    const existingId = book.library_book_id || book.book_id;
+    const resolved = await resolveCatalogBook({
+      bookId: existingId,
+      title: book.title,
+      subtitle: book.subtitle,
+      author: book.authors?.join(', ') || seriesAuthors[0] || 'Unknown',
+      series: displayTitle,
+      seriesId: data?.id ?? id,
+      hardcoverSeriesId: book.hardcover_series_id ?? hardcoverID,
+      seriesIndex: book.series_index,
+      releaseDate: book.publish_date,
+      synopsis: book.description,
+      coverUrl: book.cover_url,
+    });
+    updateBookEntry(index, {
+      book_id: resolved.id,
+      monitored: resolved.monitored,
+    });
+    return resolved;
+  };
+
+  const handleOpenBook = async (book: SeriesBookEntry, index: number) => {
+    if (book.library_book_id && onOpenBook) {
+      onOpenBook(book.library_book_id);
+      return;
+    }
+    const bookAuthor = book.authors?.join(', ') || seriesAuthors[0] || 'Unknown';
+    const existingId = book.library_book_id || book.book_id;
+    if (!existingId) {
+      setActionError('');
+      setDetailIndex(index);
+      setDetailBook({
+        id: '',
+        monitored: Boolean(book.monitored),
+        state: book.state ?? 'Not in library',
+        title: book.title,
+        subtitle: book.subtitle,
+        authorId: '',
+        authorName: bookAuthor,
+        seriesId: data?.id ?? id,
+        seriesTitle: displayTitle,
+        seriesIndex: book.series_index ?? undefined,
+        seriesIndexDisplay: book.series_index_display,
+        releaseDate: book.publish_date,
+        synopsis: book.description,
+        coverUrl: book.cover_url,
+        formats: (book.formats ?? []) as Book['formats'],
+        editions: [],
+      });
+      return;
+    }
+    setBusyIndex(index);
+    setActionError('');
+    try {
+      const res = await fetch(`/api/books?id=${encodeURIComponent(existingId)}`);
+      if (!res.ok) throw new Error('Unable to load book details. Try again.');
+      const list: Book[] = await res.json();
+      const found = list.find((item) => item.id === existingId);
+      if (!found) throw new Error('Unable to load book details. Try again.');
+      setDetailIndex(index);
+      setDetailBook({
+        ...found,
+        coverUrl: found.coverUrl || book.cover_url,
+        synopsis: found.synopsis || book.description,
+        subtitle: found.subtitle || book.subtitle,
+        releaseDate: found.releaseDate || book.publish_date,
+        seriesTitle: found.seriesTitle || displayTitle,
+        seriesIndex: found.seriesIndex ?? (book.series_index ?? undefined),
+        seriesIndexDisplay: found.seriesIndexDisplay || book.series_index_display,
+        state: found.state || book.state,
+      });
+    } catch (e) {
+      setActionError((e as Error).message);
+    } finally {
+      setBusyIndex(null);
+    }
+  };
+
+  const handleOpenDownloadOptions = async (book: SeriesBookEntry, index: number) => {
+    const existingId = book.library_book_id || book.book_id;
+    const author = book.authors?.join(', ') || seriesAuthors[0] || 'Unknown';
+    if (existingId) {
+      setActionError('');
+      setDownloadBook({ id: existingId, title: book.title, author });
+      return;
+    }
+    setBusyIndex(index);
+    setActionError('');
+    try {
+      const resolved = await ensureBookRecord(book, index);
+      setDownloadBook({
+        id: resolved.id,
+        title: resolved.title,
+        author: resolved.authorName || author,
+      });
+    } catch (e) {
+      setActionError((e as Error).message);
+    } finally {
+      setBusyIndex(null);
+    }
+  };
+
+  const handleToggleBookMonitor = async (book: SeriesBookEntry, index: number) => {
+    setBusyIndex(index);
+    setActionError('');
+    try {
+      let bookId = book.library_book_id || book.book_id;
+      if (!bookId) {
+        const resolved = await ensureBookRecord(book, index);
+        bookId = resolved.id;
+      }
+      const next = !book.monitored;
+      const res = await fetch(`/api/books/${encodeURIComponent(bookId)}/monitor`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ monitored: next }),
+      });
+      if (!res.ok) {
+        throw new Error('Unable to update monitoring state. Check permissions and retry.');
+      }
+      updateBookEntry(index, { book_id: bookId, monitored: next });
+    } catch (e) {
+      setActionError((e as Error).message);
+    } finally {
+      setBusyIndex(null);
+    }
+  };
+
   return (
+    <>
     <div
       role="dialog"
       aria-modal="true"
@@ -297,6 +466,12 @@ export function SeriesDetailModal({ title, id, author, hardcoverID, onClose, onO
                   </span>
                 </h3>
 
+                {actionError && (
+                  <p role="alert" className="rounded-lg border border-red-900/60 bg-red-950/30 px-3.5 py-2 text-xs text-red-200">
+                    {actionError}
+                  </p>
+                )}
+
                 {books.length === 0 ? (
                   <div className="py-10 text-center border border-dashed border-zinc-800 rounded-lg">
                     <BookOpen className="w-7 h-7 text-zinc-500 mx-auto mb-2" aria-hidden="true" />
@@ -311,16 +486,16 @@ export function SeriesDetailModal({ title, id, author, hardcoverID, onClose, onO
                       const formats = book.formats ?? [];
                       const state = book.state ?? (book.library_book_id ? 'In library' : 'Not in library');
                       const isOwned = state === 'In library';
-                      const canOpen = Boolean(book.library_book_id && onOpenBook);
+                      const rowBusy = busyIndex === i;
 
                       return (
                         <li
-                          key={`${book.library_book_id ?? book.title}-${i}`}
+                          key={`${book.title}-${book.series_index ?? 'u'}-${i}`}
                           data-testid={`series-book-item-${i}`}
                           className={`bg-zinc-950/60 border rounded-lg p-3.5 flex gap-4 items-start transition-colors duration-150 ${
                             isOwned
                               ? 'border-zinc-800 hover:border-zinc-700'
-                              : 'border-zinc-800/80'
+                              : 'border-zinc-800/80 hover:border-zinc-700'
                           }`}
                         >
                           <SeriesBookCover coverUrl={book.cover_url} title={book.title} />
@@ -331,19 +506,14 @@ export function SeriesDetailModal({ title, id, author, hardcoverID, onClose, onO
                                 <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-sm bg-purple-950/80 text-purple-300 border border-purple-800/60 shrink-0">
                                   {indexLabel}
                                 </span>
-                                {canOpen ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => onOpenBook!(book.library_book_id!)}
-                                    className="text-sm font-semibold text-zinc-100 hover:text-blue-300 text-left underline decoration-zinc-700 underline-offset-2 hover:decoration-blue-300 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 transition-colors"
-                                  >
-                                    {book.title}
-                                  </button>
-                                ) : (
-                                  <span className="text-sm font-semibold text-zinc-100">
-                                    {book.title}
-                                  </span>
-                                )}
+                                <button
+                                  type="button"
+                                  disabled={rowBusy}
+                                  onClick={() => void handleOpenBook(book, i)}
+                                  className="text-sm font-semibold text-zinc-100 hover:text-blue-300 text-left underline decoration-zinc-700 underline-offset-2 hover:decoration-blue-300 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 transition-colors disabled:opacity-50"
+                                >
+                                  {book.title}
+                                </button>
                               </div>
 
                               {formats.length > 0 && (
@@ -399,9 +569,38 @@ export function SeriesDetailModal({ title, id, author, hardcoverID, onClose, onO
                                     In library
                                   </span>
                                 ) : (
-                                  <span className="px-2 py-0.5 rounded-sm text-[11px] font-medium bg-zinc-900 text-zinc-400 border border-zinc-800">
-                                    {state}
-                                  </span>
+                                  <>
+                                    <span className="px-2 py-0.5 rounded-sm text-[11px] font-medium bg-zinc-900 text-zinc-400 border border-zinc-800">
+                                      {state}
+                                    </span>
+                                    {allowRequest && state === 'Not in library' && (
+                                      <button
+                                        type="button"
+                                        disabled={rowBusy}
+                                        onClick={() => void handleOpenDownloadOptions(book, i)}
+                                        className="inline-flex items-center gap-1 rounded-sm border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[11px] font-medium text-zinc-100 hover:bg-zinc-700 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-50"
+                                      >
+                                        <Download className="w-3 h-3" aria-hidden="true" />
+                                        Download
+                                      </button>
+                                    )}
+                                    {state === 'Scheduled' && canManage && (
+                                      <button
+                                        type="button"
+                                        disabled={rowBusy}
+                                        aria-pressed={Boolean(book.monitored)}
+                                        onClick={() => void handleToggleBookMonitor(book, i)}
+                                        className={`inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-[11px] font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-50 ${
+                                          book.monitored
+                                            ? 'border-blue-700/80 bg-blue-950/80 text-blue-200 hover:bg-blue-900/70'
+                                            : 'border-zinc-700 bg-zinc-800 text-zinc-100 hover:bg-zinc-700'
+                                        }`}
+                                      >
+                                        <Bell className="w-3 h-3" aria-hidden="true" />
+                                        {book.monitored ? 'Monitoring' : 'Monitor'}
+                                      </button>
+                                    )}
+                                  </>
                                 )}
                               </div>
                             </div>
@@ -431,5 +630,38 @@ export function SeriesDetailModal({ title, id, author, hardcoverID, onClose, onO
         </div>
       </div>
     </div>
+    {detailBook && (
+      <BookDetailModal
+        book={detailBook}
+        isAdmin={isAdmin}
+        canManage={canManage}
+        canRequest={allowRequest}
+        onBookUpdated={(updated) => {
+          setDetailBook(updated);
+          const idx =
+            detailIndex !== null
+              ? detailIndex
+              : books.findIndex(
+                  (b) => (b.book_id && b.book_id === updated.id) || (b.library_book_id && b.library_book_id === updated.id)
+                );
+          if (idx >= 0) {
+            updateBookEntry(idx, { book_id: updated.id, monitored: updated.monitored });
+          }
+        }}
+        onMetadataApplied={() => setAttempt((n) => n + 1)}
+        onClose={() => {
+          setDetailBook(null);
+          setDetailIndex(null);
+        }}
+      />
+    )}
+    {downloadBook && (
+      <ManualSearch
+        key={downloadBook.id}
+        book={downloadBook}
+        onClose={() => setDownloadBook(null)}
+      />
+    )}
+    </>
   );
 }

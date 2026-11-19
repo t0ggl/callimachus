@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Calendar, Check, Layers, RefreshCw, Search, User } from 'lucide-react';
+import { ArrowLeft, Bell, Calendar, Check, Download, Layers, RefreshCw, Search, User } from 'lucide-react';
 import { BookDetailModal } from '../components/BookDetailModal';
 import { EntityLink } from '../components/EntityLink';
-import { SeriesBookCover } from '../components/SeriesDetailModal';
+import { ManualSearch } from '../components/ManualSearch';
+import { SeriesBookCover, resolveCatalogBook } from '../components/SeriesDetailModal';
 import type { Book } from '../types';
 
-type EntityBook = Pick<Book, 'id' | 'title' | 'subtitle' | 'authorName' | 'seriesTitle' | 'seriesId' | 'coverUrl' | 'formats' | 'releaseDate' | 'seriesIndex' | 'state'>;
+type EntityBook = Pick<Book, 'id' | 'title' | 'subtitle' | 'authorName' | 'seriesTitle' | 'seriesId' | 'coverUrl' | 'formats' | 'releaseDate' | 'seriesIndex' | 'synopsis' | 'state' | 'monitored'>;
 type Data = { monitored: boolean; photoUrl?: string; books: EntityBook[] };
 
 const button = 'inline-flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50';
@@ -15,24 +16,29 @@ const availableBadge = 'border-emerald-800/60 bg-emerald-950/80 text-emerald-300
 const blueBadge = 'border-blue-800/60 bg-blue-950/80 text-blue-300';
 const purpleBadge = 'border-purple-800/60 bg-purple-950/80 text-purple-300';
 
-export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, canManage, isAdmin, onMetadataApplied }: {
+export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, canManage, canRequest, isAdmin, onMetadataApplied }: {
   kind: 'authors' | 'series';
   name: string;
   seriesID?: string;
   seriesAuthor?: string;
   hardcoverID?: string;
   canManage: boolean;
+  canRequest?: boolean;
   isAdmin?: boolean;
   onMetadataApplied?: () => void;
 }) {
+  const allowRequest = Boolean(canRequest ?? canManage);
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
   const [busy, setBusy] = useState(false);
+  const [rowBusyKey, setRowBusyKey] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [photoFailed, setPhotoFailed] = useState(false);
   const [bookID, setBookID] = useState<string | null>(null);
+  const [detailIndex, setDetailIndex] = useState<number | null>(null);
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
+  const [downloadBook, setDownloadBook] = useState<{ id: string; title: string; author: string } | null>(null);
   const [detailError, setDetailError] = useState('');
   const url = `/api/catalog/entity?kind=${kind}&name=${encodeURIComponent(name)}`
     + (seriesID ? `&id=${encodeURIComponent(seriesID)}` : '')
@@ -56,7 +62,20 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
         const books: Book[] = await res.json();
         const book = books.find(item => item.id === bookID);
         if (!book) throw new Error();
-        if (!controller.signal.aborted) setSelectedBook(book);
+        if (!controller.signal.aborted) {
+          const entry = data?.books.find((item) => item.id === bookID);
+          setSelectedBook({
+            ...book,
+            coverUrl: book.coverUrl || entry?.coverUrl,
+            synopsis: book.synopsis || entry?.synopsis,
+            subtitle: book.subtitle || entry?.subtitle,
+            releaseDate: book.releaseDate || entry?.releaseDate,
+            seriesId: book.seriesId || entry?.seriesId,
+            seriesTitle: book.seriesTitle || entry?.seriesTitle,
+            seriesIndex: book.seriesIndex ?? entry?.seriesIndex,
+            state: book.state || entry?.state,
+          });
+        }
       })
       .catch(() => {
         if (!controller.signal.aborted) {
@@ -85,9 +104,107 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
     finally { setBusy(false); }
   }
   const isSeries = kind === 'series';
-  const representativeCover = data?.books.find(book => book.coverUrl);
-  const ownedCount = data?.books.filter(book => book.state === 'In library').length ?? 0;
+  const books = Array.isArray(data?.books) ? data.books : [];
+  const representativeCover = books.find(book => book.coverUrl);
+  const ownedCount = books.filter(book => book.state === 'In library').length;
   const heading = isSeries ? 'Reading Order' : 'Books';
+
+  const updateBookEntry = (index: number, patch: Partial<EntityBook>) => {
+    setData(prev => prev ? {
+      ...prev,
+      books: prev.books.map((item, idx) => (idx === index ? { ...item, ...patch } : item)),
+    } : prev);
+  };
+
+  const parsedHardcoverID = hardcoverID ? Number(hardcoverID) : undefined;
+  const resolveEntry = async (book: EntityBook, index: number): Promise<Book> => {
+    const resolved = await resolveCatalogBook({
+      bookId: book.id || undefined,
+      title: book.title,
+      subtitle: book.subtitle,
+      author: book.authorName || (isSeries ? 'Unknown' : name),
+      series: book.seriesTitle || (isSeries ? name : undefined),
+      seriesId: book.seriesId || (isSeries ? seriesID : undefined),
+      hardcoverSeriesId: Number.isFinite(parsedHardcoverID) ? parsedHardcoverID : undefined,
+      seriesIndex: book.seriesIndex,
+      releaseDate: book.releaseDate,
+      synopsis: book.synopsis,
+      coverUrl: book.coverUrl,
+    });
+    updateBookEntry(index, { id: resolved.id, seriesId: resolved.seriesId, monitored: resolved.monitored });
+    return resolved;
+  };
+
+  const handleOpenEntityBook = (book: EntityBook, index: number) => {
+    setDetailError('');
+    setDetailIndex(index);
+    if (book.id) {
+      setBookID(book.id);
+      return;
+    }
+    setBookID(null);
+    setSelectedBook({
+      id: '',
+      monitored: Boolean(book.monitored),
+      state: book.state ?? 'Not in library',
+      title: book.title,
+      subtitle: book.subtitle,
+      authorId: '',
+      authorName: book.authorName || (isSeries ? 'Unknown' : name),
+      seriesId: book.seriesId || (isSeries ? seriesID : undefined),
+      seriesTitle: book.seriesTitle || (isSeries ? name : undefined),
+      seriesIndex: book.seriesIndex,
+      releaseDate: book.releaseDate,
+      synopsis: book.synopsis,
+      coverUrl: book.coverUrl,
+      formats: book.formats ?? [],
+      editions: [],
+    });
+  };
+
+  const handleDownloadBook = async (book: EntityBook, index: number, itemKey: string) => {
+    setDetailError('');
+    const author = book.authorName || (isSeries ? 'Unknown' : name);
+    if (book.id) {
+      setDownloadBook({ id: book.id, title: book.title, author });
+      return;
+    }
+    setRowBusyKey(itemKey);
+    try {
+      const resolved = await resolveEntry(book, index);
+      setDownloadBook({ id: resolved.id, title: resolved.title, author: resolved.authorName || author });
+    } catch {
+      setDetailError('Unable to open download options. Select the action to try again.');
+    } finally {
+      setRowBusyKey(null);
+    }
+  };
+
+  const handleToggleBookMonitor = async (book: EntityBook, index: number, itemKey: string) => {
+    setDetailError('');
+    setRowBusyKey(itemKey);
+    try {
+      let id = book.id;
+      if (!id) {
+        const resolved = await resolveEntry(book, index);
+        id = resolved.id;
+      }
+      const next = !book.monitored;
+      const res = await fetch(`/api/books/${encodeURIComponent(id)}/monitor`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ monitored: next }),
+      });
+      if (!res.ok) {
+        throw new Error('Unable to save monitoring state. Check permissions and retry.');
+      }
+      updateBookEntry(index, { id, monitored: next });
+    } catch (e) {
+      setDetailError((e as Error).message);
+    } finally {
+      setRowBusyKey(null);
+    }
+  };
 
   return (
     <section className="mx-auto max-w-5xl space-y-6" aria-labelledby="entity-heading">
@@ -111,7 +228,7 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
             <h1 id="entity-heading" className="wrap-break-word text-xl font-semibold text-zinc-100">{name}</h1>
             {data && (
               <div className="flex flex-wrap gap-2">
-                <span className={`${badge} ${neutralBadge}`}>{ownedCount} / {data.books.length} in library</span>
+                <span className={`${badge} ${neutralBadge}`}>{ownedCount} / {books.length} in library</span>
                 <span className={`${badge} ${data.monitored ? blueBadge : neutralBadge}`}>{data.monitored ? 'Monitored' : 'Unmonitored'}</span>
               </div>
             )}
@@ -156,27 +273,30 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
           </div>
         )}
         {bookID && !selectedBook && <p role="status" className="text-sm text-zinc-400">Loading book details…</p>}
-        {data?.books.length === 0 && (
+        {data && books.length === 0 && (
           <p className="rounded-lg border border-dashed border-zinc-800 p-6 text-center text-sm text-zinc-400">
             No known books yet.{canManage && ' Check new releases to discover titles.'}
           </p>
         )}
-        {data && data.books.length > 0 && (
+        {data && books.length > 0 && (
           <ol aria-labelledby="entity-books" className="space-y-3">
-            {data.books.map(book => {
+            {books.map((book, index) => {
+              const itemKey = `${book.title}-${book.seriesIndex ?? 'u'}-${index}`;
               const state = book.state ?? 'Not in library';
               const hasFiles = state === 'In library';
               const stateColor = hasFiles ? availableBadge : state === 'Not in library' || state === 'Scheduled' ? neutralBadge : blueBadge;
+              const rowBusy = rowBusyKey === itemKey;
               return (
-                <li key={book.id} className="flex items-start gap-3 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3.5 focus-within:border-zinc-700 hover:border-zinc-700 sm:gap-4">
+                <li key={itemKey} className="flex items-start gap-3 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3.5 focus-within:border-zinc-700 hover:border-zinc-700 sm:gap-4">
                   <SeriesBookCover coverUrl={book.coverUrl} title={book.title} />
                   <div className="min-w-0 flex-1 space-y-2">
                     <div className="flex flex-wrap items-center gap-2">
                       {book.seriesIndex != null && <span className={`${badge} ${purpleBadge} font-mono`}>Book {book.seriesIndex}</span>}
                       <button
                         type="button"
-                        className="min-w-0 rounded-sm text-left text-sm font-semibold text-zinc-100 underline decoration-zinc-600 underline-offset-2 wrap-break-word hover:text-blue-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300"
-                        onClick={() => { setDetailError(''); setBookID(book.id); }}
+                        disabled={rowBusy}
+                        className="min-w-0 rounded-sm text-left text-sm font-semibold text-zinc-100 underline decoration-zinc-600 underline-offset-2 wrap-break-word hover:text-blue-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
+                        onClick={() => handleOpenEntityBook(book, index)}
                       >
                         {book.title}
                       </button>
@@ -191,11 +311,38 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
                       <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400">
                         <Calendar size={14} aria-hidden="true" /> {book.releaseDate || 'Release date unknown'}
                       </span>
-                      <div className="flex flex-wrap gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         {book.formats.length ? book.formats.map(format => (
                           <span key={format} className={`${badge} ${format === 'M4B' ? purpleBadge : blueBadge} font-mono`}>{format}</span>
                         )) : <span className={`${badge} ${neutralBadge}`}>No files</span>}
                         <span className={`${badge} ${stateColor}`}>{hasFiles && <Check size={12} aria-hidden="true" />}{state}</span>
+                        {allowRequest && state === 'Not in library' && (
+                          <button
+                            type="button"
+                            disabled={rowBusy}
+                            onClick={() => void handleDownloadBook(book, index, itemKey)}
+                            className="inline-flex items-center gap-1 rounded-sm border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
+                          >
+                            <Download size={12} aria-hidden="true" />
+                            Download
+                          </button>
+                        )}
+                        {canManage && state === 'Scheduled' && (
+                          <button
+                            type="button"
+                            disabled={rowBusy}
+                            aria-pressed={Boolean(book.monitored)}
+                            onClick={() => void handleToggleBookMonitor(book, index, itemKey)}
+                            className={`inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50 ${
+                              book.monitored
+                                ? 'border-blue-700/80 bg-blue-950/80 text-blue-200 hover:bg-blue-900/70'
+                                : 'border-zinc-700 bg-zinc-800 text-zinc-100 hover:bg-zinc-700'
+                            }`}
+                          >
+                            <Bell size={12} aria-hidden="true" />
+                            {book.monitored ? 'Monitoring' : 'Monitor'}
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -205,9 +352,27 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
           </ol>
         )}
       </div>
-      {selectedBook && <BookDetailModal book={selectedBook} isAdmin={isAdmin}
+      {selectedBook && <BookDetailModal book={selectedBook} isAdmin={isAdmin} canManage={canManage} canRequest={allowRequest}
+        onBookUpdated={(updated) => {
+          setSelectedBook(updated);
+          setData(prev => prev ? {
+            ...prev,
+            books: prev.books.map((item, idx) =>
+              (detailIndex !== null ? idx === detailIndex : item.id === updated.id)
+                ? { ...item, id: updated.id, monitored: updated.monitored }
+                : item
+            ),
+          } : prev);
+        }}
         onMetadataApplied={() => { setAttempt((value) => value + 1); onMetadataApplied?.(); }}
-        onClose={() => { setSelectedBook(null); setBookID(null); }} />}
+        onClose={() => { setSelectedBook(null); setBookID(null); setDetailIndex(null); }} />}
+      {downloadBook && (
+        <ManualSearch
+          key={downloadBook.id}
+          book={downloadBook}
+          onClose={() => setDownloadBook(null)}
+        />
+      )}
     </section>
   );
 }

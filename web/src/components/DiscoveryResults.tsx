@@ -45,6 +45,9 @@ function normalizeRequestedFormats(formats?: string[]): RequestFormat[] {
 interface Props {
   query: string;
   defaultSearchFormat?: RequestType;
+  canManage?: boolean;
+  canRequest?: boolean;
+  isAdmin?: boolean;
   onOpenBook?: (id: string) => void;
   onSubmitRequest: (
     title: string,
@@ -82,7 +85,8 @@ function DiscoveryCover({ coverUrl, title }: { coverUrl?: string; title: string 
   );
 }
 
-export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmitRequest, onOpenBook }: Props) {
+export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canManage, canRequest, isAdmin, onSubmitRequest, onOpenBook }: Props) {
+  const allowRequest = canRequest ?? (canManage !== undefined ? canManage : true);
   const [selectedSeries, setSelectedSeries] = useState<SeriesSelection | null>(null);
   const [selectedFormat, setSelectedFormat] = useState<RequestType>();
   const format = selectedFormat ?? defaultSearchFormat;
@@ -178,6 +182,9 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
       {selectedSeries && (
         <SeriesDetailModal
           {...selectedSeries}
+          canManage={canManage}
+          canRequest={allowRequest}
+          isAdmin={isAdmin}
           onClose={() => setSelectedSeries(null)}
           onOpenBook={
             onOpenBook
@@ -192,27 +199,29 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-zinc-100">Find books to add</h2>
+          <h2 className="text-sm font-semibold text-zinc-100">{allowRequest ? 'Find books to add' : 'Discover books'}</h2>
           {searched && matches.length > 0 && (
             <span className="text-xs font-mono text-zinc-400">({matches.length})</span>
           )}
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
-          <label htmlFor="discovery-format-select" className="text-xs font-medium text-zinc-400">
-            Format
-          </label>
-          <select
-            id="discovery-format-select"
-            value={format}
-            onChange={(e) => setSelectedFormat(e.target.value as RequestType)}
-            className="px-2.5 py-1.5 bg-zinc-950 border border-zinc-700/80 hover:border-zinc-600 rounded-md text-xs font-medium text-zinc-200 focus:outline-hidden focus-visible:outline-2 focus-visible:outline-blue-400 focus:border-blue-500/70 transition-colors cursor-pointer"
-          >
-            <option value="both">Both</option>
-            <option value="ebook">eBook</option>
-            <option value="audiobook">Audiobook</option>
-          </select>
-        </div>
+        {allowRequest && (
+          <div className="flex items-center gap-2 shrink-0">
+            <label htmlFor="discovery-format-select" className="text-xs font-medium text-zinc-400">
+              Format
+            </label>
+            <select
+              id="discovery-format-select"
+              value={format}
+              onChange={(e) => setSelectedFormat(e.target.value as RequestType)}
+              className="px-2.5 py-1.5 bg-zinc-950 border border-zinc-700/80 hover:border-zinc-600 rounded-md text-xs font-medium text-zinc-200 focus:outline-hidden focus-visible:outline-2 focus-visible:outline-blue-400 focus:border-blue-500/70 transition-colors cursor-pointer"
+            >
+              <option value="both">Both</option>
+              <option value="ebook">eBook</option>
+              <option value="audiobook">Audiobook</option>
+            </select>
+          </div>
+        )}
       </div>
 
       {(busy || addingKey) && (
@@ -351,7 +360,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
                     <span>In Library</span>
                     <span className="sr-only">: {m.title}</span>
                   </button>
-                ) : (
+                ) : allowRequest ? (
                   <button
                     type="button"
                     disabled={busy || Boolean(addingKey) || isAdded}
@@ -386,7 +395,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
                       </>
                     )}
                   </button>
-                )}
+                ) : null}
               </li>
             );
           })}

@@ -45,7 +45,7 @@ it('opens download options without asking for a format first', async () => {
     ? [{ id: 1, book_id: testBooks[0].id, format: 'epub' }]
     : []));
   vi.stubGlobal('fetch', fetch);
-  render(<BookDetailModal book={testBooks[0]} onClose={vi.fn()} />);
+  render(<BookDetailModal book={testBooks[0]} canRequest onClose={vi.fn()} />);
   expect(screen.queryByRole('combobox', { name: 'Format' })).not.toBeInTheDocument();
   expect(fetch).not.toHaveBeenCalled();
   await user.click(screen.getByRole('button', { name: 'Show Download Options' }));

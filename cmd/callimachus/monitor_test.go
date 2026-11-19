@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -237,6 +238,217 @@ func TestCatalogMonitoringRespectsOpenLibraryEnabled(t *testing.T) {
 	})
 }
 
+func TestBookResolveAndMonitorEndpoints(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	s := &Server{db: db, monitorWake: make(chan struct{}, 1)}
+	mux := http.NewServeMux()
+	s.registerAPIRoutes(mux)
+
+	request := func(method, path, body, role string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		if role != "" {
+			r = r.WithContext(auth.ContextWithUser(context.Background(), &auth.User{ID: "u1", Role: role}))
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w
+	}
+
+	// Unauthenticated and guest requests are rejected without writing catalog rows.
+	if w := request("POST", "/api/books/resolve", `{"title":"Book","author":"Author"}`, ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated resolve, got %d", w.Code)
+	}
+	if w := request("POST", "/api/books/resolve", `{"title":"Guest Book","author":"Guest Author","series":"Guest Series"}`, auth.RoleGuest); w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for guest resolve, got %d", w.Code)
+	}
+	for _, table := range []string{"authors", "series", "books"} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("expected 0 rows in %s after unauthorized/guest resolve, got %d", table, count)
+		}
+	}
+	if w := request("POST", "/api/books/resolve", `{}`, auth.RoleRequester); w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing title, got %d", w.Code)
+	}
+	tooLongSeries := `{"title":"Book","author":"Author","series":"` + strings.Repeat("s", 501) + `"}`
+	if w := request("POST", "/api/books/resolve", tooLongSeries, auth.RoleRequester); w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized series title, got %d", w.Code)
+	}
+	var authorCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM authors").Scan(&authorCount); err != nil {
+		t.Fatal(err)
+	}
+	if authorCount != 0 {
+		t.Fatalf("expected no orphan author after oversized series validation error, got %d", authorCount)
+	}
+	if w := request("POST", "/api/books/resolve", `{"book_id":"missing","title":"X","author":"Y"}`, auth.RoleRequester); w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown book_id, got %d", w.Code)
+	}
+
+	// Resolving an unpersisted future series book creates it unmonitored with valid cover URL and partial/exact date precision.
+	resolveBody := `{"title":"Volume Next","subtitle":"Subtitle","author":"Author One","series":"Epic Saga","series_index":2,"release_date":"2099-05","synopsis":"Future synopsis.","cover_url":"https://covers.example/next.jpg"}`
+	w := request("POST", "/api/books/resolve", resolveBody, auth.RoleRequester)
+	if w.Code != http.StatusOK {
+		t.Fatalf("resolve future book: %d %s", w.Code, w.Body.String())
+	}
+	var resolved APIBook
+	if err := json.Unmarshal(w.Body.Bytes(), &resolved); err != nil {
+		t.Fatal(err)
+	}
+	if resolved.ID == "" || resolved.Monitored || resolved.ReleaseDate != "2099-05" || resolved.State != "Scheduled" || resolved.CoverURL != "https://covers.example/next.jpg" || resolved.Synopsis != "Future synopsis." {
+		t.Fatalf("unexpected resolved book: %+v", resolved)
+	}
+
+	// Unsafe external cover URLs are stripped, coarser year does not downgrade month precision, and existing synopsis is preserved.
+	w = request("POST", "/api/books/resolve", `{"title":"Volume Next","author":"Author One","series":"Epic Saga","release_date":"2099","synopsis":"Overwrite attempt","cover_url":"javascript:alert(1)"}`, auth.RoleRequester)
+	if w.Code != http.StatusOK {
+		t.Fatalf("re-resolve book: %d %s", w.Code, w.Body.String())
+	}
+	var rerResolved APIBook
+	if err := json.Unmarshal(w.Body.Bytes(), &rerResolved); err != nil {
+		t.Fatal(err)
+	}
+	if rerResolved.ID != resolved.ID || rerResolved.CoverURL != "" || rerResolved.ReleaseDate != "2099-05" || rerResolved.Synopsis != "Future synopsis." || rerResolved.Monitored {
+		t.Fatalf("re-resolve did not preserve existing data cleanly: %+v", rerResolved)
+	}
+
+	// Stricter date precision upgrades the existing month-only date.
+	w = request("POST", "/api/books/resolve", `{"title":"Volume Next","author":"Author One","series":"Epic Saga","release_date":"2099-05-10"}`, auth.RoleRequester)
+	if w.Code != http.StatusOK {
+		t.Fatalf("upgrade date precision: %d %s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rerResolved); err != nil {
+		t.Fatal(err)
+	}
+	if rerResolved.ReleaseDate != "2099-05-10" || rerResolved.State != "Scheduled" {
+		t.Fatalf("expected date upgrade to 2099-05-10 Scheduled, got %+v", rerResolved)
+	}
+
+	// Year-only future date normalizes and schedules properly.
+	w = request("POST", "/api/books/resolve", `{"title":"Volume Later","author":"Author One","release_date":"November 2099"}`, auth.RoleRequester)
+	if w.Code != http.StatusOK {
+		t.Fatalf("resolve month-name future book: %d %s", w.Code, w.Body.String())
+	}
+	var monthNameBook APIBook
+	if err := json.Unmarshal(w.Body.Bytes(), &monthNameBook); err != nil {
+		t.Fatal(err)
+	}
+	if monthNameBook.ReleaseDate != "2099-11" || monthNameBook.State != "Scheduled" {
+		t.Fatalf("expected 2099-11 Scheduled, got %+v", monthNameBook)
+	}
+
+	// Book monitor endpoint enforces curator/admin role, validates input, and leaves series.monitored unchanged.
+	if w := request("PUT", "/api/books/"+resolved.ID+"/monitor", `{"monitored":true}`, ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated monitor, got %d", w.Code)
+	}
+	if w := request("PUT", "/api/books/"+resolved.ID+"/monitor", `{"monitored":true}`, auth.RoleGuest); w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for guest monitor, got %d", w.Code)
+	}
+	if w := request("PUT", "/api/books/"+resolved.ID+"/monitor", `{"monitored":true}`, auth.RoleRequester); w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for requester, got %d", w.Code)
+	}
+	if w := request("PUT", "/api/books/"+resolved.ID+"/monitor", `{}`, auth.RoleCurator); w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing monitored field, got %d", w.Code)
+	}
+	if w := request("PUT", "/api/books/nonexistent/monitor", `{"monitored":true}`, auth.RoleCurator); w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for nonexistent book, got %d", w.Code)
+	}
+	if _, err := db.Exec(`UPDATE books SET availability_checked_at='2026-01-01T00:00:00Z' WHERE id=?`, resolved.ID); err != nil {
+		t.Fatal(err)
+	}
+	if w := request("PUT", "/api/books/"+resolved.ID+"/monitor", `{"monitored":true}`, auth.RoleCurator); w.Code != http.StatusOK {
+		t.Fatalf("enable book monitor: %d %s", w.Code, w.Body.String())
+	}
+	var bookMonitored, seriesMonitored bool
+	var checkedAt *string
+	if err := db.QueryRow(`SELECT b.monitored, b.availability_checked_at, s.monitored FROM books b JOIN series s ON s.id=b.series_id WHERE b.id=?`, resolved.ID).Scan(&bookMonitored, &checkedAt, &seriesMonitored); err != nil {
+		t.Fatal(err)
+	}
+	if !bookMonitored || checkedAt != nil || seriesMonitored {
+		t.Fatalf("unexpected monitor state after enable: bookMonitored=%v checkedAt=%v seriesMonitored=%v", bookMonitored, checkedAt, seriesMonitored)
+	}
+	select {
+	case <-s.monitorWake:
+	default:
+		t.Fatal("expected enabling book monitor to wake catalog monitor")
+	}
+	if w := request("PUT", "/api/books/"+resolved.ID+"/monitor", `{"monitored":false}`, auth.RoleAdmin); w.Code != http.StatusOK {
+		t.Fatalf("disable book monitor: %d %s", w.Code, w.Body.String())
+	}
+	if err := db.QueryRow(`SELECT b.monitored, s.monitored FROM books b JOIN series s ON s.id=b.series_id WHERE b.id=?`, resolved.ID).Scan(&bookMonitored, &seriesMonitored); err != nil {
+		t.Fatal(err)
+	}
+	if bookMonitored || seriesMonitored {
+		t.Fatalf("expected book and series unmonitored, got book=%v series=%v", bookMonitored, seriesMonitored)
+	}
+}
+
+func TestCatalogEntitySeriesMergesHardcoverBooks(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	for _, query := range []string{
+		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','mock')`,
+		`INSERT INTO authors(id,name,sort_name) VALUES('a','Author One','One, Author')`,
+		`INSERT INTO series(id,title,monitored) VALUES('s','Sequence',1)`,
+		`INSERT INTO books(id,author_id,series_id,series_index,title,release_date,monitored) VALUES('b1','a','s',1,'Book One','2020-01-01',0)`,
+		`INSERT INTO book_editions(id,book_id,format) VALUES('e1','b1','epub')`,
+		`INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES('m1','e1','/library/BookOne.epub',123)`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mt := testutil.NewMockTransportForTest(t)
+	mockSeriesLookup(
+		t,
+		mt,
+		`{"data":{"named":[],"linked":[{"id":7,"name":"Sequence Renamed","books_count":3}]}}`,
+		`{"data":{"books":[
+			{"id":10,"title":"Book One","description":"Remote blurb","release_date":"2020-01-01","image":{"url":"https://covers.example/1.jpg"},"contributions":[{"author":{"name":"Author One"}}],"book_series":[{"series_position":1,"series":{"id":7,"name":"Sequence Renamed","books_count":3}}]},
+			{"id":11,"title":"Book Two","description":"Missing locally","release_date":"2022-03-04","image":{"url":"https://covers.example/2.jpg"},"contributions":[{"author":{"name":"Author One"}}],"book_series":[{"series_position":2,"series":{"id":7,"name":"Sequence Renamed","books_count":3}}]},
+			{"id":12,"title":"Book Three","description":"Upcoming","release_date":"2099-09","release_year":2099,"contributions":[{"author":{"name":"Author One"}}],"book_series":[{"series_position":3,"series":{"id":7,"name":"Sequence Renamed","books_count":3}}]}
+		]}}`,
+	)
+	s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
+	w := httptest.NewRecorder()
+	s.handleCatalogEntity(w, httptest.NewRequest("GET", "/api/catalog/entity?kind=series&name=Sequence", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("handleCatalogEntity: %d %s", w.Code, w.Body.String())
+	}
+	var data struct {
+		Monitored bool `json:"monitored"`
+		Books     []struct {
+			ID          string   `json:"id"`
+			Title       string   `json:"title"`
+			State       string   `json:"state"`
+			ReleaseDate string   `json:"releaseDate"`
+			Monitored   bool     `json:"monitored"`
+			CoverURL    string   `json:"coverUrl"`
+			Synopsis    string   `json:"synopsis"`
+			Formats     []string `json:"formats"`
+		} `json:"books"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+		t.Fatal(err)
+	}
+	if !data.Monitored || len(data.Books) != 3 {
+		t.Fatalf("unexpected series entity response: %s", w.Body.String())
+	}
+	if data.Books[0].ID != "b1" || data.Books[0].State != "In library" || len(data.Books[0].Formats) != 1 || data.Books[0].Synopsis != "Remote blurb" {
+		t.Fatalf("unexpected book 0: %+v", data.Books[0])
+	}
+	if data.Books[1].ID != "" || data.Books[1].Title != "Book Two" || data.Books[1].State != "Not in library" || data.Books[1].Monitored || data.Books[1].CoverURL != "https://covers.example/2.jpg" {
+		t.Fatalf("unexpected book 1: %+v", data.Books[1])
+	}
+	if data.Books[2].ID != "" || data.Books[2].Title != "Book Three" || data.Books[2].ReleaseDate != "2099-09" || data.Books[2].State != "Scheduled" || data.Books[2].Monitored {
+		t.Fatalf("unexpected book 2: %+v", data.Books[2])
+	}
+}
+
 func TestCatalogEntityFutureDateFormats(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	if _, err := db.Exec(`INSERT INTO settings(key,value) VALUES('hardcover_api_key','mock')`); err != nil {
@@ -299,3 +511,119 @@ func TestCatalogEntityFutureDateFormats(t *testing.T) {
 		}
 	}
 }
+
+func TestBookResolveAndCatalogEntityScopedSeriesIdentity(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	for _, query := range []string{
+		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','mock')`,
+		`INSERT INTO authors(id,name,sort_name) VALUES('a-monroe','Grace Monroe','Monroe, Grace'),('a-erikson','Steven Erikson','Erikson, Steven')`,
+		`INSERT INTO series(id,title,author_id,hardcover_id,monitored) VALUES('s-monroe','The Witness','a-monroe',701,0)`,
+		`INSERT INTO books(id,author_id,series_id,series_index,title,monitored) VALUES('b-monroe','a-monroe','s-monroe',1,'A Different Witness',0)`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mt := testutil.NewMockTransportForTest(t)
+	mt.RegisterHandler("/v1/graphql", func(r *http.Request) (*http.Response, error) {
+		var input struct {
+			Query     string
+			Variables struct {
+				ID    int
+				Known json.RawMessage
+			}
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		var body string
+		switch {
+		case strings.Contains(input.Query, "query FindSeries"):
+			if !strings.Contains(string(input.Variables.Known), "Steven Erikson") ||
+				strings.Contains(string(input.Variables.Known), "Grace Monroe") {
+				t.Fatalf("expected Hardcover lookup scoped to Erikson, got %s", input.Variables.Known)
+			}
+			body = `{"data":{"named":[{"id":703,"name":"The Witness","books_count":2,"author":{"name":"Steven Erikson"}}],"linked":[]}}`
+		case strings.Contains(input.Query, "query SeriesBooks") && input.Variables.ID == 703:
+			body = `{"data":{"books":[
+				{"id":801,"title":"The God Is Not Willing","description":"Book one synopsis.","release_date":"2021-11-09","contributions":[{"author":{"name":"Steven Erikson"}}],"book_series":[{"series_position":1,"series":{"id":703,"name":"The Witness","books_count":2}}]},
+				{"id":802,"title":"No Life Forsaken","description":"Book two synopsis.","release_date":"2099-06-01","release_year":2099,"contributions":[{"author":{"name":"Steven Erikson"}}],"book_series":[{"series_position":2,"series":{"id":703,"name":"The Witness","books_count":2}}]}
+			]}}`
+		default:
+			t.Fatalf("unexpected GraphQL query: %+v", input)
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+
+	s := &Server{db: db, prowlarrHTTPClient: mt.Client(), monitorWake: make(chan struct{}, 1)}
+	mux := http.NewServeMux()
+	s.registerAPIRoutes(mux)
+
+	// Resolving Erikson's "The Witness" book creates a new author/hardcover-scoped series instead of reusing Monroe's.
+	req := httptest.NewRequest("POST", "/api/books/resolve", strings.NewReader(`{"title":"The God Is Not Willing","author":"Steven Erikson","series":"The Witness","hardcover_series_id":703,"series_index":1}`))
+	req = req.WithContext(auth.ContextWithUser(context.Background(), &auth.User{ID: "u1", Role: auth.RoleRequester}))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("resolve scoped series book: %d %s", w.Code, w.Body.String())
+	}
+	var resolved APIBook
+	if err := json.Unmarshal(w.Body.Bytes(), &resolved); err != nil {
+		t.Fatal(err)
+	}
+	if resolved.SeriesID == "" || resolved.SeriesID == "s-monroe" {
+		t.Fatalf("expected distinct series_id for Erikson, got %+v", resolved)
+	}
+
+	// Resolving by explicit series_id reuses that exact scoped series.
+	req = httptest.NewRequest("POST", "/api/books/resolve", strings.NewReader(`{"title":"No Life Forsaken","author":"Steven Erikson","series":"The Witness","series_id":"`+resolved.SeriesID+`","series_index":2,"release_date":"2099-06-01","synopsis":"Upcoming sequel"}`))
+	req = req.WithContext(auth.ContextWithUser(context.Background(), &auth.User{ID: "u1", Role: auth.RoleRequester}))
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("resolve by series_id: %d %s", w.Code, w.Body.String())
+	}
+	var resolvedTwo APIBook
+	if err := json.Unmarshal(w.Body.Bytes(), &resolvedTwo); err != nil {
+		t.Fatal(err)
+	}
+	if resolvedTwo.SeriesID != resolved.SeriesID || resolvedTwo.Synopsis != "Upcoming sequel" || resolvedTwo.Monitored {
+		t.Fatalf("unexpected second resolved book: %+v", resolvedTwo)
+	}
+
+	// Unscoped entity lookup for colliding title returns 409 Conflict.
+	w = httptest.NewRecorder()
+	s.handleCatalogEntity(w, httptest.NewRequest("GET", "/api/catalog/entity?kind=series&name=The+Witness", nil))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for ambiguous series entity, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Author-scoped entity lookup loads only Erikson's series, preserves seriesId/synopsis, and merges remote entries cleanly.
+	w = httptest.NewRecorder()
+	s.handleCatalogEntity(w, httptest.NewRequest("GET", "/api/catalog/entity?kind=series&name=The+Witness&author=Steven+Erikson", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("scoped entity lookup failed: %d %s", w.Code, w.Body.String())
+	}
+	var entity struct {
+		Books []struct {
+			ID       string `json:"id"`
+			Title    string `json:"title"`
+			SeriesID string `json:"seriesId"`
+			Synopsis string `json:"synopsis"`
+			State    string `json:"state"`
+		} `json:"books"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &entity); err != nil {
+		t.Fatal(err)
+	}
+	if len(entity.Books) != 2 {
+		t.Fatalf("expected 2 scoped books, got %d: %s", len(entity.Books), w.Body.String())
+	}
+	if entity.Books[0].SeriesID != resolved.SeriesID || entity.Books[0].Synopsis != "Book one synopsis." ||
+		entity.Books[1].SeriesID != resolved.SeriesID || entity.Books[1].Synopsis != "Upcoming sequel" || entity.Books[1].State != "Scheduled" {
+		t.Fatalf("unexpected scoped entity books: %+v", entity.Books)
+	}
+}
+

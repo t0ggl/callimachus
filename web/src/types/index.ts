@@ -91,6 +91,7 @@ export type BookState = 'In library' | 'Downloading' | 'Searching' | 'Requested'
 
 export interface Book {
   id: string;
+  monitored?: boolean;
   state?: BookState;
   title: string;
   subtitle?: string;
