@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -282,7 +281,7 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 					}
 					var date *string
 					if bookDetails.Year > 0 {
-						value := fmt.Sprintf("%04d-01-01", bookDetails.Year)
+						value := fmt.Sprintf("%04d", bookDetails.Year)
 						date = &value
 					}
 					book, err := sm.catalog.GetOrCreateBook(ctx, &database.Book{AuthorID: author.ID, Title: bookDetails.Title, SeriesID: seriesID, SeriesIndex: bookDetails.SeriesIndex, ReleaseDate: date, Synopsis: &bookDetails.Description})
@@ -462,7 +461,7 @@ func (sm *StagingMonitor) resolveBookDetails(ctx context.Context, item database.
 		query := `
 			SELECT b.id, b.title, COALESCE(b.subtitle, ''), a.name,
 			       COALESCE(s.title, ''), b.series_index,
-			       COALESCE(strftime('%Y', b.release_date), '0'),
+			       COALESCE(b.release_date, ''),
 			       COALESCE(b.synopsis, ''),
 			       COALESCE(ed.isbn13, ''), COALESCE(ed.asin, ''),
 			       COALESCE(ed.format, '')
@@ -473,17 +472,17 @@ func (sm *StagingMonitor) resolveBookDetails(ctx context.Context, item database.
 			WHERE b.id = COALESCE((SELECT r.book_id FROM book_requests r JOIN download_queue q ON q.request_id=r.id WHERE q.id=?),
 				(SELECT book_id FROM book_editions WHERE id=?)) LIMIT 1;
 		`
-		var yearStr string
+		var releaseDate string
 		row := sm.db.QueryRowContext(ctx, query, item.EditionID, item.ID, item.EditionID)
 		err := row.Scan(
 			&details.BookID, &details.Title, &details.Subtitle, &details.Author,
-			&details.Series, &details.SeriesIndex, &yearStr,
+			&details.Series, &details.SeriesIndex, &releaseDate,
 			&details.Description, &details.ISBN13, &details.ASIN,
 			&details.Format,
 		)
 		if err == nil {
 			foundInDB = true
-			if y, yErr := strconv.Atoi(yearStr); yErr == nil && y > 0 {
+			if y := metadata.ReleaseYear(releaseDate, 0); y > 0 {
 				details.Year = y
 			}
 		}

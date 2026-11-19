@@ -155,3 +155,96 @@ func TestMonitoringRetriesFailedDiscovery(t *testing.T) {
 		t.Fatal("invalid kind accepted")
 	}
 }
+
+func TestMonitoringPreservesPartialAndYearOnlyDates(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	c := catalog.New(db)
+	a, err := c.GetOrCreateAuthor(ctx, "Example Author")
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovered := []metadata.BookMetadata{
+		{Title: "Exact Future", Authors: []string{"Example Author"}, PublishDate: "2028-05-10"},
+		{Title: "Partial Month ISO", Authors: []string{"Example Author"}, PublishDate: "2028-06"},
+		{Title: "Month Year String", Authors: []string{"Example Author"}, PublishDate: "July 2028"},
+		{Title: "Year Only Empty Date", Authors: []string{"Example Author"}, PublishDate: "", Year: 2029},
+	}
+	var searched []string
+	m := &catalog.Monitor{
+		DB: db,
+		Discover: func(context.Context, string, string) ([]metadata.BookMetadata, error) {
+			return discovered, nil
+		},
+		Search: func(_ context.Context, id string) error {
+			var title string
+			if err := db.QueryRowContext(ctx, "SELECT title FROM books WHERE id=?", id).Scan(&title); err != nil {
+				return err
+			}
+			searched = append(searched, title)
+			return nil
+		},
+	}
+	if err = m.SetMonitored(ctx, "authors", a.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err = m.Tick(ctx, time.Date(2028, 5, 9, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+
+	gotDates := map[string]string{}
+	rows, err := db.QueryContext(ctx, "SELECT title, COALESCE(release_date, '') FROM books")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var title, date string
+		if err := rows.Scan(&title, &date); err != nil {
+			t.Fatal(err)
+		}
+		gotDates[title] = date
+	}
+	wantDates := map[string]string{
+		"Exact Future":         "2028-05-10",
+		"Partial Month ISO":    "2028-06",
+		"Month Year String":    "2028-07",
+		"Year Only Empty Date": "2029",
+	}
+	for title, want := range wantDates {
+		if gotDates[title] != want {
+			t.Errorf("%s: release_date = %q, want %q", title, gotDates[title], want)
+		}
+	}
+	if len(searched) != 0 {
+		t.Fatalf("unexpected searches before release: %v", searched)
+	}
+
+	// Re-discovering with coarser year-only metadata for the same year must not erase exact day precision.
+	discovered[0] = metadata.BookMetadata{Title: "Exact Future", Authors: []string{"Example Author"}, Year: 2028}
+	if err = m.Queue(ctx, "authors", a.ID, "discover"); err != nil {
+		t.Fatal(err)
+	}
+	if err = m.Tick(ctx, time.Date(2028, 5, 9, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	var exactDate string
+	if err = db.QueryRowContext(ctx, "SELECT COALESCE(release_date, '') FROM books WHERE title='Exact Future'").Scan(&exactDate); err != nil {
+		t.Fatal(err)
+	}
+	if exactDate != "2028-05-10" {
+		t.Fatalf("exact day precision was downgraded to %q", exactDate)
+	}
+
+	// Once 2028-06 arrives, Partial Month ISO (2028-06) becomes eligible while 2028-07 and 2029 stay scheduled.
+	searched = nil
+	if err = m.Queue(ctx, "authors", a.ID, "downloads"); err != nil {
+		t.Fatal(err)
+	}
+	if err = m.Tick(ctx, time.Date(2028, 6, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	if len(searched) != 2 || searched[0] != "Exact Future" || searched[1] != "Partial Month ISO" {
+		t.Fatalf("on 2028-06-01 searched = %v, want [Exact Future Partial Month ISO]", searched)
+	}
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -232,7 +233,8 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Unable to load books", 500)
 			return
 		}
-		b.State = bookAvailability(b.State, b.Date, today)
+		b.Date = cmp.Or(metadata.NormalizeReleaseDate(b.Date, 0), b.Date)
+		b.State = bookAvailability(b.State, b.Date, 0, today)
 		books = append(books, b)
 	}
 	if rows.Err() != nil {

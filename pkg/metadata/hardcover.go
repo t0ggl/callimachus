@@ -212,8 +212,8 @@ func mapHardcoverBookNode(b *hardcoverBookNode) BookMetadata {
 		Year:        b.ReleaseYear,
 	}
 
-	if meta.Year == 0 && len(meta.PublishDate) >= 4 {
-		meta.Year, _ = strconv.Atoi(meta.PublishDate[:4])
+	if meta.Year == 0 {
+		meta.Year = ReleaseYear(meta.PublishDate, 0)
 	}
 
 	if b.Image != nil {
