@@ -116,8 +116,12 @@ type hardcoverImage struct {
 type hardcoverBookNode struct {
 	CanonicalID         int  `json:"canonical_id"`
 	Compilation         bool `json:"compilation"`
+	IsPartialBook       bool `json:"is_partial_book"`
+	ParentBookID        int  `json:"parent_book_id"`
 	DefaultCoverEdition *struct {
-		Language *struct {
+		EditionFormat string              `json:"edition_format"`
+		Publisher     *hardcoverPublisher `json:"publisher"`
+		Language      *struct {
 			Code2 string `json:"code2"`
 			Code3 string `json:"code3"`
 		} `json:"language"`
@@ -500,13 +504,47 @@ query BookByASIN($asin: String!) {
 
 var seriesBundleTitle = regexp.MustCompile(`(?i)\b(?:(?:books?|volumes?|vols\.?)\s*#?\s*)?\d+\s*(?:[-–—&]|\bto\b)\s*#?\s*\d+\b|\b(?:(?:\d+|two|three|four|five|six|seven|eight|nine|ten)[\s-]+book[\s-]+set|box(?:ed)?[\s-]+set|omnibus|collection(?:\s+set)?|anthology|complete\s+series)\b`)
 
+const seriesExcerptKind = `(?:deleted\s+scene|bonus\s+(?:chapter|scene|excerpt|interlude)|promotional\s+(?:excerpt|snippet)|sample\s+chapter|sneak\s+peek)s?`
+
+var (
+	seriesAudioAdaptation = regexp.MustCompile(`(?i)\b(?:dramati[sz]ed\s+(?:adaptation|audio(?:book)?|edition)|audio\s+drama|graphic\s*audio)\b`)
+	seriesAudioPart       = regexp.MustCompile(`(?i)\bpart\s+\d+\b`)
+	seriesExcerptLabel    = regexp.MustCompile(`(?i)(?:^|[:(\[–—-]\s*)(?:an?\s+)?` + seriesExcerptKind + `(?:\s*$|\s*[])\].,:–—-]|\s+(?:from|of|for|in)\b)`)
+	seriesExcerptBlurb    = regexp.MustCompile(`(?i)\bis\s+an?\s+` + seriesExcerptKind + `\b`)
+)
+
+// IsSeriesDerivativeTitle reports explicit adaptation or excerpt labels in
+// series listings, including blurbs mistakenly stored as titles.
+func IsSeriesDerivativeTitle(title, subtitle string) bool {
+	for _, text := range []string{title, subtitle} {
+		text = strings.TrimSpace(text)
+		if seriesAudioAdaptation.MatchString(text) || seriesExcerptLabel.MatchString(text) || seriesExcerptBlurb.MatchString(text) {
+			return true
+		}
+	}
+	return false
+}
+
+func (b hardcoverBookNode) isSeriesDerivative() bool {
+	if b.IsPartialBook || (b.ParentBookID != 0 && b.ParentBookID != b.ID) ||
+		IsSeriesDerivativeTitle(b.Title, b.Subtitle) {
+		return true
+	}
+
+	// A numbered part or a GraphicAudio edition alone can belong to a real work.
+	edition := b.DefaultCoverEdition
+	return edition != nil && (seriesAudioPart.MatchString(b.Title) || seriesAudioPart.MatchString(b.Subtitle)) &&
+		(seriesAudioAdaptation.MatchString(edition.EditionFormat) ||
+			(edition.Publisher != nil && seriesAudioAdaptation.MatchString(edition.Publisher.Name)))
+}
+
 // SeriesBooks returns canonical English volumes in the requested series.
 func (p *HardcoverProvider) SeriesBooks(ctx context.Context, title string) ([]BookMetadata, error) {
 	const query = `query SeriesBooks($title: String!, $offset: Int!) {
  books(where: {book_series: {series: {name: {_eq: $title}}}}, limit: 100, offset: $offset, order_by: {id: asc}) {
  id title subtitle description release_date release_year image: cached_image
- canonical_id compilation users_count
- default_cover_edition { language { code2 code3 } }
+ canonical_id compilation users_count is_partial_book parent_book_id
+ default_cover_edition { language { code2 code3 } edition_format publisher { name } }
  contributions { author { name } contribution }
  book_series { series_position: position series { name books_count } }
  }
@@ -520,7 +558,7 @@ func (p *HardcoverProvider) SeriesBooks(ctx context.Context, title string) ([]Bo
 	positions := make(map[float64]int)
 	ranked := make([]hardcoverBookNode, 0, len(raw))
 	for _, b := range raw {
-		if b.Compilation || (b.CanonicalID != 0 && b.CanonicalID != b.ID) ||
+		if b.Compilation || (b.CanonicalID != 0 && b.CanonicalID != b.ID) || b.isSeriesDerivative() ||
 			seriesBundleTitle.MatchString(b.Title) || seriesBundleTitle.MatchString(b.Subtitle) {
 			continue
 		}

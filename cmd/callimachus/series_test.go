@@ -162,3 +162,40 @@ func TestSeriesBooksMissingMetadataAndValidation(t *testing.T) {
 		t.Fatalf("unexpected availability: %+v", result.Books)
 	}
 }
+
+func TestSeriesBooksExcludesDerivativePlaceholders(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	for _, query := range []string{
+		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','test')`,
+		`INSERT INTO authors(id,name,sort_name) VALUES('a','Sarah J. Maas','Maas, Sarah J.')`,
+		`INSERT INTO series(id,title) VALUES('s','A Court of Thorns and Roses')`,
+		`INSERT INTO books(id,author_id,title,subtitle,series_id,series_index) VALUES('placeholder','a','A Court of Mist and Fury','Bonus Chapter','s',2.3)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('owned','a','A Court of Thorns and Roses (Dramatized Adaptation)','s',1.1)`,
+		`INSERT INTO book_editions(id,book_id,format) VALUES('e','owned','m4b')`,
+		`INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES('m','e','/library/Court.m4b',1)`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mt := testutil.NewMockTransport()
+	mt.PanicOnUnmocked = true
+	mt.RegisterFixture("/v1/graphql", http.StatusOK, "testdata/metadata/hardcover_series_acotar.json", nil)
+	s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
+	w := httptest.NewRecorder()
+	s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=A+Court+of+Thorns+and+Roses", nil))
+
+	var result seriesBooksResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || w.Code != http.StatusOK {
+		t.Fatalf("series response %d: %s (%v)", w.Code, w.Body.String(), err)
+	}
+	if !result.Complete || result.OwnedCount != 1 || len(result.Books) != 7 {
+		t.Fatalf("unexpected series response: %+v", result)
+	}
+	if owned := result.Books[1]; owned.LibraryBookID != "owned" || owned.HardcoverID != "" {
+		t.Fatalf("expected owned adaptation without a remote entry, got %+v", owned)
+	}
+	if novella := result.Books[4]; novella.Title != "A Court of Frost and Starlight" || novella.SeriesIndexDisplay != "Book 3.5" {
+		t.Fatalf("unexpected novella: %+v", novella)
+	}
+}

@@ -118,6 +118,10 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Unable to load series", 500)
 				return
 			}
+			// Older catalog imports may have left derivative placeholders behind.
+			if b.State == "" && metadata.IsSeriesDerivativeTitle(b.Title, b.Subtitle) {
+				continue
+			}
 			if author != "" {
 				b.Authors = []string{author}
 			} else {
