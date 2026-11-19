@@ -10,7 +10,7 @@ COPY web/ ./web/
 RUN make build-frontend
 
 # Stage 2: Build Go Server & Worker
-FROM --platform=$BUILDPLATFORM golang:1.26 AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.27 AS go-builder
 WORKDIR /app
 
 COPY go.mod go.sum ./
