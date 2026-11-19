@@ -7,10 +7,11 @@ import type { Book } from '../types';
 const longName = `${'AnUnusuallyLongBookTitle'.repeat(12)}(2026) - Author.epub`;
 const book: Book = {
   ...testBooks[0],
+  id: 'book/with spaces',
   editions: [
     { id: 'ebook', bookId: 'b', format: 'EPUB', language: 'en', assets: [
       { id: 'e1', editionId: 'ebook', filename: longName, format: 'EPUB', fileSizeBytes: 1536 },
-      { id: 'e2', editionId: 'ebook', filename: 'Book.pdf', format: 'PDF', fileSizeBytes: 1048576 },
+      { id: 'e2#pdf', editionId: 'ebook', filename: 'Book.pdf', format: 'PDF', fileSizeBytes: 1048576 },
     ] },
     { id: 'audio', bookId: 'b', format: 'M4B', language: 'fr', assets: [
       { id: 'a1', editionId: 'audio', filename: 'Book.m4b', format: 'M4B', fileSizeBytes: 1073741824 },
@@ -18,16 +19,19 @@ const book: Book = {
   ],
 };
 
-it('lists every ebook and audiobook file with its format, size and language', () => {
+it('links every ebook and audiobook file by ID and shows its format, size and language', () => {
   render(<BookDetailModal book={book} onClose={vi.fn()} />);
   const items = screen.getAllByRole('listitem');
   expect(items).toHaveLength(3);
-  for (const [index, filename, format, size, language] of [
-    [0, longName, 'EPUB', '1.5 KiB', 'en'],
-    [1, 'Book.pdf', 'PDF', '1 MiB', 'en'],
-    [2, 'Book.m4b', 'M4B', '1 GiB', 'fr'],
+  for (const [index, assetId, filename, format, size, language] of [
+    [0, 'e1', longName, 'EPUB', '1.5 KiB', 'en'],
+    [1, 'e2%23pdf', 'Book.pdf', 'PDF', '1 MiB', 'en'],
+    [2, 'a1', 'Book.m4b', 'M4B', '1 GiB', 'fr'],
   ] as const) {
     const row = within(items[index]);
+    const link = row.getByRole('link', { name: `Download ${filename}` });
+    expect(link).toHaveAttribute('href', `/api/books/book%2Fwith%20spaces/files/${assetId}`);
+    expect(link).toHaveAttribute('download', filename);
     expect(row.getByText(filename)).toBeVisible();
     expect(row.getByText(format)).toBeVisible();
     expect(row.getByText(size)).toBeVisible();
@@ -46,6 +50,9 @@ it('handles absent filenames, languages, zero and invalid sizes without broken p
   }] };
   render(<BookDetailModal book={missing} onClose={vi.fn()} />);
   expect(screen.getAllByText('Filename unknown')).toHaveLength(5);
+  for (const link of screen.getAllByRole('link', { name: 'Download file' })) {
+    expect(link).toHaveAttribute('download', '');
+  }
   expect(screen.getAllByText('Size unknown')).toHaveLength(5);
   expect(screen.queryByText(/0 B|NaN|undefined|Infinity/)).not.toBeInTheDocument();
   expect(screen.queryByText('en')).not.toBeInTheDocument();
@@ -54,6 +61,7 @@ it('handles absent filenames, languages, zero and invalid sizes without broken p
 it('explains when an edition has no files', () => {
   render(<BookDetailModal book={{ ...book, editions: [{ ...book.editions[0], assets: [] }] }} onClose={vi.fn()} />);
   expect(screen.getByText('No files available for this edition.')).toBeVisible();
+  expect(screen.queryByRole('link', { name: /^Download/ })).not.toBeInTheDocument();
 });
 
 it('explains when the book has no editions', () => {

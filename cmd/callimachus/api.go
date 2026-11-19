@@ -192,6 +192,7 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/catalog/entity", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleCatalogAction)))
 	mux.HandleFunc("GET /api/discover", s.handleDiscover)
 	mux.HandleFunc("GET /api/books/{id}/cover", s.handleBookCover)
+	mux.Handle("GET /api/books/{id}/files/{assetId}", auth.RequireAuth()(http.HandlerFunc(s.handleBookFile)))
 	mux.Handle("POST /api/library/scan", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleScanLibrary)))
 	mux.Handle("POST /api/acquisition/failure", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleAcquisitionFailure)))
 	mux.HandleFunc("GET /api/books", s.handleGetBooks)
@@ -294,14 +295,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Unable to load book files", http.StatusInternalServerError)
 				return
 			}
-			// Also strip Windows separators from libraries imported on another OS.
-			serverPath = strings.ReplaceAll(serverPath, `\`, "/")
-			if serverPath != "" && !strings.HasSuffix(serverPath, "/") {
-				asset.Filename = filepath.Base(serverPath)
-				if asset.Filename == "." || asset.Filename == ".." {
-					asset.Filename = ""
-				}
-			}
+			asset.Filename = bookAssetFilename(serverPath)
 			asset.Format = strings.ToUpper(strings.TrimPrefix(filepath.Ext(asset.Filename), "."))
 			if asset.FileSizeBytes < 0 {
 				asset.FileSizeBytes = 0
