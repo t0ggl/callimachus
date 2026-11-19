@@ -202,7 +202,9 @@ func (m *Monitor) persist(ctx context.Context, kind, name string, found []metada
 }
 
 func (m *Monitor) checkBooks(ctx context.Context, now time.Time, column, id string, force bool) error {
-	query := `SELECT b.id, COALESCE(b.release_date,'') FROM books b WHERE b.monitored=1 AND NOT EXISTS(SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id WHERE e.book_id=b.id)`
+	query := `SELECT b.id, COALESCE(b.release_date,'') FROM books b WHERE b.monitored=1
+		AND NOT EXISTS(SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id WHERE e.book_id=b.id)
+		AND NOT EXISTS(SELECT 1 FROM hidden_library_review review WHERE review.book_id=b.id AND review.kept=0)`
 	var args []any
 	if column != "" {
 		query += " AND b." + column + "=?"
