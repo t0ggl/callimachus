@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import {
   ArrowUp,
   ArrowDown,
+  Eye,
+  EyeOff,
   Globe,
   Sliders,
   HardDrive,
@@ -16,6 +18,7 @@ import {
   IndexerConfig,
   LibrarySettings,
   LogLevel,
+  MetadataSettings,
   ProwlarrSettings,
   QualityProfile,
   RequestType,
@@ -28,7 +31,7 @@ import {
 export interface SettingsUpdatePayload {
   logLevel?: LogLevel;
   defaultSearchFormat?: RequestType;
- metadata?: Record<string,string>;
+  metadata?: Record<string, string>;
   library?: {
     rootPath?: string;
     completedDownloadRoot?: string;
@@ -57,7 +60,7 @@ interface SettingsViewProps {
   indexers: IndexerConfig[];
   logLevel?: LogLevel;
   defaultSearchFormat?: RequestType;
-  metadata?: Record<string, boolean>;
+  metadata?: MetadataSettings;
   librarySettings?: LibrarySettings;
   prowlarrSettings?: ProwlarrSettings;
   qualityProfile: QualityProfile;
@@ -75,8 +78,17 @@ const DEFAULT_LIBRARY: LibrarySettings = {
 
 const DEFAULT_PROWLARR: ProwlarrSettings = {
   url: '',
+  apiKey: '',
   apiKeyConfigured: false,
   syncInterval: '1h0m0s',
+};
+
+type ApiKeySettingKey = 'prowlarr_api_key' | 'google_books_api_key' | 'hardcover_api_key';
+type MetadataApiKey = 'google_books_api_key' | 'hardcover_api_key';
+
+const readMetadataKey = (meta: MetadataSettings | undefined, key: MetadataApiKey): string => {
+  const val = meta?.[key];
+  return typeof val === 'string' ? val : '';
 };
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -104,8 +116,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [indexers, setIndexers] = useState<IndexerConfig[]>(initialIndexers);
   const [librarySettings, setLibrarySettings] = useState<LibrarySettings>(initialLibrary);
   const [prowlarrSettings, setProwlarrSettings] = useState<ProwlarrSettings>(initialProwlarr);
-  const [prowlarrApiKeyDraft, setProwlarrApiKeyDraft] = useState('');
-  const [metadataKeys, setMetadataKeys] = useState<Record<string, string>>({});
+  const [prowlarrApiKey, setProwlarrApiKey] = useState(initialProwlarr.apiKey ?? '');
+  const [baselineProwlarrApiKey, setBaselineProwlarrApiKey] = useState(initialProwlarr.apiKey ?? '');
+  const [metadataKeys, setMetadataKeys] = useState<Record<MetadataApiKey, string>>(() => ({
+    google_books_api_key: readMetadataKey(initialMetadata, 'google_books_api_key'),
+    hardcover_api_key: readMetadataKey(initialMetadata, 'hardcover_api_key'),
+  }));
+  const [baselineMetadataKeys, setBaselineMetadataKeys] = useState<Record<MetadataApiKey, string>>(() => ({
+    google_books_api_key: readMetadataKey(initialMetadata, 'google_books_api_key'),
+    hardcover_api_key: readMetadataKey(initialMetadata, 'hardcover_api_key'),
+  }));
+  const [visibleKeys, setVisibleKeys] = useState<Record<ApiKeySettingKey, boolean>>({
+    prowlarr_api_key: false,
+    google_books_api_key: false,
+    hardcover_api_key: false,
+  });
   const [openLibraryEnabled, setOpenLibraryEnabled] = useState<boolean>(
     initialMetadata?.openlibrary_enabled ?? true
   );
@@ -132,6 +157,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   useEffect(() => {
     setOpenLibraryEnabled(initialMetadata?.openlibrary_enabled ?? true);
+    const nextMeta = {
+      google_books_api_key: readMetadataKey(initialMetadata, 'google_books_api_key'),
+      hardcover_api_key: readMetadataKey(initialMetadata, 'hardcover_api_key'),
+    };
+    setMetadataKeys(nextMeta);
+    setBaselineMetadataKeys(nextMeta);
   }, [initialMetadata]);
 
   useEffect(() => {
@@ -140,6 +171,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   useEffect(() => {
     setProwlarrSettings(initialProwlarr);
+    const nextKey = initialProwlarr.apiKey ?? '';
+    setProwlarrApiKey(nextKey);
+    setBaselineProwlarrApiKey(nextKey);
   }, [initialProwlarr]);
 
   useEffect(() => {
@@ -203,6 +237,65 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       locked ? 'opacity-60 cursor-not-allowed bg-zinc-900/50 text-zinc-400' : ''
     }`;
 
+  const toggleKeyVisibility = (key: ApiKeySettingKey) => {
+    setVisibleKeys((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const renderApiKeyInput = ({
+    id,
+    settingKey,
+    label,
+    value,
+    onChange,
+    placeholder,
+    ariaDescribedBy,
+  }: {
+    id: string;
+    settingKey: ApiKeySettingKey;
+    label: string;
+    value: string;
+    onChange: (next: string) => void;
+    placeholder: string;
+    ariaDescribedBy?: string;
+  }) => {
+    const locked = isOverridden(settingKey);
+    const revealed = visibleKeys[settingKey];
+    const describedBy =
+      [ariaDescribedBy, locked ? `override-note-${settingKey}` : undefined].filter(Boolean).join(' ') || undefined;
+
+    return (
+      <div className="relative">
+        <input
+          id={id}
+          type={revealed ? 'text' : 'password'}
+          autoComplete="off"
+          spellCheck={false}
+          value={value}
+          disabled={locked}
+          placeholder={placeholder}
+          aria-describedby={describedBy}
+          onChange={(e) => onChange(e.target.value)}
+          className={`${inputClass(locked)} pr-9 ${revealed ? 'font-mono' : ''}`}
+        />
+        <button
+          type="button"
+          onClick={() => toggleKeyVisibility(settingKey)}
+          aria-label={revealed ? `Hide ${label}` : `Show ${label}`}
+          aria-pressed={revealed}
+          aria-controls={id}
+          title={revealed ? `Hide ${label}` : `Show ${label}`}
+          className="absolute inset-y-0 right-0 flex items-center px-2.5 text-zinc-400 hover:text-zinc-200 rounded-r-md transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400"
+        >
+          {revealed ? (
+            <EyeOff className="w-3.5 h-3.5" aria-hidden="true" />
+          ) : (
+            <Eye className="w-3.5 h-3.5" aria-hidden="true" />
+          )}
+        </button>
+      </div>
+    );
+  };
+
   const splitList = (val: string) =>
     val
       .split(',')
@@ -214,12 +307,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setSaveSuccess(false);
     setSaveError(null);
 
-    const metadataPayload: Record<string, string> = Object.fromEntries(
-      Object.entries(metadataKeys).filter(([key, value]) => !isOverridden(key) && value.trim())
-    );
+    const metadataPayload: Record<string, string> = {};
+    for (const key of ['google_books_api_key', 'hardcover_api_key'] as const) {
+      if (!isOverridden(key)) {
+        const trimmed = metadataKeys[key].trim();
+        if (trimmed !== baselineMetadataKeys[key].trim()) {
+          metadataPayload[key] = trimmed;
+        }
+      }
+    }
     if (!isOverridden('openlibrary_enabled')) {
       metadataPayload.openlibrary_enabled = String(openLibraryEnabled);
     }
+
+    const trimmedProwlarrKey = prowlarrApiKey.trim();
+    const prowlarrKeyChanged =
+      !isOverridden('prowlarr_api_key') && trimmedProwlarrKey !== baselineProwlarrApiKey.trim();
 
     const payload: SettingsUpdatePayload = {
       ...(!isOverridden('log_level') && logLevel !== initialLogLevel ? { logLevel } : {}),
@@ -240,9 +343,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       },
       prowlarr: {
         ...(!isOverridden('prowlarr_url') ? { url: prowlarrSettings.url } : {}),
-        ...(!isOverridden('prowlarr_api_key') && prowlarrApiKeyDraft.trim() !== ''
-          ? { apiKey: prowlarrApiKeyDraft.trim() }
-          : {}),
+        ...(prowlarrKeyChanged ? { apiKey: trimmedProwlarrKey } : {}),
         ...(!isOverridden('prowlarr_sync_interval')
           ? { syncInterval: prowlarrSettings.syncInterval }
           : {}),
@@ -271,6 +372,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     try {
       if (onSaveSettings) {
         await onSaveSettings(payload);
+        if (prowlarrKeyChanged) {
+          setProwlarrApiKey(trimmedProwlarrKey);
+          setBaselineProwlarrApiKey(trimmedProwlarrKey);
+        }
+        const nextMeta = {
+          google_books_api_key: !isOverridden('google_books_api_key')
+            ? metadataKeys.google_books_api_key.trim()
+            : baselineMetadataKeys.google_books_api_key,
+          hardcover_api_key: !isOverridden('hardcover_api_key')
+            ? metadataKeys.hardcover_api_key.trim()
+            : baselineMetadataKeys.hardcover_api_key,
+        };
+        setMetadataKeys((prev) => ({
+          ...prev,
+          google_books_api_key: nextMeta.google_books_api_key,
+          hardcover_api_key: nextMeta.hardcover_api_key,
+        }));
+        setBaselineMetadataKeys(nextMeta);
       } else {
         const res = await fetch('/api/settings', {
           method: 'PUT',
@@ -281,8 +400,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           const data = await res.json().catch(() => ({}));
           throw new Error(data.error || 'Failed to save settings');
         }
+        const saved = await res.json().catch(() => null);
+        if (saved?.prowlarr) {
+          setProwlarrSettings(saved.prowlarr);
+          const nextProwlarr = saved.prowlarr.apiKey ?? '';
+          setProwlarrApiKey(nextProwlarr);
+          setBaselineProwlarrApiKey(nextProwlarr);
+        }
+        if (saved?.metadata) {
+          const nextMeta = {
+            google_books_api_key: readMetadataKey(saved.metadata, 'google_books_api_key'),
+            hardcover_api_key: readMetadataKey(saved.metadata, 'hardcover_api_key'),
+          };
+          setMetadataKeys(nextMeta);
+          setBaselineMetadataKeys(nextMeta);
+        }
       }
-      setProwlarrApiKeyDraft('');
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err: any) {
@@ -313,7 +446,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const testConnection = async (service: string) => {
     setConnectionTests(prev => ({ ...prev, [service]: { pending: true } }));
     const payload = service === 'prowlarr'
-      ? { url: prowlarrSettings.url, apiKey: prowlarrApiKeyDraft }
+      ? { url: prowlarrSettings.url, apiKey: prowlarrApiKey }
       : service === 'openlibrary'
       ? {}
       : { apiKey: metadataKeys[service === 'google-books' ? 'google_books_api_key' : 'hardcover_api_key'] || '' };
@@ -531,15 +664,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </label>
                   <OverrideBadge settingKey="prowlarr_api_key" />
                 </div>
-                <input
-                  id="prowlarr-api-key"
-                  type="password"
-                  placeholder={prowlarrSettings.apiKeyConfigured ? '•••••••• (configured)' : 'Enter API key'}
-                  value={prowlarrApiKeyDraft}
-                  disabled={isOverridden('prowlarr_api_key')}
-                  onChange={(e) => setProwlarrApiKeyDraft(e.target.value)}
-                  className={inputClass(isOverridden('prowlarr_api_key'))}
-                />
+                {renderApiKeyInput({
+                  id: 'prowlarr-api-key',
+                  settingKey: 'prowlarr_api_key',
+                  label: 'Prowlarr API Key',
+                  value: prowlarrApiKey,
+                  onChange: setProwlarrApiKey,
+                  placeholder: 'Enter API key',
+                })}
                 <OverrideNote settingKey="prowlarr_api_key" />
               </div>
 
@@ -605,17 +737,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             {(['google_books_api_key', 'hardcover_api_key'] as const).map(key => {
               const google = key === 'google_books_api_key';
               const label = google ? 'Google Books' : 'Hardcover';
+              const helpId = `${key}-help`;
               return (
                 <section key={key} aria-label={label} className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-3">
-                  <h3 className="text-sm font-semibold text-zinc-100">{label}</h3>
-                  <div className="max-w-lg space-y-1">
-                    <label htmlFor={key} className="block text-xs text-zinc-300">{label} API key{google ? ' (optional)' : ''}</label>
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-semibold text-zinc-100">{label}</h3>
                     <OverrideBadge settingKey={key} />
-                    <input id={key} type="password" autoComplete="off" value={metadataKeys[key] || ''}
-                      onChange={e => setMetadataKeys(prev => ({ ...prev, [key]: e.target.value }))}
-                      disabled={isOverridden(key)} placeholder="Leave blank to keep current key" className={inputClass(isOverridden(key))} />
+                  </div>
+                  <div className="max-w-lg space-y-1.5">
+                    <label htmlFor={key} className="block text-xs text-zinc-300">{label} API key{google ? ' (optional)' : ''}</label>
+                    {renderApiKeyInput({
+                      id: key,
+                      settingKey: key,
+                      label: `${label} API key`,
+                      value: metadataKeys[key],
+                      onChange: (next) => setMetadataKeys((prev) => ({ ...prev, [key]: next })),
+                      placeholder: google ? 'Enter API key (optional)' : 'Enter API key',
+                      ariaDescribedBy: helpId,
+                    })}
                     <OverrideNote settingKey={key} />
-                    <p className="text-xs text-zinc-400">{google ? 'An API key is optional. Without one, tests use public access unless a saved key exists.' : 'Leave blank to test with your saved API key.'}</p>
+                    <p id={helpId} className="text-xs text-zinc-400">
+                      {google
+                        ? 'An API key is optional. Without one, requests use public access.'
+                        : 'Required for Hardcover metadata enrichment and series discovery.'}
+                    </p>
                   </div>
                   {connectionControl(google ? 'google-books' : 'hardcover', label)}
                 </section>

@@ -138,8 +138,15 @@ type APILibrarySettings struct {
 
 type APIProwlarrSettings struct {
 	URL              string `json:"url"`
+	APIKey           string `json:"apiKey"`
 	APIKeyConfigured bool   `json:"apiKeyConfigured"`
 	SyncInterval     string `json:"syncInterval"`
+}
+
+type APIMetadataSettings struct {
+	GoogleBooksAPIKey  string `json:"google_books_api_key"`
+	HardcoverAPIKey    string `json:"hardcover_api_key"`
+	OpenLibraryEnabled bool   `json:"openlibrary_enabled"`
 }
 
 type APIQualityProfileSettings struct {
@@ -158,7 +165,7 @@ type APIQualityProfileSettings struct {
 type APISettingsResponse struct {
 	DefaultSearchFormat string                         `json:"defaultSearchFormat"`
 	LogLevel            string                         `json:"logLevel"`
-	Metadata            map[string]bool                `json:"metadata"`
+	Metadata            APIMetadataSettings            `json:"metadata"`
 	Indexers            []APIIndexerConfig             `json:"indexers"`
 	Library             APILibrarySettings             `json:"library"`
 	Prowlarr            APIProwlarrSettings            `json:"prowlarr"`
@@ -591,14 +598,14 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 		BundleSeriesInLibrary: cfg.BundleSeriesInLibrary,
 	}
 
-	resp.Metadata = map[string]bool{
-		config.KeyGoogleBooksAPIKey:  cfg.GoogleBooksAPIKey != "",
-		config.KeyHardcoverAPIKey:    cfg.HardcoverAPIKey != "",
-		config.KeyOpenLibraryEnabled: cfg.OpenLibraryEnabled,
+	resp.Metadata = APIMetadataSettings{
+		GoogleBooksAPIKey:  cfg.GoogleBooksAPIKey,
+		HardcoverAPIKey:    cfg.HardcoverAPIKey,
+		OpenLibraryEnabled: cfg.OpenLibraryEnabled,
 	}
-	// Prowlarr Integration (never expose raw API key)
 	resp.Prowlarr = APIProwlarrSettings{
 		URL:              cfg.ProwlarrURL,
+		APIKey:           cfg.ProwlarrAPIKey,
 		APIKeyConfigured: cfg.ProwlarrAPIKey != "",
 		SyncInterval:     cfg.ProwlarrSyncInterval.String(),
 	}
@@ -640,6 +647,7 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	resp := s.buildSettingsResponse(r.Context(), nil)
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -689,6 +697,7 @@ func (s *Server) handleRejectSettingsPost(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	if s.db == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "database unavailable"})
@@ -778,7 +787,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		if req.Prowlarr.URL != nil {
 			updates[config.KeyProwlarrURL] = *req.Prowlarr.URL
 		}
-		if req.Prowlarr.APIKey != nil && strings.TrimSpace(*req.Prowlarr.APIKey) != "" {
+		if req.Prowlarr.APIKey != nil {
 			updates[config.KeyProwlarrAPIKey] = *req.Prowlarr.APIKey
 		}
 		if req.Prowlarr.SyncInterval != nil {
