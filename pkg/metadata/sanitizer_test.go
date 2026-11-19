@@ -577,3 +577,31 @@ func TestParseRelease_EbookFormats(t *testing.T) {
 		}
 	}
 }
+
+func TestDiscoveryKeyAuthorPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		title, author, want string
+	}{
+		{"Scott Reintgens Bloodsworn", "Scott Reintgens", "Bloodsworn"},
+		{"SCOTT  REINTGENS - Bloodsworn", "Scott Reintgens", "Bloodsworn"},
+		{"Reintgens, Scott — Bloodsworn", "Scott Reintgens", "Bloodsworn"},
+		{"Scott Reintgens: Bloodsworn", "Reintgens, Scott", "Bloodsworn"},
+		{"Scott Reintgens Bloodsworn", "Other Writer & Scott Reintgens", "Bloodsworn"},
+		{"Scott Reintgens Bloodsworn", "Scott Smith", "Scott Reintgens Bloodsworn"},
+		{"Scott Reintgens Bloodsworn", "", "Scott Reintgens Bloodsworn"},
+		{"Scott Reintgensson Bloodsworn", "Scott Reintgens", "Scott Reintgensson Bloodsworn"},
+		{"Scott Reintgens's Bloodsworn", "Scott Reintgens", "Scott Reintgens's Bloodsworn"},
+		{"Scott Reintgens", "Scott Reintgens", "Scott Reintgens"},
+		{"Scott Reintgens -", "Scott Reintgens", "Scott Reintgens"},
+		{"Scott Reintgens (2020)", "Scott Reintgens", "Scott Reintgens"},
+		{"Scott Reintgens Bloodsworn", "Scott", "Scott Reintgens Bloodsworn"},
+		{"Homer - Odyssey", "Homer", "Odyssey"},
+	} {
+		t.Run(tc.title+" by "+tc.author, func(t *testing.T) {
+			want := strings.ToLower(tc.want) + "\x00" + strings.ToLower(NormalizeAuthor(tc.author))
+			if got := DiscoveryKey(tc.title, tc.author); got != want {
+				t.Errorf("DiscoveryKey = %q, want %q", got, want)
+			}
+		})
+	}
+}

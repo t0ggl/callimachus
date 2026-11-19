@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // ParsedRelease holds the structured metadata extracted from a raw scene or P2P release name.
@@ -402,7 +403,44 @@ func SanitizeTitle(title string) string {
 
 // DiscoveryKey returns a normalized comparison key for matching a book by title and author.
 func DiscoveryKey(title, author string) string {
-	return strings.ToLower(strings.TrimSpace(SanitizeTitle(title))) + "\x00" + strings.ToLower(strings.TrimSpace(NormalizeAuthor(author)))
+	author = NormalizeAuthor(author)
+	title = StripDiscoveryAuthorPrefix(title, author)
+	return strings.ToLower(strings.Join(strings.Fields(SanitizeTitle(title)), " ")) + "\x00" + strings.ToLower(author)
+}
+
+// StripDiscoveryAuthorPrefix removes a leading credited name from a comparison title.
+// Single-word names require an explicit separator to avoid removing ordinary title words.
+func StripDiscoveryAuthorPrefix(title string, authors ...string) string {
+	trimmed := strings.TrimSpace(title)
+	for _, credit := range authors {
+		for _, author := range strings.Split(NormalizeAuthor(credit), " & ") {
+			author = strings.Join(strings.Fields(author), " ")
+			if author == "" {
+				continue
+			}
+			for i, r := range trimmed {
+				if i == 0 || (!unicode.IsSpace(r) && r != ':') {
+					continue
+				}
+				prefix := strings.Join(strings.Fields(trimmed[:i]), " ")
+				matches := strings.EqualFold(prefix, author)
+				if last, first, ok := strings.Cut(prefix, ","); ok {
+					matches = strings.EqualFold(strings.TrimSpace(first)+" "+strings.TrimSpace(last), author)
+				}
+				if !matches {
+					continue
+				}
+				rest := strings.TrimSpace(trimmed[i:])
+				remainder := strings.TrimLeftFunc(rest, func(r rune) bool {
+					return r == ':' || r == '-' || r == '–' || r == '—' || unicode.IsSpace(r)
+				})
+				if (remainder != rest || strings.Contains(author, " ")) && strings.TrimSpace(SanitizeTitle(remainder)) != "" {
+					return remainder
+				}
+			}
+		}
+	}
+	return title
 }
 
 // NormalizeAuthor normalizes an author string, converting "Last, First" into "First Last",
