@@ -623,7 +623,7 @@ func TestCatalog_ReconcileBackfillsSeriesIndexOnRescan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	series, err := cat.GetOrCreateSeries(ctx, "Lord of Mysteries")
+	series, err := cat.GetOrCreateSeries(ctx, "Lord of Mysteries", author.ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

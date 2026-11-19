@@ -12,11 +12,11 @@
       "rating": 4.35,
       "ratings_count": 850,
       "users_read_count": 2100,
-      "cached_tags": [
+      "cached_tags": { "Genre": [
         {"tag": "Science Fiction"},
         {"tag": "Space Opera"},
         {"tag": "Adventure"}
-      ],
+      ] },
       "contributions": [
         {
           "author": {

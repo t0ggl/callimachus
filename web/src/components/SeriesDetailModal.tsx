@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { BookState } from '../types';
+import type { BookState, SeriesSelection } from '../types';
 import {
   X,
   Layers,
@@ -27,6 +27,7 @@ export interface SeriesBookEntry {
 }
 
 export interface SeriesBooksData {
+  id?: string;
   title?: string;
   description?: string;
   status?: string;
@@ -38,8 +39,7 @@ export interface SeriesBooksData {
   complete: boolean;
 }
 
-interface SeriesDetailModalProps {
-  title: string;
+interface SeriesDetailModalProps extends SeriesSelection {
   onClose: () => void;
   onOpenBook?: (bookId: string) => void;
 }
@@ -71,7 +71,7 @@ export function SeriesBookCover({ coverUrl, title }: { coverUrl?: string; title:
   );
 }
 
-export function SeriesDetailModal({ title, onClose, onOpenBook }: SeriesDetailModalProps) {
+export function SeriesDetailModal({ title, id, author, hardcoverID, onClose, onOpenBook }: SeriesDetailModalProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [data, setData] = useState<SeriesBooksData | null>(null);
   const [error, setError] = useState('');
@@ -101,7 +101,11 @@ export function SeriesDetailModal({ title, onClose, onOpenBook }: SeriesDetailMo
     const controller = new AbortController();
     setData(null);
     setError('');
-    fetch(`/api/series/books?title=${encodeURIComponent(title)}`, { signal: controller.signal })
+    const params = new URLSearchParams({ title });
+    if (id) params.set('id', id);
+    if (author) params.set('author', author);
+    if (hardcoverID) params.set('hardcover_id', String(hardcoverID));
+    fetch(`/api/series/books?${params}`, { signal: controller.signal })
       .then(async (res) => {
         if (!res.ok) throw new Error('Unable to load reading order. Try again.');
         return res.json();
@@ -111,7 +115,7 @@ export function SeriesDetailModal({ title, onClose, onOpenBook }: SeriesDetailMo
         if (!controller.signal.aborted) setError((e as Error).message);
       });
     return () => controller.abort();
-  }, [title, attempt]);
+  }, [title, id, author, hardcoverID, attempt]);
 
   const displayTitle = data?.title || title;
   const books = data?.books ?? [];
@@ -248,7 +252,14 @@ export function SeriesDetailModal({ title, onClose, onOpenBook }: SeriesDetailMo
                   <button
                     type="button"
                     onClick={() => {
-                      window.location.hash = entityURL('series', displayTitle);
+                      let destination = entityURL('series', displayTitle, data?.id ?? id);
+                      if (!data?.id && !id && (author || hardcoverID)) {
+                        const params = new URLSearchParams();
+                        if (author) params.set('author', author);
+                        if (hardcoverID) params.set('hardcover_id', String(hardcoverID));
+                        destination += `?${params}`;
+                      }
+                      window.location.hash = destination;
                       onClose();
                     }}
                     className="inline-flex items-center gap-2 px-3 py-2 text-xs font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"

@@ -142,7 +142,7 @@ func TestLibraryScanPreservesBookMatchedByCatalogMonitor(t *testing.T) {
 	discoveries := 0
 	m := &catalog.Monitor{
 		DB: db,
-		Discover: func(context.Context, string, string) ([]metadata.BookMetadata, error) {
+		Discover: func(context.Context, string, string, []metadata.BookMetadata) ([]metadata.BookMetadata, error) {
 			discoveries++
 			return []metadata.BookMetadata{{Authors: []string{"Author"}, Series: "Series", Title: "Book"}}, nil
 		},

@@ -50,7 +50,7 @@ func TestSeriesReadingOrder(t *testing.T) {
 	}
 	mt := testutil.NewMockTransport()
 	mt.PanicOnUnmocked = true
-	mockSeriesLookup(t, mt, `{"data":{"named":[{"id":7,"name":"Sequence","books_count":4}]}}`, `{"data":{"books":[
+	mockSeriesLookup(t, mt, `{"data":{"named":[{"id":7,"name":"Sequence","books_count":4,"author":{"name":"Author"}}]}}`, `{"data":{"books":[
 		{"id":3,"title":"Companion Tale","contributions":[{"author":{"name":"Co-Author"}}],"book_series":[{"series_position":null,"series":{"id":7}}]},
 		{"id":2,"title":"Second","subtitle":"Remote Subtitle","description":"Remote description","release_date":"2020-01-01","image":{"url":"https://covers.example/second.jpg"},"contributions":[{"author":{"name":"Author"}}],"book_series":[{"series_position":1,"series":{"id":7}}]},
 		{"id":1,"title":"First","subtitle":"Origins","description":"The prequel novella.","release_date":"2018-05-01","image":{"url":"https://covers.example/first.jpg"},"contributions":[{"author":{"name":"Author"}}],"book_series":[{"series_position":0.5,"series":{"id":7}}]}
@@ -176,7 +176,7 @@ func TestSeriesBooksExcludesDerivativePlaceholders(t *testing.T) {
 	for _, query := range []string{
 		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','test')`,
 		`INSERT INTO authors(id,name,sort_name) VALUES('a','Sarah J. Maas','Maas, Sarah J.')`,
-		`INSERT INTO series(id,title) VALUES('s','A Court of Thorns and Roses')`,
+		`INSERT INTO series(id,title,hardcover_id) VALUES('s','A Court of Thorns and Roses',41)`,
 		`INSERT INTO books(id,author_id,title,subtitle,series_id,series_index) VALUES('placeholder','a','A Court of Mist and Fury','Bonus Chapter','s',2.3)`,
 		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('owned','a','A Court of Thorns and Roses (Dramatized Adaptation)','s',1.1)`,
 		`INSERT INTO book_editions(id,book_id,format) VALUES('e','owned','m4b')`,
@@ -188,8 +188,7 @@ func TestSeriesBooksExcludesDerivativePlaceholders(t *testing.T) {
 	}
 	mt := testutil.NewMockTransport()
 	mt.PanicOnUnmocked = true
-	fixture := strings.ReplaceAll(string(testutil.LoadFixture(t, "testdata/metadata/hardcover_series_acotar.json")), `"series":{"name":`, `"series":{"id":7,"name":`)
-	mockSeriesLookup(t, mt, `{"data":{"named":[{"id":7,"name":"A Court of Thorns and Roses"}],"linked":[{"id":7,"name":"A Court of Thorns and Roses"}]}}`, fixture)
+	mt.RegisterFixture("/v1/graphql", http.StatusOK, "testdata/metadata/hardcover_series_acotar.json", nil)
 	s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
 	w := httptest.NewRecorder()
 	s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=A+Court+of+Thorns+and+Roses", nil))
@@ -653,4 +652,189 @@ func TestSeriesBooks_ScannedVolumeIndicesEndToEnd(t *testing.T) {
 	if lom.Books[0].SeriesIndexDisplay != "Book 1" || lom.Books[1].SeriesIndexDisplay != "Book 2" {
 		t.Fatalf("expected Book 1 and Book 2 displays (not Unindexed), got %+v", lom.Books)
 	}
+}
+
+func TestSeriesReadingOrderScopesLocalAndHardcoverIdentity(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	for _, query := range []string{
+		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','test')`,
+		`INSERT INTO authors(id,name,sort_name) VALUES('erikson','Steven Erikson','Erikson, Steven'),('monroe','Grace Monroe','Monroe, Grace')`,
+		`INSERT INTO series(id,title,monitored) VALUES('erikson-witness','The Witness',1),('monroe-witness','The Witness',0)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES
+    ('god','erikson','The God Is Not Willing','erikson-witness',1),('other','monroe','A Different Witness','monroe-witness',1)`,
+		`INSERT INTO book_editions(id,book_id,format) VALUES('local-edition','god','epub')`,
+		`INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES('local-file','local-edition','/library/erikson.epub',1)`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mt := testutil.NewMockTransportForTest(t)
+	mt.RegisterHandler("/v1/graphql", func(r *http.Request) (*http.Response, error) {
+		var input struct {
+			Query     string
+			Variables struct {
+				ID    int
+				Known json.RawMessage
+			}
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		var body string
+		switch {
+		case strings.Contains(input.Query, "query FindSeries"):
+			if !strings.Contains(string(input.Variables.Known), "Steven Erikson") ||
+				!strings.Contains(string(input.Variables.Known), "The God Is Not Willing") ||
+				strings.Contains(string(input.Variables.Known), "Grace Monroe") {
+				t.Fatalf("lookup must only use the selected row's books: %s", input.Variables.Known)
+			}
+			body = `{"data":{"named":[{"id":701,"name":"The Witness","author":{"name":"Grace Monroe"}}],
+    "linked":[{"id":703,"name":"The Tales of Witness","books_count":2,"author":{"name":"Steven Erikson"}}]}}`
+		case strings.Contains(input.Query, "query SeriesBooks") && input.Variables.ID == 703:
+			body = `{"data":{"books":[
+    {"id":801,"title":"The God Is Not Willing","contributions":[{"author":{"name":"Steven Erikson"}}],"book_series":[{"series_position":1,"series":{"id":703}}]},
+    {"id":802,"title":"No Life Forsaken","contributions":[{"author":{"name":"Steven Erikson"}}],"book_series":[{"series_position":2,"series":{"id":703}}]},
+    {"id":803,"title":"A Different Witness","contributions":[{"author":{"name":"Grace Monroe"}}],"book_series":[{"series_position":1,"series":{"id":701}}]}
+   ]}}`
+		default:
+			t.Fatalf("unexpected GraphQL request: %+v", input)
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
+	base := "/api/series/books?title=The+Witness"
+	w := httptest.NewRecorder()
+	s.handleSeriesBooks(w, httptest.NewRequest("GET", base, nil))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("ambiguous title returned %d: %s", w.Code, w.Body)
+	}
+	for _, identity := range []string{"&id=erikson-witness", "&author=Steven+Erikson"} {
+		w = httptest.NewRecorder()
+		s.handleSeriesBooks(w, httptest.NewRequest("GET", base+identity, nil))
+		var result seriesBooksResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("response %d: %s (%v)", w.Code, w.Body, err)
+		}
+		if result.ID != "erikson-witness" || !result.Complete || !result.Monitored || result.OwnedCount != 1 ||
+			len(result.Books) != 2 || result.Books[0].LibraryBookID != "god" || result.Books[1].Title != "No Life Forsaken" {
+			t.Fatalf("unexpected reading order: %+v", result)
+		}
+	}
+}
+
+func TestSeriesBooks_OfflineCollisionScanAndLegacyMixedSafeguards(t *testing.T) {
+	t.Run("offline scan reconciles colliding series titles per author with extracted indices and dedup", func(t *testing.T) {
+		ctx := context.Background()
+		db := testutil.NewTestDB(t)
+		cat := catalog.New(db)
+		root := t.TempDir()
+
+		for _, item := range []struct {
+			author, dir, title string
+		}{
+			{"Steven Erikson", "The Witness vol 1", "The Witness vol 1"},
+			{"Steven Erikson", "The Witness Vol. 2", "The Witness Vol. 2"},
+			{"Grace Monroe", "The Witness vol 1", "The Witness vol 1"},
+		} {
+			p := filepath.Join(root, item.author, "The Witness", item.dir, item.title+" - "+item.author+".epub")
+			writeSeriesTestEPUB(t, p, `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>`+item.title+`</dc:title>
+    <dc:creator>`+item.author+`</dc:creator>
+  </metadata>
+</package>`)
+		}
+
+		report, err := catalog.ScanLibrary(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cat.ReconcileScanReport(ctx, report); err != nil {
+			t.Fatal(err)
+		}
+
+		// Add an unowned local duplicate variant onto Steven Erikson's series row.
+		var eriksonSeriesID, eriksonAuthorID string
+		if err := db.QueryRowContext(ctx, `SELECT s.id, s.author_id FROM series s JOIN authors a ON a.id=s.author_id WHERE s.title='The Witness' AND a.name='Steven Erikson'`).Scan(&eriksonSeriesID, &eriksonAuthorID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('erikson-dup',?,'The Witness Vol. 1 (The Witness, Book 1)',?,1)`, eriksonAuthorID, eriksonSeriesID); err != nil {
+			t.Fatal(err)
+		}
+
+		mt := testutil.NewMockTransportForTest(t) // PanicOnUnmocked=true; verifies zero network calls offline.
+		s := &Server{db: db, prowlarrHTTPClient: mt.Client(), baseOverrides: config.Overrides{LibraryRoot: root}}
+
+		w := httptest.NewRecorder()
+		s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=The+Witness", nil))
+		if w.Code != http.StatusConflict {
+			t.Fatalf("expected 409 for colliding series title, got %d: %s", w.Code, w.Body.String())
+		}
+
+		for _, query := range []string{"/api/series/books?title=The+Witness&author=Steven+Erikson", "/api/series/books?id=" + eriksonSeriesID} {
+			w = httptest.NewRecorder()
+			s.handleSeriesBooks(w, httptest.NewRequest("GET", query, nil))
+			if w.Code != http.StatusOK {
+				t.Fatalf("%s returned %d: %s", query, w.Code, w.Body.String())
+			}
+			var res seriesBooksResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+				t.Fatal(err)
+			}
+			if res.ID != eriksonSeriesID || res.Complete || res.OwnedCount != 2 || len(res.Books) != 2 ||
+				res.Books[0].SeriesIndexDisplay != "Book 1" || res.Books[1].SeriesIndexDisplay != "Book 2" {
+				t.Fatalf("unexpected scoped offline response for %s: %+v", query, res)
+			}
+		}
+
+		w = httptest.NewRecorder()
+		s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=The+Witness&author=Grace+Monroe", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for Monroe, got %d: %s", w.Code, w.Body.String())
+		}
+		var monroe seriesBooksResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &monroe); err != nil {
+			t.Fatal(err)
+		}
+		if monroe.ID == eriksonSeriesID || monroe.Complete || monroe.OwnedCount != 1 || len(monroe.Books) != 1 || monroe.Books[0].SeriesIndexDisplay != "Book 1" {
+			t.Fatalf("unexpected Monroe offline response: %+v", monroe)
+		}
+	})
+
+	t.Run("mixed-author legacy row skips provider lookup while keeping partial dates, extracted indices, and derivative filtering", func(t *testing.T) {
+		db := testutil.NewTestDB(t)
+		for _, query := range []string{
+			`INSERT INTO settings(key,value) VALUES('hardcover_api_key','test')`,
+			`INSERT INTO authors(id,name,sort_name) VALUES('a1','Author One','One, Author'),('a2','Author Two','Two, Author')`,
+			`INSERT INTO series(id,title,monitored) VALUES('legacy-mixed','Mixed Legacy',1)`,
+			`INSERT INTO books(id,author_id,title,series_id,series_index,release_date) VALUES('b1','a1','Mixed Legacy vol 1','legacy-mixed',NULL,'2099-06')`,
+			`INSERT INTO books(id,author_id,title,series_id,series_index,release_date) VALUES('b2','a2','Second Tale','legacy-mixed',2,'2099')`,
+			`INSERT INTO books(id,author_id,title,subtitle,series_id,series_index) VALUES('b_deriv','a1','Second Tale','Bonus Chapter','legacy-mixed',2.1)`,
+		} {
+			if _, err := db.Exec(query); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		mt := testutil.NewMockTransportForTest(t) // No Hardcover routes: would panic if provider lookup ran.
+		s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
+		w := httptest.NewRecorder()
+		s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?id=legacy-mixed", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var res seriesBooksResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+			t.Fatal(err)
+		}
+		if res.Complete || len(res.Books) != 2 {
+			t.Fatalf("expected incomplete response with 2 non-derivative books, got %+v", res)
+		}
+		if res.Books[0].SeriesIndexDisplay != "Book 1" || res.Books[0].PublishDate != "2099-06" || res.Books[0].State != "Scheduled" ||
+			res.Books[1].SeriesIndexDisplay != "Book 2" || res.Books[1].PublishDate != "2099" || res.Books[1].State != "Scheduled" {
+			t.Fatalf("unexpected mixed legacy books: %+v", res.Books)
+		}
+	})
 }

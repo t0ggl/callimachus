@@ -44,7 +44,7 @@ it.each([
   expect(within(series).getByRole('button', { name: 'The Obsidian Archive' })).toHaveFocus();
   expect(scrollSeries).toHaveBeenCalledExactlyOnceWith({ block: 'nearest' });
   await user.keyboard('{Enter}');
-  expect(onSelectSeries).toHaveBeenCalledExactlyOnceWith('The Obsidian Archive');
+  expect(onSelectSeries).toHaveBeenCalledExactlyOnceWith({ title: 'The Obsidian Archive', id: 'ser_1' });
 
   await user.keyboard('j');
   expect(series).not.toHaveClass(seriesHighlight);

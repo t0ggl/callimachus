@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -17,7 +18,7 @@ import (
 // Scan timestamps live in SQLite so restarts preserve the cadence.
 type Monitor struct {
 	DB       *database.DB
-	Discover func(context.Context, string, string) ([]metadata.BookMetadata, error)
+	Discover func(context.Context, string, string, []metadata.BookMetadata) ([]metadata.BookMetadata, error)
 	Search   func(context.Context, string) error
 	mu       sync.Mutex
 }
@@ -101,10 +102,7 @@ func (m *Monitor) Tick(ctx context.Context, now time.Time) error {
 			next = next.AddDate(0, 0, day-1)
 			if e.discover || (e.monitored && (last.IsZero() || !now.Before(next))) {
 				slog.DebugContext(ctx, "catalog discovery check", "entity_kind", kind, "entity_id", e.id)
-				found, err := m.Discover(ctx, kind, e.name)
-				if err == nil {
-					err = m.persist(ctx, kind, e.name, found)
-				}
+				err := m.discover(ctx, kind, e.id, e.name)
 				if err != nil {
 					failures = append(failures, err.Error())
 					continue
@@ -141,36 +139,90 @@ func (m *Monitor) Tick(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-func (m *Monitor) persist(ctx context.Context, kind, name string, found []metadata.BookMetadata) error {
+func (m *Monitor) discover(ctx context.Context, kind, id, name string) error {
 	c := New(m.DB)
+	var known []metadata.BookMetadata
+	if kind == "series" {
+		var err error
+		known, err = c.SeriesEvidence(ctx, id)
+		if errors.Is(err, ErrAmbiguousSeries) {
+			// A mixed legacy row needs explicit correction before monitoring can infer its identity.
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	found, err := m.Discover(ctx, kind, name, known)
+	if err != nil {
+		return err
+	}
+	return m.persist(ctx, kind, id, name, known, found)
+}
+
+func (m *Monitor) persist(ctx context.Context, kind, id, name string, known, found []metadata.BookMetadata) error {
+	c := New(m.DB)
+	var authors []string
+	var providerID int
+	for _, b := range known {
+		authors = append(authors, b.Authors...)
+		if b.HardcoverSeriesID > 0 {
+			providerID = b.HardcoverSeriesID
+		}
+	}
+	// Establish a single provider ID before writing any results. Mixed responses
+	// from an unpinned lookup give no safe way to choose a series.
+	if kind == "series" && providerID == 0 {
+		for _, b := range found {
+			if b.HardcoverSeriesID == 0 || !strings.EqualFold(b.Series, name) || !metadata.SharesAuthor(b.Authors, authors) {
+				continue
+			}
+			if providerID != 0 && providerID != b.HardcoverSeriesID {
+				return nil
+			}
+			providerID = b.HardcoverSeriesID
+		}
+	}
+	pinned := len(known) == 1 && known[0].HardcoverSeriesID > 0
+	if kind == "series" && providerID > 0 && !pinned {
+		result, err := m.DB.ExecContext(ctx, `UPDATE series SET hardcover_id = ? WHERE id = ?
+   AND (hardcover_id IS NULL OR hardcover_id = ?) AND NOT EXISTS
+   (SELECT 1 FROM series WHERE hardcover_id = ? AND id <> ?)`, providerID, id, providerID, providerID, id)
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil || n == 0 {
+			return err
+		}
+	}
 	for _, b := range found {
-		if b.Title == "" || len(b.Authors) == 0 {
+		if b.Title == "" || len(b.Authors) == 0 || b.Authors[0] == "" {
 			continue
 		}
-		matches := false
 		if kind == "series" {
-			matches = strings.EqualFold(b.Series, name)
-		} else {
-			for _, a := range b.Authors {
-				if strings.EqualFold(metadata.NormalizeAuthor(a), metadata.NormalizeAuthor(name)) {
-					matches = true
-				}
+			if !strings.EqualFold(b.Series, name) || (providerID > 0 && b.HardcoverSeriesID != providerID) ||
+				(!pinned && !metadata.SharesAuthor(b.Authors, authors)) {
+				continue
 			}
-		}
-		if !matches {
+		} else if !metadata.SharesAuthor(b.Authors, []string{name}) {
 			continue
 		}
 		author, err := c.GetOrCreateAuthor(ctx, b.Authors[0])
 		if err != nil {
 			return err
 		}
-		series, err := c.GetOrCreateSeries(ctx, b.Series)
-		if err != nil {
-			return err
-		}
 		book := &database.Book{AuthorID: author.ID, Title: b.Title, SeriesIndex: b.SeriesIndex, Synopsis: &b.Description}
-		if series != nil {
-			book.SeriesID = &series.ID
+		if kind == "series" {
+			book.SeriesID = &id
+		} else {
+			series, err := c.GetOrCreateSeries(ctx, b.Series, author.ID, b.HardcoverSeriesID)
+			if err != nil {
+				return err
+			}
+			if series != nil {
+				book.SeriesID = &series.ID
+			}
 		}
 		if releaseDate := metadata.NormalizeReleaseDate(b.PublishDate, b.Year); releaseDate != "" {
 			book.ReleaseDate = &releaseDate

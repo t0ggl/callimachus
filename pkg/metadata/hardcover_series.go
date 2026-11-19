@@ -30,7 +30,7 @@ fragment SeriesBookFields on books {
  default_cover_edition { language { code2 code3 } edition_format publisher { name } }
  english_editions: editions(where: {language: {_or: [{code2: {_eq: "en"}}, {code3: {_eq: "eng"}}]}}, limit: 1) { id }
  contributions { author { name } contribution }
- book_series { series_position: position compilation series { id canonical_id } }
+ book_series { series_position: position compilation series { id canonical_id books_count canonical { books_count } } }
 }`
 	raw, err := p.catalogBooks(ctx, query, map[string]interface{}{"id": series.ID})
 	if err != nil {
@@ -65,12 +65,19 @@ fragment SeriesBookFields on books {
 		}
 
 		seen[b.ID] = true
-		// Preserve the local name so discovery persists books under the requested series.
-		b.BookSeries = []hardcoverBookSeries{{
-			SeriesPosition: membership.SeriesPosition,
-			Series:         hardcoverSeries{Name: title, BooksCount: series.BooksCount},
-		}}
 		book := mapHardcoverBookNode(&b)
+		// Use the requested membership even if the book features another series.
+		count := series.BooksCount
+		if count == 0 {
+			count = membership.Series.BooksCount
+			if membership.Series.Canonical != nil {
+				count = membership.Series.Canonical.BooksCount
+			}
+		}
+		applyHardcoverMembership(&book, hardcoverBookSeries{
+			SeriesPosition: membership.SeriesPosition,
+			Series:         hardcoverSeries{ID: series.ID, Name: title, BooksCount: count},
+		})
 		if book.SeriesIndex != nil {
 			position := *book.SeriesIndex
 			if i, ok := positions[position]; ok {
@@ -101,6 +108,13 @@ func findSeriesNamePattern(title string) string {
 }
 
 func (p *HardcoverProvider) findHardcoverSeries(ctx context.Context, title string, knownBooks []BookMetadata) (hardcoverSeries, error) {
+	var authors []string
+	for _, b := range knownBooks {
+		if b.HardcoverSeriesID > 0 {
+			return hardcoverSeries{ID: b.HardcoverSeriesID}, nil
+		}
+		authors = append(authors, b.Authors...)
+	}
 	pattern := findSeriesNamePattern(title)
 	if pattern == "" {
 		return hardcoverSeries{}, nil
@@ -125,37 +139,34 @@ func (p *HardcoverProvider) findHardcoverSeries(ctx context.Context, title strin
  linked: series(where: {book_series: {compilation: {_eq: false}, book: {_or: $known}}}) @include(if: $hasKnown) { ...SeriesIdentity }
 }
 fragment SeriesIdentity on series {
- id name books_count
- canonical { id name books_count }
+ id name books_count author { name }
+ canonical { id name books_count author { name } }
 }`
-	type seriesMatch struct {
-		hardcoverSeries
-		Canonical *hardcoverSeries `json:"canonical"`
-	}
 	var res struct {
 		Data struct {
-			Named  []seriesMatch `json:"named"`
-			Linked []seriesMatch `json:"linked"`
+			Named  []hardcoverSeries `json:"named"`
+			Linked []hardcoverSeries `json:"linked"`
 		} `json:"data"`
 	}
 	if err := p.doQuery(ctx, query, map[string]any{"name": pattern, "known": known, "hasKnown": len(known) != 0}, &res); err != nil {
 		return hardcoverSeries{}, err
 	}
 
-	byID := func(matches []seriesMatch) map[int]hardcoverSeries {
+	byID := func(matches []hardcoverSeries) map[int]hardcoverSeries {
 		series := make(map[int]hardcoverSeries, len(matches))
-		for _, match := range matches {
-			s := match.hardcoverSeries
-			if match.Canonical != nil {
-				s = *match.Canonical
+		for _, s := range matches {
+			if s.Canonical != nil {
+				s = *s.Canonical
 			}
-			if s.ID != 0 {
+			if s.ID > 0 && (len(authors) == 0 || s.Author == nil ||
+				SharesAuthor(authors, []string{s.Author.Name})) {
 				series[s.ID] = s
 			}
 		}
 		return series
 	}
 	named, linked := byID(res.Data.Named), byID(res.Data.Linked)
+
 	// When both lookups find candidates, require them to agree on the series.
 	candidates := named
 	if len(named) == 0 {
@@ -164,6 +175,13 @@ fragment SeriesIdentity on series {
 		maps.DeleteFunc(candidates, func(id int, _ hardcoverSeries) bool {
 			_, matches := linked[id]
 			return !matches
+		})
+	}
+	if len(authors) > 0 {
+		// An ownerless named result needs a matching local book as evidence.
+		maps.DeleteFunc(candidates, func(id int, series hardcoverSeries) bool {
+			_, linkedMatch := linked[id]
+			return series.Author == nil && !linkedMatch
 		})
 	}
 	if len(candidates) == 1 {

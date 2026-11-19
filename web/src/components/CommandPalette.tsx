@@ -1,9 +1,10 @@
-import { EntityLink } from './EntityLink';
+import { EntityLink, entityURL } from './EntityLink';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, Book as BookIcon, User, Layers, ArrowRight, CornerDownLeft, X } from 'lucide-react';
 import { Book, Author, Series, RequestMetadata, RequestType } from '../types';
 
 import { DiscoveryResults } from './DiscoveryResults';
+import type { SeriesSelection } from '../types';
 import { SeriesBadge } from './SeriesBadge';
 import { SeriesDetailModal } from './SeriesDetailModal';
 
@@ -44,7 +45,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onNavigate,
   onSelectBook,
 }) => {
-  const [selectedSeries, setSelectedSeries] = useState<string | null>(null);
+  const [selectedSeries, setSelectedSeries] = useState<SeriesSelection | null>(null);
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -162,7 +163,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         subtitle: `${s.totalBooks || 'Multiple'} volumes • ${s.status || 'Active'}`,
         badge: 'Series',
         action: () => {
-          window.location.hash = `#/series/${encodeURIComponent(s.title)}`; closePalette();
+          window.location.hash = entityURL('series', s.title, s.id); closePalette();
         },
       });
     });
@@ -211,7 +212,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     <>
     {selectedSeries && (
       <SeriesDetailModal
-        title={selectedSeries}
+        {...selectedSeries}
         onClose={() => setSelectedSeries(null)}
         onOpenBook={onOpenBook ? (id) => { setSelectedSeries(null); onOpenBook(id); } : undefined}
       />
@@ -328,6 +329,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                         {item.book && (
                           <SeriesBadge
                             title={item.book.seriesTitle}
+                            id={item.book.seriesId}
+                            author={item.book.authorName}
                             index={item.book.seriesIndex}
                             total={series.find((s) => s.id === item.book?.seriesId)?.totalBooks}
                             onSelect={setSelectedSeries}

@@ -26,6 +26,7 @@ type seriesBook struct {
 }
 
 type seriesBooksResponse struct {
+	ID          string       `json:"id,omitempty"`
 	Title       string       `json:"title"`
 	Description string       `json:"description,omitempty"`
 	Status      string       `json:"status,omitempty"`
@@ -39,7 +40,8 @@ type seriesBooksResponse struct {
 
 func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 	title := strings.TrimSpace(r.URL.Query().Get("title"))
-	if title == "" || len(title) > 500 {
+	seriesID, author, hardcoverID := requestedSeriesIdentity(r)
+	if (title == "" && seriesID == "") || len(title) > 500 {
 		http.Error(w, "Enter a series title", 400)
 		return
 	}
@@ -54,15 +56,43 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 	var seriesTotalBooks int
 	var seriesMonitored bool
 	books := make([]seriesBook, 0)
+	var known []metadata.BookMetadata
+	lookup := true
 
 	if s.db != nil {
-		err = s.db.QueryRowContext(r.Context(),
-			`SELECT title, COALESCE(description, ''), COALESCE(status, ''), COALESCE(total_books, 0), monitored FROM series WHERE title=? COLLATE NOCASE LIMIT 1`,
-			title,
-		).Scan(&seriesTitle, &seriesDescription, &seriesStatus, &seriesTotalBooks, &seriesMonitored)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		c := catalog.New(s.db)
+		series, err := c.FindSeries(r.Context(), seriesID, title, author, hardcoverID)
+		switch {
+		case errors.Is(err, catalog.ErrAmbiguousSeries):
+			http.Error(w, "Choose a series by author or catalog ID", http.StatusConflict)
+			return
+		case errors.Is(err, sql.ErrNoRows):
+			if seriesID != "" {
+				http.Error(w, "Series not found", http.StatusNotFound)
+				return
+			}
+		case err != nil:
 			http.Error(w, "Unable to load series", 500)
 			return
+		default:
+			seriesID, seriesTitle, seriesStatus = series.ID, series.Title, series.Status
+			if series.Description != nil {
+				seriesDescription = *series.Description
+			}
+			if series.TotalBooks != nil {
+				seriesTotalBooks = *series.TotalBooks
+			}
+			err = s.db.QueryRowContext(r.Context(), `SELECT monitored FROM series WHERE id=?`, seriesID).Scan(&seriesMonitored)
+			if err != nil {
+				http.Error(w, "Unable to load series", 500)
+				return
+			}
+			known, err = c.SeriesEvidence(r.Context(), seriesID)
+			if err != nil && !errors.Is(err, catalog.ErrAmbiguousSeries) {
+				http.Error(w, "Unable to load series authors", 500)
+				return
+			}
+			lookup = len(known) > 0
 		}
 
 		formatsByBook := make(map[string][]string)
@@ -71,9 +101,8 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 			FROM book_editions e
 			JOIN media_assets m ON m.edition_id=e.id
 			JOIN books b ON b.id=e.book_id
-			JOIN series s ON s.id=b.series_id
-			WHERE s.title=? COLLATE NOCASE
-			ORDER BY UPPER(e.format) ASC`, title)
+			WHERE b.series_id=?
+			ORDER BY UPPER(e.format) ASC`, seriesID)
 		if err != nil {
 			http.Error(w, "Unable to load series", 500)
 			return
@@ -102,9 +131,8 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 			       COALESCE(b.synopsis, ''), `+bookAvailabilitySQL+`
 			FROM books b
 			JOIN authors a ON a.id=b.author_id
-			JOIN series s ON s.id=b.series_id
-			WHERE s.title=? COLLATE NOCASE
-			ORDER BY b.id`, title)
+			WHERE b.series_id=?
+			ORDER BY b.id`, seriesID)
 		if err != nil {
 			http.Error(w, "Unable to load series", 500)
 			return
@@ -156,17 +184,22 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 		books = deduplicateLocalSeriesBooks(books, seriesTitle)
 	}
 
+	if len(known) == 0 && author != "" {
+		known = append(known, metadata.BookMetadata{Authors: []string{author}})
+	}
+	for i := range known {
+		clean := stripSeriesTitleAnnotation(known[i].Title)
+		known[i].Title = strings.TrimSpace(metadata.StripDiscoveryAuthorPrefix(clean, known[i].Authors...))
+	}
+	if hardcoverID > 0 && seriesID == "" {
+		known = append(known, metadata.BookMetadata{HardcoverSeriesID: hardcoverID})
+	}
+
 	complete := false
-	if cfg.Settings.HardcoverAPIKey != "" {
+	if lookup && cfg.Settings.HardcoverAPIKey != "" {
 		client := s.prowlarrHTTPClient
 		if client == nil {
 			client = &http.Client{Timeout: 20 * time.Second}
-		}
-		known := make([]metadata.BookMetadata, 0, len(books))
-		for _, b := range books {
-			title := seriesTitleAnnotation.ReplaceAllString(b.Title, "")
-			title = metadata.StripDiscoveryAuthorPrefix(title, b.Authors...)
-			known = append(known, metadata.BookMetadata{Title: strings.TrimSpace(title), Authors: b.Authors})
 		}
 		found, lookupErr := metadata.NewHardcoverProvider(cfg.Settings.HardcoverAPIKey, metadata.WithHardcoverClient(client)).SeriesBooks(r.Context(), seriesTitle, known...)
 		if lookupErr == nil && len(found) > 0 {
@@ -274,6 +307,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(seriesBooksResponse{
+		ID:          seriesID,
 		Title:       seriesTitle,
 		Description: seriesDescription,
 		Status:      seriesStatus,
@@ -518,6 +552,9 @@ func mergeSeriesBookMetadata(local *seriesBook, remote metadata.BookMetadata) {
 	}
 	if remote.Series != "" && (local.Series == "" || !owned) {
 		local.Series = remote.Series
+	}
+	if remote.HardcoverSeriesID > 0 && (local.HardcoverSeriesID == 0 || !owned) {
+		local.HardcoverSeriesID = remote.HardcoverSeriesID
 	}
 	if remote.SeriesTotal > 0 && (local.SeriesTotal == 0 || !owned) {
 		local.SeriesTotal = remote.SeriesTotal

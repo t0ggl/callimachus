@@ -141,48 +141,6 @@ func (c *Catalog) GetSeriesByID(ctx context.Context, id string) (*database.Serie
 	return scanSeries(row)
 }
 
-// GetSeriesByTitle retrieves a series by title (case-insensitive).
-func (c *Catalog) GetSeriesByTitle(ctx context.Context, title string) (*database.Series, error) {
-	query := `SELECT id, title, description, total_books, status, created_at, updated_at FROM series WHERE title = ? COLLATE NOCASE LIMIT 1;`
-	row := c.db.QueryRowContext(ctx, query, strings.TrimSpace(title))
-	return scanSeries(row)
-}
-
-// GetOrCreateSeries finds a series by title or creates a new record.
-func (c *Catalog) GetOrCreateSeries(ctx context.Context, title string) (*database.Series, error) {
-	clean := metadata.SanitizeTitle(title)
-	if clean == "" {
-		return nil, nil
-	}
-
-	series, err := c.GetSeriesByTitle(ctx, clean)
-	if err == nil {
-		return series, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("lookup series: %w", err)
-	}
-
-	newSeries := &database.Series{
-		ID:        uuid.NewString(),
-		Title:     clean,
-		Status:    "ongoing",
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
-	}
-
-	query := `INSERT INTO series (id, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?);`
-	_, err = c.db.ExecContext(ctx, query, newSeries.ID, newSeries.Title, newSeries.Status, newSeries.CreatedAt, newSeries.UpdatedAt)
-	if err != nil {
-		if s, lookupErr := c.GetSeriesByTitle(ctx, clean); lookupErr == nil {
-			return s, nil
-		}
-		return nil, fmt.Errorf("create series: %w", err)
-	}
-
-	return newSeries, nil
-}
-
 // UpsertSeries creates or updates a series record.
 func (c *Catalog) UpsertSeries(ctx context.Context, s *database.Series) error {
 	if s.ID == "" {
@@ -277,7 +235,9 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 			}
 		}
 		if updated {
-			_ = c.UpsertBook(ctx, existing)
+			if err := c.UpsertBook(ctx, existing); err != nil {
+				return nil, err
+			}
 		}
 		return existing, nil
 	}
@@ -582,7 +542,7 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 	// 2. Series (if present)
 	var series *database.Series
 	if book.Series != "" {
-		s, err := c.GetOrCreateSeries(ctx, book.Series)
+		s, err := c.GetOrCreateSeries(ctx, book.Series, author.ID, 0)
 		if err != nil {
 			return nil, fmt.Errorf("persist series: %w", err)
 		}
@@ -760,7 +720,7 @@ func (c *Catalog) ReconcileScannedBook(ctx context.Context, sb *ScannedBook) (*I
 
 	var series *database.Series
 	if sb.Series != "" {
-		s, err := c.GetOrCreateSeries(ctx, sb.Series)
+		s, err := c.GetOrCreateSeries(ctx, sb.Series, author.ID, 0)
 		if err != nil {
 			return nil, fmt.Errorf("reconcile series: %w", err)
 		}

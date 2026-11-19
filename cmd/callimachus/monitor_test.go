@@ -214,7 +214,7 @@ func TestCatalogMonitoringRespectsOpenLibraryEnabled(t *testing.T) {
 		mt.RegisterString("/search.json", 200, `{"docs":[{"key":"/works/OL1W","title":"OpenLibrary Work","author_name":["Author"],"first_publish_year":2024}]}`, nil)
 		s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
 		m := s.newCatalogMonitor()
-		books, err := m.Discover(context.Background(), "authors", "Author")
+		books, err := m.Discover(context.Background(), "authors", "Author", nil)
 		if err != nil {
 			t.Fatalf("Discover failed: %v", err)
 		}
@@ -231,7 +231,7 @@ func TestCatalogMonitoringRespectsOpenLibraryEnabled(t *testing.T) {
 		mt := testutil.NewMockTransportForTest(t) // PanicOnUnmocked is true; /search.json is NOT registered
 		s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
 		m := s.newCatalogMonitor()
-		if _, err := m.Discover(context.Background(), "authors", "Author"); err == nil {
+		if _, err := m.Discover(context.Background(), "authors", "Author", nil); err == nil {
 			t.Fatal("expected error when OpenLibrary is disabled and Hardcover is unconfigured")
 		}
 	})

@@ -1,7 +1,7 @@
 import { EntityLink } from './EntityLink';
 import { useState, useEffect, useRef } from 'react';
 import { Check, Plus, Loader2, BookOpen, AlertCircle, CheckCircle2, Search } from 'lucide-react';
-import { RequestMetadata, RequestType } from '../types';
+import { RequestMetadata, RequestType, SeriesSelection } from '../types';
 import { SeriesBadge } from './SeriesBadge';
 import { SeriesDetailModal } from './SeriesDetailModal';
 
@@ -13,6 +13,7 @@ type Match = {
   description?: string;
   cover_url?: string;
   series?: string;
+  hardcover_series_id?: number;
   series_index?: number;
   series_total?: number;
   title: string;
@@ -82,7 +83,7 @@ function DiscoveryCover({ coverUrl, title }: { coverUrl?: string; title: string 
 }
 
 export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmitRequest, onOpenBook }: Props) {
-  const [selectedSeries, setSelectedSeries] = useState<string | null>(null);
+  const [selectedSeries, setSelectedSeries] = useState<SeriesSelection | null>(null);
   const [selectedFormat, setSelectedFormat] = useState<RequestType>();
   const format = selectedFormat ?? defaultSearchFormat;
   const [matches, setMatches] = useState<Match[]>([]);
@@ -154,6 +155,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
         book_id: m.library_book_id,
         cover_url: m.cover_url,
         series: m.series,
+        hardcover_series_id: m.hardcover_series_id,
         series_index: m.series_index,
         synopsis: m.description,
       });
@@ -175,7 +177,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
     <div className="space-y-4 text-zinc-100">
       {selectedSeries && (
         <SeriesDetailModal
-          title={selectedSeries}
+          {...selectedSeries}
           onClose={() => setSelectedSeries(null)}
           onOpenBook={
             onOpenBook
@@ -286,6 +288,8 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
                     </h3>
                     <SeriesBadge
                       title={m.series}
+                      author={m.authors?.[0]}
+                      hardcoverID={m.hardcover_series_id}
                       index={m.series_index}
                       total={m.series_total}
                       onSelect={setSelectedSeries}

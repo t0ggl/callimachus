@@ -1,21 +1,21 @@
 {
   "data": {
     "books": [
-      {"id":1,"title":"A Court of Thorns and Roses","default_cover_edition":{"language":{"code2":"en"}},"book_series":[{"series_position":1,"series":{"name":"A Court of Thorns and Roses"}}]},
-      {"id":2,"title":"A Court of Thorns and Roses (Dramatized Adaptation)","book_series":[{"series_position":1.1,"series":{"name":"A Court of Thorns and Roses"}}]},
-      {"id":3,"title":"A Court of Thorns and Roses (Part 2 of 2)","subtitle":"Dramatized Adaptation","book_series":[{"series_position":1.2,"series":{"name":"A Court of Thorns and Roses"}}]},
-      {"id":4,"title":"A Court of Mist and Fury","book_series":[{"series_position":2,"series":{"name":"A Court of Thorns and Roses"}}]},
-      {"id":5,"title":"Wings and Embers is a deleted scene first included in Target editions of A Court of Mist and Fury. Bloomsbury later posted it online.","is_partial_book":null,"parent_book_id":null,"book_series":[{"series_position":2.1,"series":{"name":"A Court of Thorns and Roses"}}]},
-      {"id":6,"title":"A Court of Mist and Fury (Part 2 of 2)","default_cover_edition":{"publisher":{"name":"Graphic Audio LLC"}},"book_series":[{"series_position":2.2,"series":{"name":"A Court of Thorns and Roses"}}]},
-      {"id":7,"title":"A Court of Wings and Ruin","book_series":[{"series_position":3,"series":{"name":"A Court of Thorns and Roses"}}]},
-      {"id":8,"title":"A Court of Frost and Starlight","subtitle":"A Novella","description":"This original novella is also available as a dramatized adaptation. Read a bonus excerpt from the book online.","default_cover_edition":{"edition_format":"Dramatized Audiobook","publisher":{"name":"GraphicAudio"}},"book_series":[{"series_position":3.5,"series":{"name":"A Court of Thorns and Roses"}}]},
-      {"id":9,"title":"A Court of Frost and Starlight: Part 1","is_partial_book":true,"book_series":[{"series_position":3.5,"series":{"name":"A Court of Thorns and Roses"}}],"users_count":1000},
-      {"id":10,"title":"An Evening at the Court","parent_book_id":8,"book_series":[{"series_position":3.6,"series":{"name":"A Court of Thorns and Roses"}}]},
-      {"id":11,"title":"A Court of Silver Flames","book_series":[{"series_position":4,"series":{"name":"A Court of Thorns and Roses"}}]},
-      {"id":12,"title":"A Court of Silver Flames","subtitle":"Promotional Excerpt","book_series":[{"series_position":4.1,"series":{"name":"A Court of Thorns and Roses"}}]},
-      {"id":13,"title":"A Court of Silver Flames (Part 2)","default_cover_edition":{"edition_format":"Dramatized Audiobook"},"book_series":[{"series_position":4.2,"series":{"name":"A Court of Thorns and Roses"}}]},
-      {"id":14,"title":"Untitled (Part 1 of 2)","book_series":[{"series_position":5,"series":{"name":"A Court of Thorns and Roses"}}]},
-      {"id":15,"title":"A Court of Silver Flames (GraphicAudio)","book_series":[{"series_position":4.3,"series":{"name":"A Court of Thorns and Roses"}}]}
+      {"id":1,"title":"A Court of Thorns and Roses","default_cover_edition":{"language":{"code2":"en"}},"book_series":[{"series_position":1,"series":{"id": 41, "name":"A Court of Thorns and Roses"}}]},
+      {"id":2,"title":"A Court of Thorns and Roses (Dramatized Adaptation)","book_series":[{"series_position":1.1,"series":{"id": 41, "name":"A Court of Thorns and Roses"}}]},
+      {"id":3,"title":"A Court of Thorns and Roses (Part 2 of 2)","subtitle":"Dramatized Adaptation","book_series":[{"series_position":1.2,"series":{"id": 41, "name":"A Court of Thorns and Roses"}}]},
+      {"id":4,"title":"A Court of Mist and Fury","book_series":[{"series_position":2,"series":{"id": 41, "name":"A Court of Thorns and Roses"}}]},
+      {"id":5,"title":"Wings and Embers is a deleted scene first included in Target editions of A Court of Mist and Fury. Bloomsbury later posted it online.","is_partial_book":null,"parent_book_id":null,"book_series":[{"series_position":2.1,"series":{"id": 41, "name":"A Court of Thorns and Roses"}}]},
+      {"id":6,"title":"A Court of Mist and Fury (Part 2 of 2)","default_cover_edition":{"publisher":{"name":"Graphic Audio LLC"}},"book_series":[{"series_position":2.2,"series":{"id": 41, "name":"A Court of Thorns and Roses"}}]},
+      {"id":7,"title":"A Court of Wings and Ruin","book_series":[{"series_position":3,"series":{"id": 41, "name":"A Court of Thorns and Roses"}}]},
+      {"id":8,"title":"A Court of Frost and Starlight","subtitle":"A Novella","description":"This original novella is also available as a dramatized adaptation. Read a bonus excerpt from the book online.","default_cover_edition":{"edition_format":"Dramatized Audiobook","publisher":{"name":"GraphicAudio"}},"book_series":[{"series_position":3.5,"series":{"id": 41, "name":"A Court of Thorns and Roses"}}]},
+      {"id":9,"title":"A Court of Frost and Starlight: Part 1","is_partial_book":true,"book_series":[{"series_position":3.5,"series":{"id": 41, "name":"A Court of Thorns and Roses"}}],"users_count":1000},
+      {"id":10,"title":"An Evening at the Court","parent_book_id":8,"book_series":[{"series_position":3.6,"series":{"id": 41, "name":"A Court of Thorns and Roses"}}]},
+      {"id":11,"title":"A Court of Silver Flames","book_series":[{"series_position":4,"series":{"id": 41, "name":"A Court of Thorns and Roses"}}]},
+      {"id":12,"title":"A Court of Silver Flames","subtitle":"Promotional Excerpt","book_series":[{"series_position":4.1,"series":{"id": 41, "name":"A Court of Thorns and Roses"}}]},
+      {"id":13,"title":"A Court of Silver Flames (Part 2)","default_cover_edition":{"edition_format":"Dramatized Audiobook"},"book_series":[{"series_position":4.2,"series":{"id": 41, "name":"A Court of Thorns and Roses"}}]},
+      {"id":14,"title":"Untitled (Part 1 of 2)","book_series":[{"series_position":5,"series":{"id": 41, "name":"A Court of Thorns and Roses"}}]},
+      {"id":15,"title":"A Court of Silver Flames (GraphicAudio)","book_series":[{"series_position":4.3,"series":{"id": 41, "name":"A Court of Thorns and Roses"}}]}
     ]
   }
 }
