@@ -2,12 +2,15 @@ import { EntityLink } from './EntityLink';
 import React, { useEffect, useState } from 'react';
 import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download } from 'lucide-react';
 import { ManualSearch } from './ManualSearch';
+import { MetadataRepairPanel } from './MetadataRepairPanel';
 import { Book } from '../types';
 
 interface BookDetailModalProps {
   book: Book | null;
   onClose: () => void;
   activity?: React.ReactNode;
+  isAdmin?: boolean;
+  onMetadataApplied?: () => void;
 }
 
 function formatBytes(bytes?: number): string {
@@ -28,8 +31,10 @@ function formatDuration(seconds?: number): string {
   return `${mins}m`;
 }
 
-export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose, activity }) => {
+export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose, activity, isAdmin, onMetadataApplied }) => {
   const dialog = React.useRef<HTMLDialogElement>(null);
+  const fixButton = React.useRef<HTMLButtonElement>(null);
+  const [repairBookID, setRepairBookID] = useState<string>();
   const [showDownloadOptions, setShowDownloadOptions] = useState(false);
   useEffect(() => {
     const element = dialog.current;
@@ -38,6 +43,9 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
   }, [Boolean(book)]);
 
   if (!book) return null;
+  const canRepair = isAdmin && book.editions.some((edition) =>
+    edition.assets.some((asset) => asset.filename?.toLowerCase().endsWith('.epub')));
+  const repairing = canRepair && repairBookID === book.id;
 
   return (
     <>
@@ -49,7 +57,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
       onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       <div className="max-h-[90dvh] flex flex-col">
-        {!activity && <div className="px-6 pt-4 flex flex-wrap items-center gap-3">
+        {!activity && !repairing && <div className="px-6 pt-4 flex flex-wrap items-center gap-3">
           <button type="button" onClick={() => setShowDownloadOptions(true)}
             className="inline-flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300">
             <Download size={16} aria-hidden="true" />
@@ -93,7 +101,13 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
         </div>
 
         {/* Content body */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        {repairing ? (
+          <MetadataRepairPanel key={book.id} bookID={book.id} onApplied={onMetadataApplied}
+            onBack={() => {
+              setRepairBookID(undefined);
+              requestAnimationFrame(() => fixButton.current?.focus());
+            }} />
+        ) : <div className="flex-1 overflow-y-auto p-6 space-y-6">
           <div className="flex flex-col sm:flex-row gap-6">
             {/* Cover art */}
             <div className="w-40 sm:w-48 shrink-0">
@@ -165,10 +179,18 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
 
           {/* Editions & File Assets */}
           <div className="space-y-4 border-t border-zinc-800 pt-5">
-            <h4 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
-              <HardDrive className="w-4 h-4 text-zinc-400" />
-              Available files
-            </h4>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h4 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
+                <HardDrive className="w-4 h-4 text-zinc-400" />
+                Available files
+              </h4>
+              {canRepair && (
+                <button ref={fixButton} type="button" onClick={() => setRepairBookID(book.id)}
+                  className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300">
+                  Fix Metadata
+                </button>
+              )}
+            </div>
 
             <div className="space-y-3">
               {book.editions.length === 0 && <p className="text-xs text-zinc-400">No files available.</p>}
@@ -246,17 +268,17 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
               ))}
             </div>
           </div>
-        </div>
+        </div>}
 
         {/* Footer */}
-        <div className="px-6 py-3 border-t border-zinc-800 bg-zinc-950/60 flex justify-end">
+        {!repairing && <div className="px-6 py-3 border-t border-zinc-800 bg-zinc-950/60 flex justify-end">
           <button
             onClick={onClose}
             className="px-4 py-1.5 text-xs font-medium text-zinc-300 hover:text-white bg-zinc-800 hover:bg-zinc-700 rounded-md transition-colors"
           >
             Close (Esc)
           </button>
-        </div>
+        </div>}
       </div>
     </dialog>
     {showDownloadOptions && <ManualSearch key={book.id}

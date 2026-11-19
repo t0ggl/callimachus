@@ -52,9 +52,13 @@ func parseContainer(files []*zip.File) (string, error) {
 	}
 	defer rc.Close()
 
-	data, err := io.ReadAll(rc)
+	const maxContainerBytes = 1 << 20
+	data, err := io.ReadAll(io.LimitReader(rc, maxContainerBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("%w: failed to read container data: %v", ErrMalformedContainer, err)
+	}
+	if len(data) > maxContainerBytes {
+		return "", fmt.Errorf("%w: container exceeds maximum size", ErrMalformedContainer)
 	}
 
 	var c containerXML

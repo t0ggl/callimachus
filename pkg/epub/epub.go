@@ -51,6 +51,8 @@ type nativeEPUB struct {
 	coverMetaItemID string
 	uniqueIDAttr    string
 	isEPUB3         bool
+	archive         *zip.Reader
+	identifiers     []rawIdentifier
 }
 
 // OpenNative opens an EPUB file and parses its metadata using the pure Go engine.
@@ -60,7 +62,26 @@ func OpenNative(filePath string) (EPUB, error) {
 		return nil, fmt.Errorf("%w: %v", ErrNotAZip, err)
 	}
 	defer zr.Close()
+	ep, err := parseNativeArchive(&zr.Reader)
+	if err != nil {
+		return nil, err
+	}
+	ep.path = filePath
+	ep.archive = nil
+	return ep, nil
+}
 
+// OpenNativeReader reads an EPUB from an already opened source, which must remain
+// open while writing an updated copy with WriteArchive.
+func OpenNativeReader(source io.ReaderAt, size int64) (*nativeEPUB, error) {
+	zr, err := zip.NewReader(source, size)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrNotAZip, err)
+	}
+	return parseNativeArchive(zr)
+}
+
+func parseNativeArchive(zr *zip.Reader) (*nativeEPUB, error) {
 	rootfilePath, err := parseContainer(zr.File)
 	if err != nil {
 		return nil, err
@@ -77,9 +98,12 @@ func OpenNative(filePath string) (EPUB, error) {
 	}
 	defer rc.Close()
 
-	rawOPF, err := io.ReadAll(rc)
+	rawOPF, err := io.ReadAll(io.LimitReader(rc, maxOPFBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("%w: failed to read OPF entry: %v", ErrMalformedOPF, err)
+	}
+	if len(rawOPF) > maxOPFBytes {
+		return nil, fmt.Errorf("%w: OPF exceeds maximum size", ErrMalformedOPF)
 	}
 
 	parsed, err := parseOPF(rawOPF)
@@ -90,7 +114,7 @@ func OpenNative(filePath string) (EPUB, error) {
 	opfDir := path.Dir(rootfilePath)
 
 	return &nativeEPUB{
-		path:            filePath,
+		archive:         zr,
 		rootfilePath:    rootfilePath,
 		opfDir:          opfDir,
 		rawOPF:          rawOPF,
@@ -99,8 +123,11 @@ func OpenNative(filePath string) (EPUB, error) {
 		coverMetaItemID: parsed.coverMetaItemID,
 		uniqueIDAttr:    parsed.uniqueIdentifier,
 		isEPUB3:         parsed.isEPUB3,
+		identifiers:     parsed.identifiers,
 	}, nil
 }
+
+const maxOPFBytes = 16 << 20
 
 func (e *nativeEPUB) Metadata() Metadata {
 	return e.metadata.Clone()
@@ -110,9 +137,23 @@ func (e *nativeEPUB) SetMetadata(m Metadata) {
 	e.metadata = m.Clone()
 }
 
+// WriteArchive writes replacement metadata and original book contents to a new
+// archive. The caller publishes the result only after the write succeeds.
+func (e *nativeEPUB) WriteArchive(target io.Writer, m Metadata) error {
+	if e.archive == nil {
+		return fmt.Errorf("WriteArchive requires an EPUB opened with OpenNativeReader")
+	}
+	newMeta := replacementMetadataXML(m, e.metadata, e.identifiers, e.uniqueIDAttr, e.coverMetaItemID, e.isEPUB3)
+	updatedOPF, err := replaceMetadataBlock(e.rawOPF, newMeta)
+	if err != nil {
+		return err
+	}
+	return writeArchive(e.archive, target, e.rootfilePath, updatedOPF)
+}
+
 func (e *nativeEPUB) Save(targetPath string) error {
-	newMetaBytes := serializeMetadataXML(e.metadata, e.uniqueIDAttr, e.coverMetaItemID, e.isEPUB3)
-	updatedOPF, err := replaceMetadataBlock(e.rawOPF, newMetaBytes)
+	newMeta := serializeMetadataXML(e.metadata, e.uniqueIDAttr, e.coverMetaItemID, e.isEPUB3, nil)
+	updatedOPF, err := replaceMetadataBlock(e.rawOPF, newMeta)
 	if err != nil {
 		return err
 	}
