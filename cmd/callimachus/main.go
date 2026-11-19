@@ -184,6 +184,15 @@ func NewServer(cfg Config) (*Server, error) {
 		DB:             db,
 		OIDCClient:     oidcClient,
 		FallbackAuth:   fallbackAuth,
+		UIPreferences: func(ctx context.Context) *auth.UIPreferences {
+			bundle := true
+			if resolved, loadErr := config.Load(ctx, db, baseOverrides); loadErr == nil {
+				bundle = resolved.Settings.BundleSeriesInLibrary
+			}
+			return &auth.UIPreferences{
+				BundleSeriesInLibrary: bundle,
+			}
+		},
 	})
 
 	// 3. User Book Requests Workflow

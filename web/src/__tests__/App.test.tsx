@@ -132,8 +132,9 @@ describe('App Integration', () => {
     expect(screen.getByRole('heading', { name: /Library/i })).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(screen.getByText('The Obsidian Path')).toBeInTheDocument();
+      expect(screen.getByText('The Obsidian Archive')).toBeInTheDocument();
     });
+    expect(screen.getByTestId('series-card-ser_1')).toBeInTheDocument();
   });
 
   it('navigates between views when clicking sidebar navigation', async () => {
@@ -188,8 +189,26 @@ describe('App Integration', () => {
     expect(screen.getByRole('heading', { name: /Activity/i })).toBeInTheDocument();
   });
 
-  it('opens and closes BookDetailModal when selecting a book', async () => {
+  it('opens and closes BookDetailModal when selecting a standalone book', async () => {
     const user = userEvent.setup({ delay: null });
+    const originalFetch = vi.mocked(global.fetch).getMockImplementation()!;
+    vi.mocked(global.fetch).mockImplementation((...args) => {
+      if (String(args[0]).includes('/api/books')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [
+            {
+              ...testBooks[0],
+              seriesId: undefined,
+              seriesTitle: undefined,
+              seriesIndex: undefined,
+              seriesIndexDisplay: undefined,
+            },
+          ],
+        } as unknown as Response);
+      }
+      return originalFetch(...args);
+    });
     render(<App />);
 
     await waitFor(() => {
@@ -216,12 +235,58 @@ describe('App Integration', () => {
     });
   });
 
+  it('opens SeriesDetailModal when clicking a bundled series card and opens owned BookDetailModal from it', async () => {
+    const user = userEvent.setup({ delay: null });
+    const originalFetch = vi.mocked(global.fetch).getMockImplementation()!;
+    vi.mocked(global.fetch).mockImplementation((...args) => {
+      if (String(args[0]).startsWith('/api/series/books')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            title: 'The Obsidian Archive',
+            status: 'ongoing',
+            monitored: true,
+            authors: ['Alden Thorne'],
+            total_books: 2,
+            owned_count: 1,
+            complete: true,
+            books: [
+              {
+                title: 'The Obsidian Path',
+                authors: ['Alden Thorne'],
+                series_index: 1,
+                series_index_display: 'Book 1',
+                formats: ['EPUB', 'M4B'],
+                library_book_id: 'book_1',
+                monitored: true,
+              },
+            ],
+          }),
+        } as unknown as Response);
+      }
+      return originalFetch(...args);
+    });
+
+    render(<App />);
+
+    const seriesCard = await screen.findByTestId('series-card-ser_1');
+    await user.click(seriesCard);
+
+    const seriesDialog = await screen.findByRole('dialog', { name: 'The Obsidian Archive' });
+    expect(seriesDialog).toBeInTheDocument();
+
+    await user.click(await screen.findByRole('button', { name: 'The Obsidian Path' }));
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: /Details for The Obsidian Path/i })).toBeInTheDocument();
+    });
+  });
+
   it('switches between grid and list view in catalog', async () => {
     const user = userEvent.setup({ delay: null });
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('book-card-book_1')).toBeInTheDocument();
+      expect(screen.getByTestId('series-card-ser_1')).toBeInTheDocument();
     });
 
     // Switch to list view
@@ -229,12 +294,12 @@ describe('App Integration', () => {
     await user.click(listBtn);
 
     // Now table rows are present
-    expect(screen.getByTestId('book-row-book_1')).toBeInTheDocument();
+    expect(screen.getByTestId('series-row-ser_1')).toBeInTheDocument();
 
     // Switch back to grid view
     const gridBtn = screen.getByTestId('view-grid-btn');
     await user.click(gridBtn);
-    expect(screen.getByTestId('book-card-book_1')).toBeInTheDocument();
+    expect(screen.getByTestId('series-card-ser_1')).toBeInTheDocument();
   });
 
   it('redirects to /api/auth/oidc/login on 401 without rendering local sign-in UI or fetching protected endpoints', async () => {
@@ -324,7 +389,7 @@ describe('App Integration', () => {
       render(<App />);
 
       await waitFor(() => {
-        expect(screen.getByText('The Obsidian Path')).toBeInTheDocument();
+        expect(screen.getByText('The Obsidian Archive')).toBeInTheDocument();
       });
 
       // Sidebar Settings link must not be present
@@ -347,6 +412,85 @@ describe('App Integration', () => {
       expect(screen.queryByTestId('palette-item-nav_settings')).not.toBeInTheDocument();
     }
   );
+
+  it('applies non-admin bundling preference from /api/auth/me without requesting /api/settings', async () => {
+    const originalFetch = vi.mocked(global.fetch).getMockImplementation()!;
+    vi.mocked(global.fetch).mockImplementation((...args) => {
+      if (String(args[0]).includes('/api/auth/me')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            ...testUser,
+            role: 'requester',
+            preferences: { bundleSeriesInLibrary: false },
+          }),
+        } as unknown as Response);
+      }
+      return originalFetch(...args);
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('book-card-book_1')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('series-card-ser_1')).not.toBeInTheDocument();
+
+    const calledUrls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(calledUrls).not.toContain('/api/settings');
+  });
+
+  it('allows admin to toggle bundle series in Settings and updates Library view', async () => {
+    const user = userEvent.setup({ delay: null });
+    const fetchMock = vi.mocked(global.fetch);
+    const existingFetch = fetchMock.getMockImplementation()!;
+    let currentBundle = true;
+    fetchMock.mockImplementation((url, options) => {
+      if (url !== '/api/settings') return existingFetch(url, options);
+      if (options?.method === 'PUT') {
+        const body = JSON.parse(String(options.body));
+        currentBundle = Boolean(body.library?.bundleSeriesInLibrary);
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            indexers: [],
+            library: {
+              rootPath: './books',
+              stagingPollInterval: '5s',
+              indexerSyncInterval: '15m0s',
+              bundleSeriesInLibrary: currentBundle,
+            },
+            qualityProfile: {
+              id: 'default',
+              name: 'Standard Audiobook',
+            },
+          })
+        )
+      );
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId('series-card-ser_1')).toBeInTheDocument());
+
+    await user.click(await screen.findByTestId('nav-settings'));
+    await user.click(await screen.findByTestId('tab-settings-library'));
+
+    const toggle = screen.getByRole('checkbox', { name: 'Bundle series in Library view' });
+    expect(toggle).toBeChecked();
+    await user.click(toggle);
+    expect(toggle).not.toBeChecked();
+
+    await user.click(screen.getByTestId('save-settings-btn'));
+    await waitFor(() => expect(screen.getByTestId('settings-save-success')).toBeInTheDocument());
+
+    const put = fetchMock.mock.calls.find(([url, opts]) => url === '/api/settings' && opts?.method === 'PUT');
+    expect(JSON.parse(String(put?.[1]?.body)).library).toMatchObject({ bundleSeriesInLibrary: false });
+
+    await user.click(screen.getByTestId('nav-catalog'));
+    await waitFor(() => expect(screen.getByTestId('book-card-book_1')).toBeInTheDocument());
+    expect(screen.queryByTestId('series-card-ser_1')).not.toBeInTheDocument();
+  });
 
   it('renders access-denied fallback instead of SettingsView if a non-admin reaches settings state', async () => {
     const user = userEvent.setup({ delay: null });

@@ -14,12 +14,149 @@ import { Book, Author, Series, FormatType, FORMAT_TYPES } from '../types';
 import { SeriesBadge } from '../components/SeriesBadge';
 import { SeriesDetailModal } from '../components/SeriesDetailModal';
 
+export type CatalogDisplayItem =
+  | { kind: 'book'; book: Book }
+  | {
+      kind: 'series';
+      key: string;
+      seriesId?: string;
+      title: string;
+      authors: string[];
+      books: Book[];
+      coverUrl?: string;
+      formats: FormatType[];
+      totalBooks?: number;
+      editionsCount: number;
+    };
+
+export function buildCatalogDisplayItems(
+  books: Book[],
+  series: Series[],
+  bundleSeries: boolean
+): CatalogDisplayItem[] {
+  if (!bundleSeries) {
+    return books.map((book) => ({ kind: 'book', book }));
+  }
+
+  const seriesById = new Map<string, Series>();
+  const seriesByLowerTitle = new Map<string, Series>();
+  for (const s of series) {
+    if (s.id) seriesById.set(s.id, s);
+    if (s.title) seriesByLowerTitle.set(s.title.trim().toLowerCase(), s);
+  }
+
+  const standalone: CatalogDisplayItem[] = [];
+  const grouped = new Map<
+    string,
+    {
+      seriesId?: string;
+      title: string;
+      books: Book[];
+      totalBooks?: number;
+    }
+  >();
+
+  for (const book of books) {
+    const meta =
+      (book.seriesId ? seriesById.get(book.seriesId) : undefined) ??
+      (book.seriesTitle ? seriesByLowerTitle.get(book.seriesTitle.trim().toLowerCase()) : undefined);
+    const resolvedTitle = book.seriesTitle?.trim() || meta?.title?.trim() || '';
+    if (!resolvedTitle) {
+      standalone.push({ kind: 'book', book });
+      continue;
+    }
+
+    const groupKey = book.seriesId?.trim()
+      ? `id:${book.seriesId.trim()}`
+      : `title:${resolvedTitle.toLowerCase()}`;
+
+    const existing = grouped.get(groupKey);
+    if (existing) {
+      existing.books.push(book);
+      if (!existing.seriesId && (book.seriesId || meta?.id)) {
+        existing.seriesId = book.seriesId || meta?.id;
+      }
+      if (!existing.totalBooks && meta?.totalBooks) {
+        existing.totalBooks = meta.totalBooks;
+      }
+    } else {
+      grouped.set(groupKey, {
+        seriesId: book.seriesId?.trim() || meta?.id,
+        title: resolvedTitle,
+        books: [book],
+        totalBooks: meta?.totalBooks,
+      });
+    }
+  }
+
+  const seriesItems: CatalogDisplayItem[] = Array.from(grouped.entries()).map(([key, group]) => {
+    const orderedBooks = [...group.books].sort((a, b) => {
+      const ai = a.seriesIndex ?? Number.POSITIVE_INFINITY;
+      const bi = b.seriesIndex ?? Number.POSITIVE_INFINITY;
+      if (ai !== bi) return ai - bi;
+      return a.title.localeCompare(b.title);
+    });
+
+    const authors: string[] = [];
+    const seenAuthors = new Set<string>();
+    const formats: FormatType[] = [];
+    const seenFormats = new Set<FormatType>();
+    let editionsCount = 0;
+
+    for (const b of orderedBooks) {
+      const author = b.authorName.trim();
+      if (author && !seenAuthors.has(author.toLowerCase())) {
+        seenAuthors.add(author.toLowerCase());
+        authors.push(author);
+      }
+      for (const fmt of b.formats) {
+        if (!seenFormats.has(fmt)) {
+          seenFormats.add(fmt);
+          formats.push(fmt);
+        }
+      }
+      editionsCount += b.editions.length;
+    }
+
+    const coverUrl = orderedBooks.find((b) => Boolean(b.coverUrl))?.coverUrl;
+
+    return {
+      kind: 'series',
+      key,
+      seriesId: group.seriesId,
+      title: group.title,
+      authors,
+      books: orderedBooks,
+      coverUrl,
+      formats,
+      totalBooks: group.totalBooks,
+      editionsCount,
+    };
+  });
+
+  const allItems = [...standalone, ...seriesItems];
+  allItems.sort((a, b) => {
+    const aTitle = a.kind === 'series' ? a.title : a.book.title;
+    const bTitle = b.kind === 'series' ? b.title : b.book.title;
+    const cmp = aTitle.localeCompare(bTitle, undefined, { sensitivity: 'base' });
+    if (cmp !== 0) return cmp;
+    const aKey = a.kind === 'series' ? a.key : a.book.id;
+    const bKey = b.kind === 'series' ? b.key : b.book.id;
+    return aKey.localeCompare(bKey);
+  });
+
+  return allItems;
+}
+
 interface CatalogViewProps {
   books: Book[];
   authors: Author[];
   series: Series[];
+  bundleSeriesInLibrary?: boolean;
   onSelectBook: (book: Book) => void;
   selectedIndex: number;
+  selectedSeries?: string | null;
+  onSelectSeries?: (title: string | null) => void;
   onScanComplete?: () => Promise<void>;
 }
 
@@ -27,11 +164,17 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
   books,
   authors,
   series,
+  bundleSeriesInLibrary = true,
   onSelectBook,
   selectedIndex,
+  selectedSeries: controlledSelectedSeries,
+  onSelectSeries,
   onScanComplete,
 }) => {
-  const [selectedSeries, setSelectedSeries] = useState<string | null>(null);
+  const [internalSelectedSeries, setInternalSelectedSeries] = useState<string | null>(null);
+  const selectedSeries =
+    controlledSelectedSeries !== undefined ? controlledSelectedSeries : internalSelectedSeries;
+  const setSelectedSeries = onSelectSeries ?? setInternalSelectedSeries;
   const [scanning, setScanning] = useState(false);
   const [scanMessage, setScanMessage] = useState('');
   const scan = async () => {
@@ -64,6 +207,11 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
       return matchesSearch && matchesFormat;
     });
   }, [books, searchQuery, formatFilter]);
+
+  const displayItems = useMemo(
+    () => buildCatalogDisplayItems(filteredBooks, series, bundleSeriesInLibrary),
+    [filteredBooks, series, bundleSeriesInLibrary]
+  );
 
   // Filtered authors
   const filteredAuthors = useMemo(() => {
@@ -224,7 +372,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
       {/* TAB CONTENT: BOOKS */}
       {activeTab === 'books' && (
         <>
-          {filteredBooks.length === 0 ? (
+          {displayItems.length === 0 ? (
             <div className="py-20 text-center border border-dashed border-zinc-800 rounded-xl">
               <BookOpen className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
               <div className="text-sm font-medium text-zinc-400">No books found</div>
@@ -234,8 +382,103 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
             </div>
           ) : viewMode === 'grid' ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-              {filteredBooks.map((book, index) => {
+              {displayItems.map((item, index) => {
                 const isSelected = index === selectedIndex;
+                if (item.kind === 'series') {
+                  const seriesTestId = item.seriesId || item.title;
+                  return (
+                    <div
+                      key={`series-${item.key}`}
+                      data-testid={`series-card-${seriesTestId}`}
+                      onClick={() => setSelectedSeries(item.title)}
+                      className={`group relative bg-zinc-900/90 rounded-lg border overflow-hidden cursor-pointer transition-all duration-150 flex flex-col ${
+                        isSelected
+                          ? 'border-purple-500 ring-1 ring-purple-500 shadow-lg shadow-purple-500/10'
+                          : 'border-zinc-800/80 hover:border-purple-700/70 hover:bg-zinc-900'
+                      }`}
+                    >
+                      {/* Representative Cover Image */}
+                      <div className="aspect-[2/3] w-full bg-zinc-950 relative overflow-hidden">
+                        {item.coverUrl ? (
+                          <img
+                            src={item.coverUrl}
+                            alt={item.title}
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600">
+                            <Layers className="w-8 h-8 mb-1" aria-hidden="true" />
+                          </div>
+                        )}
+
+                        {/* Series Indicator Badge */}
+                        <div className="absolute top-2 left-2">
+                          <span className="inline-flex items-center gap-1 bg-purple-950/90 text-purple-200 border border-purple-700/60 px-1.5 py-0.5 rounded-sm text-[10px] font-medium shadow-xs">
+                            <Layers className="w-3 h-3" aria-hidden="true" />
+                            Series
+                          </span>
+                        </div>
+
+                        {/* Format Badges Overlay */}
+                        <div className="absolute top-2 right-2 flex flex-col gap-1 items-end">
+                          {item.formats.map((fmt) => (
+                            <span
+                              key={fmt}
+                              className={`text-[9px] font-mono px-1.5 py-0.5 rounded-sm shadow-sm font-semibold ${
+                                fmt === 'M4B'
+                                  ? 'bg-purple-900/90 text-purple-200 border border-purple-700/60'
+                                  : 'bg-blue-900/90 text-blue-200 border border-blue-700/60'
+                              }`}
+                            >
+                              {fmt}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Meta info */}
+                      <div className="p-3 flex-1 flex flex-col justify-between">
+                        <div>
+                          <h3 className="text-xs font-semibold text-zinc-100 group-hover:text-blue-400 transition-colors line-clamp-1">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedSeries(item.title);
+                              }}
+                              className="text-left hover:text-blue-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 rounded-sm truncate max-w-full"
+                            >
+                              {item.title}
+                            </button>
+                          </h3>
+                          <p className="text-[11px] text-zinc-400 mt-0.5 truncate">
+                            {item.authors.length > 0 ? (
+                              item.authors.map((author, idx) => (
+                                <span key={author}>
+                                  {idx > 0 && ', '}
+                                  <EntityLink kind="authors" name={author} />
+                                </span>
+                              ))
+                            ) : (
+                              <span>Author unknown</span>
+                            )}
+                          </p>
+                        </div>
+
+                        <span className="mt-2 block text-xs text-zinc-300">
+                          <span className="font-mono font-medium text-purple-300">
+                            {item.books.length} {item.books.length === 1 ? 'book' : 'books'}
+                          </span>
+                          {item.totalBooks && item.totalBooks > 0
+                            ? ` of ${item.totalBooks} in series`
+                            : ' in library'}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                }
+
+                const book = item.book;
                 return (
                   <div
                     key={book.id}
@@ -316,8 +559,82 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-800/60">
-                  {filteredBooks.map((book, index) => {
+                  {displayItems.map((item, index) => {
                     const isSelected = index === selectedIndex;
+                    if (item.kind === 'series') {
+                      const seriesTestId = item.seriesId || item.title;
+                      return (
+                        <tr
+                          key={`series-${item.key}`}
+                          data-testid={`series-row-${seriesTestId}`}
+                          onClick={() => setSelectedSeries(item.title)}
+                          className={`cursor-pointer transition-colors duration-150 ${
+                            isSelected
+                              ? 'bg-purple-600/15 text-white'
+                              : 'hover:bg-zinc-800/50 text-zinc-300'
+                          }`}
+                        >
+                          <td className="py-3 px-4 font-medium text-zinc-100 flex items-center gap-2">
+                            <Layers className="w-3.5 h-3.5 text-purple-400 shrink-0" aria-hidden="true" />
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedSeries(item.title);
+                              }}
+                              className="truncate text-left hover:text-purple-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-400 rounded-sm"
+                            >
+                              {item.title}
+                            </button>
+                          </td>
+                          <td className="py-3 px-4 text-zinc-300">
+                            {item.authors.length > 0 ? (
+                              item.authors.map((author, idx) => (
+                                <span key={author}>
+                                  {idx > 0 && ', '}
+                                  <EntityLink kind="authors" name={author} />
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-zinc-500">Author unknown</span>
+                            )}
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-purple-950/80 text-purple-200 border border-purple-800/60 text-[10px] font-medium">
+                                <Layers className="w-3 h-3" aria-hidden="true" />
+                                Series
+                              </span>
+                              <span className="text-zinc-300 font-mono">
+                                {item.books.length} {item.books.length === 1 ? 'book' : 'books'}
+                                {item.totalBooks && item.totalBooks > 0 ? ` / ${item.totalBooks}` : ''}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="flex gap-1">
+                              {item.formats.map((fmt) => (
+                                <span
+                                  key={fmt}
+                                  className={`text-[10px] font-mono px-1.5 py-0.5 rounded-sm ${
+                                    fmt === 'M4B'
+                                      ? 'bg-purple-950 text-purple-300 border border-purple-800/60'
+                                      : 'bg-blue-950 text-blue-300 border border-blue-800/60'
+                                  }`}
+                                >
+                                  {fmt}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="py-3 px-4 text-right font-mono text-zinc-400">
+                            {item.editionsCount}
+                          </td>
+                        </tr>
+                      );
+                    }
+
+                    const book = item.book;
                     return (
                       <tr
                         key={book.id}

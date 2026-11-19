@@ -40,6 +40,7 @@ const (
 	KeyConvertEbooks          = "convert_ebooks"
 	KeyEbookTargetFormat      = "ebook_target_format"
 	KeyEbookFormatPreferences = "ebook_format_preferences"
+	KeyBundleSeriesInLibrary  = "bundle_series_in_library"
 )
 
 // Bootstrap setting keys (resolved before opening SQLite).
@@ -78,6 +79,7 @@ func EnvVarName(settingKey string) string {
 
 var registry = []SettingSpec{
 	{Key: KeyConvertEbooks, Kind: KindBool, Default: "false"},
+	{Key: KeyBundleSeriesInLibrary, Kind: KindBool, Default: "true"},
 	{Key: KeyEbookTargetFormat, Kind: KindString, Default: "EPUB"},
 	{Key: KeyGoogleBooksAPIKey, Kind: KindString, Secret: true},
 	{Key: KeyHardcoverAPIKey, Kind: KindString, Secret: true},
@@ -128,6 +130,7 @@ type OverrideInfo struct {
 // Settings holds the effective resolved application configuration.
 type Settings struct {
 	LogLevel               slog.Level    `json:"logLevel"`
+	BundleSeriesInLibrary  bool          `json:"bundleSeriesInLibrary"`
 	ConvertEbooks          bool          `json:"convertEbooks"`
 	EbookTargetFormat      string        `json:"ebookTargetFormat"`
 	GoogleBooksAPIKey      string        `json:"-"`
@@ -543,6 +546,7 @@ func materializeSettings(vals map[string]string) Settings {
 		ProwlarrSyncInterval:   parseDurationOr(vals[KeyProwlarrSyncInterval], time.Hour),
 		IndexerSyncInterval:    parseDurationOr(vals[KeyIndexerSyncInterval], 15*time.Minute),
 		StagingPollInterval:    parseDurationOr(vals[KeyStagingPollInterval], 5*time.Second),
+		BundleSeriesInLibrary:  parseBoolOr(vals[KeyBundleSeriesInLibrary], true),
 		ConvertEbooks:          parseBoolOr(vals[KeyConvertEbooks], false),
 		EbookTargetFormat:      strings.ToUpper(orDefault(vals[KeyEbookTargetFormat], "EPUB")),
 		QualityProfileName:     orDefault(vals[KeyQualityProfileName], "Standard Audiobook"),

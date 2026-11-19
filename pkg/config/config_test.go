@@ -393,3 +393,66 @@ func TestLogLevelSettings(t *testing.T) {
 		t.Fatalf("invalid database value must fail validation: %v", err)
 	}
 }
+
+func TestBundleSeriesInLibrarySettings(t *testing.T) {
+	const env = "CALLIMACHUS_BUNDLE_SERIES_IN_LIBRARY"
+	t.Setenv(env, "")
+
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+
+	spec, ok := LookupSpec(KeyBundleSeriesInLibrary)
+	if !ok || spec.Kind != KindBool || spec.Default != "true" || EnvVarName(KeyBundleSeriesInLibrary) != env {
+		t.Fatalf("unexpected bundle_series_in_library spec: %+v", spec)
+	}
+
+	// Default is true
+	got, err := Load(ctx, db, Overrides{})
+	if err != nil {
+		t.Fatalf("Load default: %v", err)
+	}
+	if !got.Settings.BundleSeriesInLibrary {
+		t.Fatalf("expected BundleSeriesInLibrary default true, got false")
+	}
+	if got.Overrides[KeyBundleSeriesInLibrary] != (OverrideInfo{EnvVar: env}) {
+		t.Fatalf("unexpected default override info: %+v", got.Overrides[KeyBundleSeriesInLibrary])
+	}
+
+	// Persist false in SQLite
+	got, err = SaveNonOverridden(ctx, db, map[string]string{KeyBundleSeriesInLibrary: "false"}, Overrides{})
+	if err != nil {
+		t.Fatalf("SaveNonOverridden false: %v", err)
+	}
+	if got.Settings.BundleSeriesInLibrary {
+		t.Fatalf("expected BundleSeriesInLibrary=false after save")
+	}
+	var stored string
+	if err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", KeyBundleSeriesInLibrary).Scan(&stored); err != nil || stored != "false" {
+		t.Fatalf("stored value = %q, err = %v; want false", stored, err)
+	}
+
+	// Invalid bool rejected
+	if _, err := SaveNonOverridden(ctx, db, map[string]string{KeyBundleSeriesInLibrary: "maybe"}, Overrides{}); err == nil {
+		t.Fatalf("expected error for invalid bool value")
+	}
+
+	// Environment override takes precedence and prevents DB mutation
+	t.Setenv(env, "true")
+	got, err = SaveNonOverridden(ctx, db, map[string]string{KeyBundleSeriesInLibrary: "false"}, Overrides{})
+	if err != nil {
+		t.Fatalf("SaveNonOverridden while overridden: %v", err)
+	}
+	if !got.Settings.BundleSeriesInLibrary {
+		t.Fatalf("expected env override true, got false")
+	}
+	wantOverride := OverrideInfo{IsOverridden: true, OverriddenBy: env, EnvVar: env}
+	if got.Overrides[KeyBundleSeriesInLibrary] != wantOverride {
+		t.Fatalf("override info = %+v, want %+v", got.Overrides[KeyBundleSeriesInLibrary], wantOverride)
+	}
+
+	// Re-set env to false while DB has false, or check DB stayed false
+	if err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", KeyBundleSeriesInLibrary).Scan(&stored); err != nil || stored != "false" {
+		t.Fatalf("stored value after overridden save = %q, err = %v; want false", stored, err)
+	}
+}
+
