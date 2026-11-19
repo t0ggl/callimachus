@@ -58,5 +58,6 @@ type User struct {
 
 // UIPreferences holds non-sensitive UI display preferences safe for all authenticated users.
 type UIPreferences struct {
-	BundleSeriesInLibrary bool `json:"bundleSeriesInLibrary"`
+	BundleSeriesInLibrary bool   `json:"bundleSeriesInLibrary"`
+	DefaultSearchFormat   string `json:"defaultSearchFormat"`
 }

@@ -145,6 +145,7 @@ export interface BookRequest {
 
 export interface UIPreferences {
   bundleSeriesInLibrary: boolean;
+  defaultSearchFormat?: RequestType;
 }
 
 export interface UserProfile {

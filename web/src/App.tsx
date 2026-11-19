@@ -84,6 +84,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
     maxEbookSizeBytes: 100 * 1024 * 1024,
   });
   const [logLevel, setLogLevel] = useState<LogLevel>('info');
+  const [defaultSearchFormat, setDefaultSearchFormat] = useState<RequestType>('ebook');
   const [metadataSettings, setMetadataSettings] = useState<Record<string, boolean>>({
     openlibrary_enabled: true,
   });
@@ -118,6 +119,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
       if (res.ok) {
         const user: UserProfile = await res.json();
         setCurrentUser(user);
+        setDefaultSearchFormat(user?.preferences?.defaultSearchFormat ?? 'ebook');
         if (typeof user?.preferences?.bundleSeriesInLibrary === 'boolean') {
           const bundlePref = user.preferences.bundleSeriesInLibrary;
           setLibrarySettings((prev) => ({
@@ -202,6 +204,9 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
     if (!data || typeof data !== 'object') return;
     if (data.logLevel === 'debug' || data.logLevel === 'info' || data.logLevel === 'warn' || data.logLevel === 'error') {
       setLogLevel(data.logLevel);
+    }
+    if (data.defaultSearchFormat === 'ebook' || data.defaultSearchFormat === 'audiobook' || data.defaultSearchFormat === 'both') {
+      setDefaultSearchFormat(data.defaultSearchFormat);
     }
     if (Array.isArray(data.indexers)) setIndexers(data.indexers);
     if (data.library) {
@@ -452,6 +457,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
               prowlarrSettings={prowlarrSettings}
               qualityProfile={qualityProfile}
               logLevel={logLevel}
+              defaultSearchFormat={defaultSearchFormat}
               overrides={settingsOverrides}
               onSyncIndexers={handleSyncIndexers}
               onSaveSettings={handleSaveSettings}
@@ -480,6 +486,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
 
       {/* Global Command Palette */}
       <CommandPalette
+        defaultSearchFormat={defaultSearchFormat}
         onSubmitRequest={handleSubmitRequest}
         onOpenBook={(id) => { setSelectedBook(books.find((b) => b.id === id) ?? null); setIsPaletteOpen(false); }}
         isOpen={isPaletteOpen}

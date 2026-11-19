@@ -8,6 +8,7 @@ import { SeriesBadge } from './SeriesBadge';
 import { SeriesDetailModal } from './SeriesDetailModal';
 
 interface CommandPaletteProps {
+  defaultSearchFormat?: RequestType;
   onSubmitRequest?: (title: string, author: string, type: RequestType, year?: number, metadata?: RequestMetadata) => Promise<void>;
   onOpenBook?: (id: string) => void;
   isOpen: boolean;
@@ -31,6 +32,7 @@ interface PaletteItem {
 }
 
 export const CommandPalette: React.FC<CommandPaletteProps> = ({
+  defaultSearchFormat,
   onSubmitRequest,
   onOpenBook,
   isOpen,
@@ -286,6 +288,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             <div className="p-4">
               <DiscoveryResults
                 query={query}
+                defaultSearchFormat={defaultSearchFormat}
                 onSubmitRequest={onSubmitRequest}
                 onOpenBook={onOpenBook}
               />

@@ -218,7 +218,7 @@ describe('CommandPalette Component', () => {
     expect(screen.getByText('Library & Commands')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Add Hyperion' }));
-    expect(onSubmitRequest).toHaveBeenCalledWith('Hyperion', 'Dan Simmons', 'both', 1989, expect.any(Object));
+    expect(onSubmitRequest).toHaveBeenCalledWith('Hyperion', 'Dan Simmons', 'ebook', 1989, expect.any(Object));
 
     await user.clear(input);
     input.focus();
