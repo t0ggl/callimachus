@@ -253,4 +253,106 @@ describe('App Integration', () => {
       });
     }
   });
+
+  it('allows admin users to access Settings via shortcut 3, command palette, and fetches /api/settings', async () => {
+    const user = userEvent.setup({ delay: null });
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('nav-settings')).toBeInTheDocument();
+    });
+
+    const calledUrls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => String(c[0])
+    );
+    expect(calledUrls).toContain('/api/settings');
+
+    // Keyboard shortcut '3' navigates to Settings for admin
+    await user.keyboard('3');
+    expect(screen.getByRole('heading', { name: /System Settings/i })).toBeInTheDocument();
+
+    // Command palette shows Settings for admin
+    await user.keyboard('{Control>}k{/Control}');
+    expect(await screen.findByTestId('palette-item-nav_settings')).toBeInTheDocument();
+  });
+
+  it.each(['curator', 'requester', 'guest'] as const)(
+    'hides Settings UI, blocks shortcut 3, and skips /api/settings fetch for %s users',
+    async (role) => {
+      const user = userEvent.setup({ delay: null });
+      const originalFetch = vi.mocked(global.fetch).getMockImplementation()!;
+      vi.mocked(global.fetch).mockImplementation((...args) => {
+        if (String(args[0]).includes('/api/auth/me')) {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                ...testUser,
+                role,
+              }),
+          } as unknown as Response);
+        }
+        return originalFetch(...args);
+      });
+
+      render(<App />);
+
+      await waitFor(() => {
+        expect(screen.getByText('The Obsidian Path')).toBeInTheDocument();
+      });
+
+      // Sidebar Settings link must not be present
+      expect(screen.queryByTestId('nav-settings')).not.toBeInTheDocument();
+
+      // /api/settings must never be requested
+      const calledUrls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c) => String(c[0])
+      );
+      expect(calledUrls).not.toContain('/api/settings');
+
+      // Keyboard shortcut '3' must not switch to Settings
+      await user.keyboard('3');
+      expect(screen.queryByRole('heading', { name: /System Settings/i })).not.toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: /Library/i })).toBeInTheDocument();
+
+      // Command palette must not show Settings
+      await user.keyboard('{Control>}k{/Control}');
+      expect(await screen.findByTestId('command-palette-input')).toBeInTheDocument();
+      expect(screen.queryByTestId('palette-item-nav_settings')).not.toBeInTheDocument();
+    }
+  );
+
+  it('renders access-denied fallback instead of SettingsView if a non-admin reaches settings state', async () => {
+    const user = userEvent.setup({ delay: null });
+    const originalFetch = vi.mocked(global.fetch).getMockImplementation()!;
+    vi.mocked(global.fetch).mockImplementation((...args) => {
+      if (String(args[0]).includes('/api/auth/me')) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              ...testUser,
+              role: 'curator',
+            }),
+        } as unknown as Response);
+      }
+      return originalFetch(...args);
+    });
+
+    render(<App initialView="settings" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('settings-access-denied')).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('heading', { name: /System Settings/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('save-settings-btn')).not.toBeInTheDocument();
+
+    const calledUrls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => String(c[0])
+    );
+    expect(calledUrls).not.toContain('/api/settings');
+
+    await user.click(screen.getByRole('button', { name: /Return to Library/i }));
+    expect(screen.getByRole('heading', { name: /Library/i })).toBeInTheDocument();
+  });
 });

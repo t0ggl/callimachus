@@ -130,7 +130,7 @@ export interface BookRequest {
 export interface UserProfile {
   id: string;
   username: string;
-  role: 'admin' | 'curator' | 'user';
+  role: 'admin' | 'curator' | 'requester' | 'guest' | 'user';
   email: string;
 }
 

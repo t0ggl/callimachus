@@ -199,11 +199,14 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/series", s.handleGetSeries)
 	mux.HandleFunc("GET /api/series/", s.handleGetSeries)
 	mux.HandleFunc("GET /api/activity", s.handleGetActivity)
-	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
-	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
-	mux.HandleFunc("POST /api/settings", s.handleRejectSettingsPost)
-	mux.HandleFunc("POST /api/settings/prowlarr/sync", s.handleSyncProwlarr)
-	mux.HandleFunc("POST /api/settings/{service}/test", s.handleTestConnection)
+	adminOnly := auth.RequireRole(auth.RoleAdmin)
+	mux.Handle("GET /api/settings", adminOnly(http.HandlerFunc(s.handleGetSettings)))
+	mux.Handle("PUT /api/settings", adminOnly(http.HandlerFunc(s.handleUpdateSettings)))
+	mux.Handle("POST /api/settings", adminOnly(http.HandlerFunc(s.handleRejectSettingsPost)))
+	mux.Handle("POST /api/settings/prowlarr/sync", adminOnly(http.HandlerFunc(s.handleSyncProwlarr)))
+	mux.Handle("POST /api/settings/{service}/test", adminOnly(http.HandlerFunc(s.handleTestConnection)))
+	mux.Handle("/api/settings", adminOnly(http.HandlerFunc(s.handleSettingsMethodNotAllowed)))
+	mux.Handle("/api/settings/", adminOnly(http.HandlerFunc(s.handleSettingsNotFound)))
 	mux.HandleFunc("GET /api/events", s.handleEventsSSE)
 	mux.Handle("GET /api/releases", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleSearchReleases)))
 	mux.Handle("POST /api/releases/grab", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleGrabRelease)))
@@ -604,6 +607,18 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	resp := s.buildSettingsResponse(r.Context(), nil)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleSettingsMethodNotAllowed(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusMethodNotAllowed)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+}
+
+func (s *Server) handleSettingsNotFound(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "api endpoint not found"})
 }
 
 func hasForbiddenAuthSettingKeys(raw map[string]json.RawMessage) bool {

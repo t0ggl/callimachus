@@ -43,3 +43,41 @@ it('removes logo subtitle, mode badge and legacy labels', () => {
   render(<Layout {...props} activeDownloadsCount={0} convertingJobsCount={0} />);
   expect(screen.queryByText(/Audiobooks & eBooks|OPERATE MODE|Library & Catalog|Activity & Queues|Transcode Queue/)).not.toBeInTheDocument();
 });
+
+describe('Layout Settings nav visibility', () => {
+  it('shows Settings nav link for admin users', () => {
+    render(
+      <Layout
+        {...props}
+        user={{ id: '1', username: 'admin', role: 'admin', email: 'admin@example.com' }}
+        activeDownloadsCount={0}
+        convertingJobsCount={0}
+      />
+    );
+    expect(screen.getByTestId('nav-catalog')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-activity')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-settings')).toBeInTheDocument();
+  });
+
+  it.each(['curator', 'requester', 'guest'] as const)(
+    'hides Settings nav link for non-admin role %s',
+    (role) => {
+      render(
+        <Layout
+          {...props}
+          user={{ id: '2', username: `${role}_user`, role, email: `${role}@example.com` }}
+          activeDownloadsCount={0}
+          convertingJobsCount={0}
+        />
+      );
+      expect(screen.getByTestId('nav-catalog')).toBeInTheDocument();
+      expect(screen.getByTestId('nav-activity')).toBeInTheDocument();
+      expect(screen.queryByTestId('nav-settings')).not.toBeInTheDocument();
+    }
+  );
+
+  it('hides Settings nav link when user is null', () => {
+    render(<Layout {...props} user={null} activeDownloadsCount={0} convertingJobsCount={0} />);
+    expect(screen.queryByTestId('nav-settings')).not.toBeInTheDocument();
+  });
+});

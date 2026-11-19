@@ -35,6 +35,7 @@ export const Layout: React.FC<LayoutProps> = ({
   children,
 }) => {
   const activeAcquisitionsCount = activeDownloadsCount + convertingJobsCount;
+  const isAdmin = user?.role === 'admin';
 
   const navItems = [
     {
@@ -50,12 +51,16 @@ export const Layout: React.FC<LayoutProps> = ({
       badge: activeAcquisitionsCount > 0 ? `${activeAcquisitionsCount}` : undefined,
       shortcut: '2',
     },
-    {
-      id: 'settings' as NavView,
-      label: 'Settings',
-      icon: Settings,
-      shortcut: '3',
-    },
+    ...(isAdmin
+      ? [
+          {
+            id: 'settings' as NavView,
+            label: 'Settings',
+            icon: Settings,
+            shortcut: '3',
+          },
+        ]
+      : []),
   ];
 
   return (
