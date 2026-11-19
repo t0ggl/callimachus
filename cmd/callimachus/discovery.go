@@ -1,14 +1,19 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/metadata"
@@ -58,12 +63,17 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 				var result struct {
 					Items []struct {
 						VolumeInfo struct {
-							Title         string
-							Authors       []string
-							PublishedDate string
-							Description   string
-							Language      string
-							ImageLinks    struct{ Thumbnail string }
+							Title               string
+							Subtitle            string
+							Authors             []string
+							PublishedDate       string
+							Description         string
+							Language            string
+							ImageLinks          struct{ Thumbnail string }
+							IndustryIdentifiers []struct {
+								Type       string
+								Identifier string
+							}
 						}
 					}
 				}
@@ -75,7 +85,17 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 						v := item.VolumeInfo
 						year := 0
 						fmt.Sscanf(v.PublishedDate, "%d", &year)
-						books = append(books, metadata.BookMetadata{Title: v.Title, Authors: v.Authors, Year: year, Description: v.Description, Language: v.Language, CoverURL: v.ImageLinks.Thumbnail})
+						book := metadata.BookMetadata{
+							Title: v.Title, Subtitle: v.Subtitle, Authors: v.Authors, Year: year,
+							Description: v.Description, Language: v.Language, CoverURL: v.ImageLinks.Thumbnail,
+						}
+						for _, identifier := range v.IndustryIdentifiers {
+							if identifier.Type == "ISBN_13" {
+								book.ISBN13 = identifier.Identifier
+								break
+							}
+						}
+						books = append(books, book)
 					}
 				}
 			} else {
@@ -113,20 +133,29 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := []match{}
-	seen := map[string]bool{}
-	for _, b := range books {
-		key := strings.ToLower(b.Title + strings.Join(b.Authors, ","))
-		if b.Title != "" && len(b.Authors) > 0 && !seen[key] {
-			id := ""
+	for _, group := range groupDiscoveryBooks(books) {
+		first := slices.IndexFunc(group, func(b metadata.BookMetadata) bool {
+			return strings.TrimSpace(b.Title) != "" && len(b.Authors) > 0
+		})
+		if first < 0 {
+			continue
+		}
+		result := match{BookMetadata: group[first]}
+		for i, b := range group {
+			if i != first {
+				mergeDiscoveryBook(&result.BookMetadata, b)
+			}
+			if result.LibraryBookID != "" {
+				continue
+			}
 			for _, author := range b.Authors {
-				if found := inventory[discoveryKey(b.Title, author)]; found != "" {
-					id = found
+				if id := inventory[discoveryKey(b.Title, author)]; id != "" {
+					result.LibraryBookID = id
 					break
 				}
 			}
-			out = append(out, match{b, id})
-			seen[key] = true
 		}
+		out = append(out, result)
 	}
 	slog.DebugContext(ctx, "metadata discovery search completed", "results", len(out))
 	w.Header().Set("Content-Type", "application/json")
@@ -143,4 +172,149 @@ func logMetadataResponse(ctx context.Context, provider string, count int, err er
 
 func discoveryKey(title, author string) string {
 	return strings.ToLower(strings.TrimSpace(metadata.SanitizeTitle(title))) + "\x00" + strings.ToLower(strings.TrimSpace(metadata.NormalizeAuthor(author)))
+}
+
+var (
+	discoveryEditionSuffix     = regexp.MustCompile(`(?i)\s+(?:\([^()]*\b(?:edition|audiobook|paperback|hardcover)\b[^()]*\)|\[[^\[\]]*\b(?:edition|audiobook|paperback|hardcover)\b[^\[\]]*\])\s*$`)
+	discoverySubtitleSeparator = regexp.MustCompile(`:\s*|\s+[-–—]\s+`)
+	discoveryISBNSeparators    = strings.NewReplacer("-", "", " ", "")
+)
+
+func discoveryTitleParts(title string) (string, string) {
+	title = discoveryEditionSuffix.ReplaceAllString(title, "")
+	if separator := discoverySubtitleSeparator.FindStringIndex(title); separator != nil {
+		return title[:separator[0]], strings.TrimSpace(title[separator[1]:])
+	}
+	return title, ""
+}
+
+func discoveryTitleKey(title string) string {
+	return strings.ToLower(strings.Join(strings.Fields(metadata.SanitizeTitle(title)), " "))
+}
+
+func discoveryAuthor(authors []string) []string {
+	for _, author := range authors {
+		primary, _, _ := strings.Cut(metadata.NormalizeAuthor(author), " & ")
+		parts := strings.FieldsFunc(strings.ToLower(primary), func(r rune) bool {
+			return r == '.' || unicode.IsSpace(r)
+		})
+		if len(parts) > 0 {
+			return parts
+		}
+	}
+	return nil
+}
+
+func sameDiscoveryAuthor(a, b []string) bool {
+	if len(a) == 0 || len(a) != len(b) || a[len(a)-1] != b[len(b)-1] {
+		return false
+	}
+	for i := range a[:len(a)-1] {
+		left, _ := utf8.DecodeRuneInString(a[i])
+		right, _ := utf8.DecodeRuneInString(b[i])
+		if a[i] != b[i] && (left != right || (utf8.RuneCountInString(a[i]) != 1 && utf8.RuneCountInString(b[i]) != 1)) {
+			return false
+		}
+	}
+	return true
+}
+
+func discoveryISBN13(value string) string {
+	value = discoveryISBNSeparators.Replace(value)
+	if len(value) != 13 || strings.ContainsFunc(value, func(r rune) bool { return r < '0' || r > '9' }) {
+		return ""
+	}
+	return value
+}
+
+func groupDiscoveryBooks(books []metadata.BookMetadata) [][]metadata.BookMetadata {
+	parents := make([]int, len(books))
+	root := func(i int) int {
+		for parents[i] != i {
+			parents[i] = parents[parents[i]]
+			i = parents[i]
+		}
+		return i
+	}
+	byTitle := map[string][]int{}
+	byID := map[[2]string]int{}
+	authors := make([][]string, len(books))
+	subtitles := make([]string, len(books))
+	for i, book := range books {
+		parents[i] = i
+		authors[i] = discoveryAuthor(book.Authors)
+		title, subtitle := discoveryTitleParts(book.Title)
+		subtitles[i] = discoveryTitleKey(cmp.Or(book.Subtitle, subtitle))
+		if title := discoveryTitleKey(title); title != "" && len(authors[i]) > 0 {
+			for _, j := range byTitle[title] {
+				if (subtitles[i] == subtitles[j] || subtitles[i] == "" || subtitles[j] == "") &&
+					sameDiscoveryAuthor(authors[i], authors[j]) {
+					parents[root(i)] = root(j)
+				}
+			}
+			byTitle[title] = append(byTitle[title], i)
+		}
+		for _, id := range [][2]string{
+			{"isbn", discoveryISBN13(book.ISBN13)},
+			{"openlibrary", strings.TrimSpace(book.OpenLibraryID)},
+			{"hardcover", strings.TrimSpace(book.HardcoverID)},
+		} {
+			if id[1] == "" {
+				continue
+			}
+			if j, ok := byID[id]; ok {
+				parents[root(i)] = root(j)
+			}
+			byID[id] = i
+		}
+	}
+
+	// Retain provider ranking and all aliases, including those that joined two groups.
+	var groups [][]metadata.BookMetadata
+	byRoot := map[int]int{}
+	for i, book := range books {
+		parent := root(i)
+		group, ok := byRoot[parent]
+		if !ok {
+			group = len(groups)
+			byRoot[parent] = group
+			groups = append(groups, nil)
+		}
+		groups[group] = append(groups[group], book)
+	}
+	return groups
+}
+
+func mergeDiscoveryBook(dst *metadata.BookMetadata, src metadata.BookMetadata) {
+	dst.Subtitle = cmp.Or(dst.Subtitle, src.Subtitle)
+	if dst.Subtitle == "" {
+		dstTitle, dstSubtitle := discoveryTitleParts(dst.Title)
+		srcTitle, srcSubtitle := discoveryTitleParts(src.Title)
+		if dstSubtitle == "" && discoveryTitleKey(dstTitle) == discoveryTitleKey(srcTitle) {
+			dst.Subtitle = srcSubtitle
+		}
+	}
+	dst.Description = cmp.Or(dst.Description, src.Description)
+	dst.CoverURL = cmp.Or(dst.CoverURL, src.CoverURL)
+	dst.Year = cmp.Or(dst.Year, src.Year)
+	dst.PublishDate = cmp.Or(dst.PublishDate, src.PublishDate)
+	dst.Publisher = cmp.Or(dst.Publisher, src.Publisher)
+	dst.Language = cmp.Or(dst.Language, src.Language)
+	dst.ASIN = cmp.Or(dst.ASIN, src.ASIN)
+	dst.HardcoverID = cmp.Or(dst.HardcoverID, src.HardcoverID)
+	dst.OpenLibraryID = cmp.Or(dst.OpenLibraryID, src.OpenLibraryID)
+	if dst.ISBN13 == "" || (discoveryISBN13(dst.ISBN13) == "" && discoveryISBN13(src.ISBN13) != "") {
+		dst.ISBN13 = src.ISBN13
+	}
+	if dst.Series == "" || strings.EqualFold(dst.Series, src.Series) {
+		dst.Series = cmp.Or(dst.Series, src.Series)
+		dst.SeriesIndex = cmp.Or(dst.SeriesIndex, src.SeriesIndex)
+		dst.SeriesTotal = cmp.Or(dst.SeriesTotal, src.SeriesTotal)
+	}
+	if len(dst.Genres) == 0 {
+		dst.Genres = src.Genres
+	}
+	if len(dst.Narrators) == 0 {
+		dst.Narrators = src.Narrators
+	}
 }

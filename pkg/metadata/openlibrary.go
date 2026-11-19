@@ -214,7 +214,11 @@ func (p *OpenLibraryProvider) Search(ctx context.Context, query string) ([]BookM
 		return nil, nil
 	}
 
-	reqURL := fmt.Sprintf("%s/search.json?q=%s", p.baseURL, url.QueryEscape(trimmed))
+	params := url.Values{
+		"q":      {trimmed},
+		"fields": {"key,title,subtitle,author_name,first_publish_year,isbn,cover_i,publisher,subject,language"},
+	}
+	reqURL := p.baseURL + "/search.json?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("openlibrary: create search request: %w", err)
@@ -256,6 +260,12 @@ func (p *OpenLibraryProvider) Search(ctx context.Context, query string) ([]BookM
 		}
 		if len(doc.ISBN) > 0 {
 			meta.ISBN13 = doc.ISBN[0]
+			for _, isbn := range doc.ISBN {
+				if len(isbn) == 13 {
+					meta.ISBN13 = isbn
+					break
+				}
+			}
 		}
 		if doc.CoverI > 0 {
 			meta.CoverURL = fmt.Sprintf("https://covers.openlibrary.org/b/id/%d-L.jpg", doc.CoverI)
