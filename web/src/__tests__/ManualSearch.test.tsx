@@ -1,17 +1,17 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { it, expect, vi, afterEach } from 'vitest';
 import { ManualSearch } from '../components/ManualSearch';
 afterEach(() => vi.unstubAllGlobals());
-it('shows cached score breakdown, refreshes, and manually retries a penalized release', async () => {
-  const candidate = {
+const candidate = {
     key: '1:g',
     release: { title: 'Dune EPUB', size: 1048576, seeders: 60 },
     format: 'epub',
     score: -50,
     penalty: -100,
     breakdown: { format: 30, seeders: 20 },
-  };
+};
+it('shows cached score breakdown, refreshes, and manually retries a penalized release', async () => {
   const fetcher = vi
     .fn()
     .mockResolvedValue({ ok: true, json: async () => [candidate] });
@@ -33,4 +33,51 @@ it('shows cached score breakdown, refreshes, and manually retries a penalized re
   );
   await user.click(screen.getByRole('button', { name: 'Close' }));
   expect(close).toHaveBeenCalled();
+});
+
+it('reuses the eBook request, creates the audiobook request once, and ignores late eBook results', async () => {
+  const user = userEvent.setup({ delay: null });
+  const book = { id: 'book', title: 'Dune', author: 'Frank Herbert' };
+  const ebook = { id: 7, book_id: book.id, format: 'epub' };
+  const audio = { id: 8, book_id: book.id, format: 'm4b' };
+  const requests = [ebook];
+  let finishEbook!: (response: Response) => void;
+  const lateEbook = new Promise<Response>(resolve => { finishEbook = resolve; });
+  let ebookFetches = 0;
+  const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === '/api/requests' && init?.method === 'POST') {
+      expect(JSON.parse(String(init.body))).toEqual({
+        book_id: book.id, title: book.title, author: book.author, format: 'm4b', manual_only: true,
+      });
+      requests.push(audio);
+      return Response.json(audio, { status: 201 });
+    }
+    if (url === '/api/requests') return Response.json(requests);
+    if (url === '/api/requests/7/candidates') {
+      return ++ebookFetches === 1 ? lateEbook : Response.json([candidate]);
+    }
+    if (url === '/api/requests/8/candidates') return Response.json([{
+      ...candidate, format: 'm4b', release: { ...candidate.release, title: 'Dune M4B' },
+    }]);
+    throw new Error(`Unexpected fetch ${url}`);
+  });
+  vi.stubGlobal('fetch', fetcher);
+  render(<ManualSearch book={book} onClose={vi.fn()} />);
+  expect(screen.getByRole('tablist', { name: 'Download format' })).toBeInTheDocument();
+  const ebookTab = screen.getByRole('tab', { name: 'eBook', selected: true });
+  const audioTab = screen.getByRole('tab', { name: 'Audiobook', selected: false });
+  await waitFor(() => expect(ebookFetches).toBe(1));
+  ebookTab.focus();
+  await user.keyboard('{ArrowRight}');
+  expect(audioTab).toHaveFocus();
+  expect(audioTab).toHaveAttribute('aria-selected', 'true');
+  expect(await screen.findByText('Dune M4B')).toBeInTheDocument();
+  await act(async () => finishEbook(Response.json([candidate])));
+  expect(screen.queryByText('Dune EPUB')).not.toBeInTheDocument();
+  await user.click(ebookTab);
+  expect(await screen.findByText('Dune EPUB')).toBeInTheDocument();
+  expect(screen.queryByText('Dune M4B')).not.toBeInTheDocument();
+  await user.click(audioTab);
+  expect(await screen.findByText('Dune M4B')).toBeInTheDocument();
+  expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
 });

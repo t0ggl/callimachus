@@ -28,7 +28,17 @@ it('offers recovery when a library scan fails', async () => {
   expect(screen.getByRole('button', { name: 'Scan Library' })).toBeEnabled();
 });
 
-it('offers download options for an existing book', () => {
+it('opens download options without asking for a format first', async () => {
+  const user = userEvent.setup({ delay: null });
+  const fetch = vi.fn(async (url: string) => Response.json(url === '/api/requests'
+    ? [{ id: 1, book_id: testBooks[0].id, format: 'epub' }]
+    : []));
+  vi.stubGlobal('fetch', fetch);
   render(<BookDetailModal book={testBooks[0]} onClose={vi.fn()} />);
-  expect(screen.getByRole('button', { name: 'Search Download Options' })).toBeEnabled();
+  expect(screen.queryByRole('combobox', { name: 'Format' })).not.toBeInTheDocument();
+  expect(fetch).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('button', { name: 'Show Download Options' }));
+  expect(screen.getByRole('dialog', { name: 'Download Options' })).toBeInTheDocument();
+  expect(screen.getByRole('tab', { name: 'eBook', selected: true })).toBeInTheDocument();
+  expect(await screen.findByText(/No cached candidates/)).toBeInTheDocument();
 });

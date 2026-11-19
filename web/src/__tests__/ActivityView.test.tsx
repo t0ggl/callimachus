@@ -41,6 +41,26 @@ const ebook = { id: '1', bookId: 'book', title: 'Dune', author: 'Frank Herbert',
 const audio = { ...ebook, id: '2', requestType: 'audiobook', status: 'available', stage: 'available' } as const;
 afterEach(() => vi.unstubAllGlobals());
 
+it('opens an audiobook request on its own tab and can switch using its book context', async () => {
+  const user = userEvent.setup({ delay: null });
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url === '/api/requests') return Response.json([{ id: 1, book_id: 'book', format: 'epub' }]);
+    if (url === '/api/requests/1/candidates' || url === '/api/requests/2/candidates') return Response.json([]);
+    throw new Error(`Unexpected fetch ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<ActivityView {...base} requests={[ebook, audio]} />);
+  const row = within(screen.getByTestId('activity-request:2'));
+  await user.click(row.getByRole('button', { name: 'Manual Search for Dune' }));
+  const dialog = within(screen.getByRole('dialog', { name: 'Download Options' }));
+  expect(dialog.getByRole('tab', { name: 'Audiobook', selected: true })).toBeInTheDocument();
+  await dialog.findByText(/No cached candidates/);
+  expect(fetchMock.mock.calls).toEqual([['/api/requests/2/candidates', undefined]]);
+  await user.click(dialog.getByRole('tab', { name: 'eBook' }));
+  await dialog.findByText(/No cached candidates/);
+  expect(fetchMock).toHaveBeenCalledWith('/api/requests/1/candidates', undefined);
+});
+
 it('shows two format rows and cancels or removes them independently', async () => {
   const user = userEvent.setup({ delay: null });
   const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
