@@ -57,3 +57,47 @@ func TestRequestedBookAppearsInLibraryBeforeImport(t *testing.T) {
 		t.Fatalf("imported: %+v", book)
 	}
 }
+
+func TestGetBooksFutureReleaseDates(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	for _, query := range []string{
+		`INSERT INTO authors(id,name,sort_name) VALUES('a','Author','Author')`,
+		`INSERT INTO books(id,author_id,title,release_date) VALUES
+			('b_full','a','Future Full','2099-05-10'),
+			('b_ym','a','Future Month','2099-06'),
+			('b_mstr','a','Future Month String','November 2099'),
+			('b_year','a','Future Year','2099'),
+			('b_past','a','Past Book','2020-01-01')`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &Server{db: db}
+	w := httptest.NewRecorder()
+	s.handleGetBooks(w, httptest.NewRequest(http.MethodGet, "/api/books", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var books []APIBook
+	if err := json.Unmarshal(w.Body.Bytes(), &books); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]APIBook{}
+	for _, b := range books {
+		got[b.ID] = b
+	}
+	want := map[string]struct{ date, state string }{
+		"b_full": {"2099-05-10", "Scheduled"},
+		"b_ym":   {"2099-06", "Scheduled"},
+		"b_mstr": {"2099-11", "Scheduled"},
+		"b_year": {"2099", "Scheduled"},
+		"b_past": {"2020-01-01", "Not in library"},
+	}
+	for id, exp := range want {
+		b := got[id]
+		if b.ReleaseDate != exp.date || b.State != exp.state {
+			t.Errorf("%s: got (%q, %q), want (%q, %q)", id, b.ReleaseDate, b.State, exp.date, exp.state)
+		}
+	}
+}

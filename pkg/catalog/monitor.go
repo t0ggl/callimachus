@@ -172,22 +172,28 @@ func (m *Monitor) persist(ctx context.Context, kind, name string, found []metada
 		if series != nil {
 			book.SeriesID = &series.ID
 		}
-		if _, err := time.Parse("2006-01-02", b.PublishDate); err == nil {
-			book.ReleaseDate = &b.PublishDate
+		if releaseDate := metadata.NormalizeReleaseDate(b.PublishDate, b.Year); releaseDate != "" {
+			book.ReleaseDate = &releaseDate
 		}
 		saved, err := c.GetOrCreateBook(ctx, book)
 		if err != nil {
 			return err
 		}
-		// Announcement dates can move. Preserve monitoring while updating a known date.
-		if book.ReleaseDate != nil && (saved.ReleaseDate == nil || *saved.ReleaseDate != *book.ReleaseDate) {
-			saved.ReleaseDate = book.ReleaseDate
-			if err = c.UpsertBook(ctx, saved); err != nil {
-				return err
+		// Announcement dates can move. Preserve monitoring while updating a known date without dropping precision for the same period.
+		if book.ReleaseDate != nil {
+			existing := ""
+			if saved.ReleaseDate != nil {
+				existing = *saved.ReleaseDate
+			}
+			if merged := metadata.MergeReleaseDate(existing, *book.ReleaseDate); merged != "" && merged != existing {
+				saved.ReleaseDate = &merged
+				if err = c.UpsertBook(ctx, saved); err != nil {
+					return err
+				}
 			}
 		}
 		for _, format := range []string{"epub", "m4b"} {
-			if _, err = c.GetOrCreateEdition(ctx, &database.BookEdition{BookID: saved.ID, Format: format, Language: b.Language, PublicationDate: book.ReleaseDate}); err != nil {
+			if _, err = c.GetOrCreateEdition(ctx, &database.BookEdition{BookID: saved.ID, Format: format, Language: b.Language, PublicationDate: saved.ReleaseDate}); err != nil {
 				return err
 			}
 		}
@@ -196,8 +202,8 @@ func (m *Monitor) persist(ctx context.Context, kind, name string, found []metada
 }
 
 func (m *Monitor) checkBooks(ctx context.Context, now time.Time, column, id string, force bool) error {
-	query := `SELECT b.id FROM books b WHERE b.monitored=1 AND (b.release_date IS NULL OR b.release_date='' OR b.release_date<=?) AND NOT EXISTS(SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id WHERE e.book_id=b.id)`
-	args := []any{now.Format("2006-01-02")}
+	query := `SELECT b.id, COALESCE(b.release_date,'') FROM books b WHERE b.monitored=1 AND NOT EXISTS(SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id WHERE e.book_id=b.id)`
+	var args []any
 	if column != "" {
 		query += " AND b." + column + "=?"
 		args = append(args, id)
@@ -210,12 +216,16 @@ func (m *Monitor) checkBooks(ctx context.Context, now time.Time, column, id stri
 	if err != nil {
 		return err
 	}
+	today := now.UTC().Format(time.DateOnly)
 	var ids []string
 	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
+		var id, releaseDate string
+		if err = rows.Scan(&id, &releaseDate); err != nil {
 			rows.Close()
 			return err
+		}
+		if metadata.IsFutureRelease(releaseDate, 0, today) {
+			continue
 		}
 		ids = append(ids, id)
 	}
