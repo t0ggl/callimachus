@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/config"
+	"github.com/t0ggl/callimachus/pkg/metadata"
 	"github.com/t0ggl/callimachus/pkg/requests"
 )
 
@@ -256,11 +258,11 @@ const bookAvailabilitySQL = `CASE
 		LIMIT 1
 	), '') END`
 
-func bookAvailability(state, releaseDate string, today string) string {
+func bookAvailability(state, releaseDate string, year int, today string) string {
 	if state != "" {
 		return state
 	}
-	if releaseDate > today {
+	if metadata.IsFutureRelease(releaseDate, year, today) {
 		return "Scheduled"
 	}
 	return "Not in library"
@@ -314,7 +316,8 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 			b.SeriesIndex = &val
 		}
 		b.SeriesIndexDisplay = catalog.SeriesIndexLabel(b.SeriesIndex)
-		b.State = bookAvailability(b.State, b.ReleaseDate, today)
+		b.ReleaseDate = cmp.Or(metadata.NormalizeReleaseDate(b.ReleaseDate, 0), b.ReleaseDate)
+		b.State = bookAvailability(b.State, b.ReleaseDate, 0, today)
 		b.Formats = make([]string, 0)
 		b.Editions = make([]APIBookEdition, 0)
 		if s.bookCover(r, b.ID) != "" {

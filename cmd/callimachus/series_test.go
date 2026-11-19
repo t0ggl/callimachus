@@ -162,3 +162,49 @@ func TestSeriesBooksMissingMetadataAndValidation(t *testing.T) {
 		t.Fatalf("unexpected availability: %+v", result.Books)
 	}
 }
+
+func TestSeriesBooksFutureReleaseDatePrecision(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	for _, query := range []string{
+		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','test')`,
+		`INSERT INTO authors(id,name,sort_name) VALUES('a','Author','Author')`,
+		`INSERT INTO series(id,title) VALUES('s','Future Saga')`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date) VALUES('local_ym','a','Local Partial Month','s',1,'2099-04')`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date) VALUES('local_yr','a','Local Year Only','s',2,'2099')`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mt := testutil.NewMockTransportForTest(t)
+	mt.RegisterString("/v1/graphql", 200, `{"data":{"books":[
+		{"id":10,"title":"Local Partial Month","release_date":"2099-04","release_year":2099,"contributions":[{"author":{"name":"Author"}}],"book_series":[{"series_position":1,"series":{"name":"Future Saga","books_count":5}}]},
+		{"id":11,"title":"Local Year Only","release_date":"","release_year":2099,"contributions":[{"author":{"name":"Author"}}],"book_series":[{"series_position":2,"series":{"name":"Future Saga","books_count":5}}]},
+		{"id":12,"title":"Remote Month String","release_date":"November 2099","release_year":2099,"contributions":[{"author":{"name":"Author"}}],"book_series":[{"series_position":3,"series":{"name":"Future Saga","books_count":5}}]},
+		{"id":13,"title":"Remote Future Year Only","release_date":"","release_year":2098,"contributions":[{"author":{"name":"Author"}}],"book_series":[{"series_position":4,"series":{"name":"Future Saga","books_count":5}}]},
+		{"id":14,"title":"Remote Full Future","release_date":"2099-12-15","release_year":2099,"contributions":[{"author":{"name":"Author"}}],"book_series":[{"series_position":5,"series":{"name":"Future Saga","books_count":5}}]}
+	]}}`, nil)
+
+	s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
+	w := httptest.NewRecorder()
+	s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=Future+Saga", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var result seriesBooksResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Books) != 5 {
+		t.Fatalf("expected 5 books, got %d: %+v", len(result.Books), result.Books)
+	}
+	wantDates := []string{"2099-04", "2099", "2099-11", "2098", "2099-12-15"}
+	for i, b := range result.Books {
+		if b.State != "Scheduled" {
+			t.Errorf("book %d (%s): state = %q, want Scheduled", i, b.Title, b.State)
+		}
+		if b.PublishDate != wantDates[i] {
+			t.Errorf("book %d (%s): publish_date = %q, want %q", i, b.Title, b.PublishDate, wantDates[i])
+		}
+	}
+}

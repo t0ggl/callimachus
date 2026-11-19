@@ -305,3 +305,28 @@ func TestService_PreventDuplicateActiveRequests(t *testing.T) {
 		t.Fatalf("expected 4 search triggers (initial epub, initial m4b, partial m4b, retry m4b), got %d", trigger.CallCount())
 	}
 }
+
+func TestService_YearOnlyReleaseDatePrecision(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	if _, err := db.Exec(`INSERT INTO users (id, username, email, role) VALUES ('u1', 'u1', 'u1@example.test', 'user')`); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewRequestService(db)
+	req, err := svc.SubmitRequest(context.Background(), CreateRequestInput{
+		UserID: "u1",
+		Title:  "Year Only Book",
+		Author: "Author",
+		Format: FormatEPUB,
+		Year:   2029,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var releaseDate string
+	if err := db.QueryRow(`SELECT COALESCE(release_date, '') FROM books WHERE id = ?`, *req.BookID).Scan(&releaseDate); err != nil {
+		t.Fatal(err)
+	}
+	if releaseDate != "2029" {
+		t.Fatalf("release_date = %q, want %q", releaseDate, "2029")
+	}
+}
