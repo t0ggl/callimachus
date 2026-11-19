@@ -124,6 +124,32 @@ it('opens reading order from discovery with series details, covers, formats, and
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 });
 
+it('opens series monitoring from the modal button and closes the modal', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ title: 'Earth / Sea', complete: true, books: [] }),
+    })
+  );
+  const onClose = vi.fn();
+  const user = userEvent.setup({ delay: null });
+  const originalUrl = window.location.href;
+  render(<SeriesDetailModal title="Earth" onClose={onClose} />);
+
+  const button = await screen.findByRole('button', { name: 'Manage monitoring' });
+  expect(button).toHaveAttribute('type', 'button');
+  expect(screen.queryByRole('link', { name: 'Manage monitoring' })).not.toBeInTheDocument();
+
+  try {
+    await user.click(button);
+    expect(window.location.hash).toBe('#/series/Earth%20%2F%20Sea');
+    expect(onClose).toHaveBeenCalledOnce();
+  } finally {
+    window.history.replaceState(null, '', originalUrl);
+  }
+});
+
 it('handles missing metadata gracefully and supports Escape, backdrop, and footer close', async () => {
   vi.stubGlobal(
     'fetch',
