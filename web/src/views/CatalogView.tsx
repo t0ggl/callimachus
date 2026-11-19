@@ -521,9 +521,9 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                       </div>
 
                       {/* Series Index Badge */}
-                      {book.seriesIndexDisplay && (
+                      {book.seriesIndex != null && (
                         <div className="absolute bottom-2 left-2 bg-zinc-950/80 backdrop-blur-xs border border-zinc-800 px-1.5 py-0.5 rounded-sm text-[10px] font-mono text-zinc-300 font-medium">
-                          {book.seriesIndexDisplay}
+                          {`Book ${book.seriesIndex}`}
                         </div>
                       )}
                     </div>
@@ -767,7 +767,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                         </div>
                       </div>
                       <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-sm bg-purple-950 text-purple-300 border border-purple-800 shrink-0">
-                        {book.seriesIndexDisplay || `#${book.seriesIndex}`}
+                        {book.seriesIndex != null ? `Book ${book.seriesIndex}` : 'Unindexed'}
                       </span>
                     </div>
                   ))}

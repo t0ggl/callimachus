@@ -288,9 +288,7 @@ export function SeriesDetailModal({ title, onClose, onOpenBook }: SeriesDetailMo
                 ) : (
                   <ol className="space-y-3" aria-label="Series reading order">
                     {books.map((book, i) => {
-                      const indexLabel =
-                        book.series_index_display ||
-                        (book.series_index != null ? `Book ${book.series_index}` : 'Unindexed');
+                      const indexLabel = book.series_index != null ? `Book ${book.series_index}` : 'Unindexed';
                       const formats = book.formats ?? [];
                       const isOwned = Boolean(book.library_book_id);
                       const canOpen = isOwned && Boolean(onOpenBook);

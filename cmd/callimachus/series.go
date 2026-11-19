@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/metadata"
 )
@@ -94,13 +96,14 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 
 		rows, err := s.db.QueryContext(r.Context(), `
 			SELECT b.id, b.title, COALESCE(b.subtitle, ''), a.name, b.series_index,
-			       COALESCE(b.series_index_display, ''), COALESCE(b.release_date, ''),
+			       COALESCE(b.release_date, ''),
 			       COALESCE(b.synopsis, ''), b.monitored,
 			       EXISTS(SELECT 1 FROM book_editions e JOIN media_assets m ON m.edition_id=e.id WHERE e.book_id=b.id)
 			FROM books b
 			JOIN authors a ON a.id=b.author_id
 			JOIN series s ON s.id=b.series_id
-			WHERE s.title=? COLLATE NOCASE`, title)
+			WHERE s.title=? COLLATE NOCASE
+			ORDER BY b.id`, title)
 		if err != nil {
 			http.Error(w, "Unable to load series", 500)
 			return
@@ -111,7 +114,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 			var held bool
 			if err := rows.Scan(
 				&id, &b.Title, &b.Subtitle, &author, &b.SeriesIndex,
-				&b.SeriesIndexDisplay, &b.PublishDate, &b.Description, &b.Monitored, &held,
+				&b.PublishDate, &b.Description, &b.Monitored, &held,
 			); err != nil {
 				rows.Close()
 				http.Error(w, "Unable to load series", 500)
@@ -149,40 +152,58 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 		if client == nil {
 			client = &http.Client{Timeout: 20 * time.Second}
 		}
-		found, lookupErr := metadata.NewHardcoverProvider(cfg.Settings.HardcoverAPIKey, metadata.WithHardcoverClient(client)).SeriesBooks(r.Context(), title)
+		found, lookupErr := metadata.NewHardcoverProvider(cfg.Settings.HardcoverAPIKey, metadata.WithHardcoverClient(client)).SeriesBooks(r.Context(), seriesTitle)
 		if lookupErr == nil {
 			complete = true
+			localCount := len(books)
+			redundant := make(map[int]bool)
 			for _, remote := range found {
 				if remote.SeriesTotal > seriesTotalBooks {
 					seriesTotalBooks = remote.SeriesTotal
 				}
-				matched := false
-				for i := range books {
-					local := &books[i]
-					if len(local.Authors) == 0 {
+				best, bestScore := -1, 0
+				positionMatches, titleMatch := 0, -1
+				for i := range books[:localCount] {
+					if redundant[i] {
 						continue
 					}
-					for _, author := range remote.Authors {
-						if discoveryKey(remote.Title, author) == discoveryKey(local.Title, local.Authors[0]) {
-							mergeSeriesBookMetadata(local, remote)
-							matched = true
-							break
+					score := seriesBookMatch(books[i], remote)
+					if score >= 3 {
+						positionMatches++
+					}
+					if score == 2 || (score == 1 && titleMatch == -1) {
+						titleMatch = i
+					}
+					if score > bestScore {
+						best, bestScore = i, score
+					}
+				}
+				if bestScore == 3 && positionMatches > 1 {
+					best = titleMatch
+				}
+				if best >= 0 {
+					if books[best].LibraryBookID != "" {
+						for i := range books[:localCount] {
+							if books[i].LibraryBookID == "" && seriesBookMatch(books[i], remote) > 0 {
+								redundant[i] = true
+							}
 						}
 					}
-					if matched {
-						break
-					}
+					mergeSeriesBookMetadata(&books[best], remote)
+					continue
 				}
-				if !matched {
-					if remote.Authors == nil {
-						remote.Authors = []string{}
-					}
-					books = append(books, seriesBook{
-						BookMetadata: remote,
-						Formats:      []string{},
-					})
+				if remote.Authors == nil {
+					remote.Authors = []string{}
+				}
+				books = append(books, seriesBook{BookMetadata: remote, Formats: []string{}})
+			}
+			visible := books[:0]
+			for i, b := range books {
+				if !redundant[i] {
+					visible = append(visible, b)
 				}
 			}
+			books = visible
 		}
 	}
 
@@ -211,7 +232,9 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 	authors := make([]string, 0)
 	seenAuthor := make(map[string]bool)
 	ownedCount := 0
-	for _, b := range books {
+	for i := range books {
+		b := &books[i]
+		b.SeriesIndexDisplay = catalog.SeriesIndexLabel(b.SeriesIndex)
 		if b.LibraryBookID != "" {
 			ownedCount++
 		}
@@ -244,6 +267,45 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 		Books:       books,
 		Complete:    complete,
 	})
+}
+
+var seriesTitleAnnotation = regexp.MustCompile(`\s+(?:\([^()]*\)|\[[^\[\]]*\])\s*$`)
+
+// A matching owned volume takes precedence over an exact-title catalog placeholder.
+func seriesBookMatch(local seriesBook, remote metadata.BookMetadata) int {
+	if len(local.Authors) == 0 {
+		return 0
+	}
+	for _, author := range remote.Authors {
+		if !strings.EqualFold(metadata.NormalizeAuthor(local.Authors[0]), metadata.NormalizeAuthor(author)) {
+			continue
+		}
+		if local.SeriesIndex != nil && remote.SeriesIndex != nil && *local.SeriesIndex != *remote.SeriesIndex {
+			continue
+		}
+		localTitle, _ := discoveryTitleParts(seriesTitleAnnotation.ReplaceAllString(local.Title, ""), local.Authors)
+		remoteTitle, _ := discoveryTitleParts(seriesTitleAnnotation.ReplaceAllString(remote.Title, ""), remote.Authors)
+		exact := discoveryKey(local.Title, local.Authors[0]) == discoveryKey(remote.Title, author)
+		sameTitle := discoveryTitleKey(localTitle) == discoveryTitleKey(remoteTitle)
+		if local.LibraryBookID != "" {
+			if exact {
+				return 5
+			}
+			if sameTitle {
+				return 4
+			}
+			if local.SeriesIndex != nil && remote.SeriesIndex != nil {
+				return 3
+			}
+		}
+		if exact {
+			return 2
+		}
+		if sameTitle {
+			return 1
+		}
+	}
+	return 0
 }
 
 func mergeSeriesBookMetadata(local *seriesBook, remote metadata.BookMetadata) {
@@ -291,4 +353,3 @@ func mergeSeriesBookMetadata(local *seriesBook, remote metadata.BookMetadata) {
 		}
 	}
 }
-

@@ -288,6 +288,10 @@ func TestCatalog_IngestBook_EndToEnd(t *testing.T) {
 	if ingestRes.Book.SeriesIndex == nil || *ingestRes.Book.SeriesIndex != 3.5 {
 		t.Errorf("series index mismatch: %v", ingestRes.Book.SeriesIndex)
 	}
+	var label string
+	if err := db.QueryRowContext(ctx, "SELECT series_index_display FROM books WHERE id = ?", ingestRes.Book.ID).Scan(&label); err != nil || label != "Book 3.5" {
+		t.Fatalf("expected saved series label Book 3.5, got %q: %v", label, err)
+	}
 	if ingestRes.Edition.Format != "epub" {
 		t.Errorf("edition format mismatch: %s", ingestRes.Edition.Format)
 	}

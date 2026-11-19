@@ -219,6 +219,14 @@ func (c *Catalog) GetBookByAuthorAndTitle(ctx context.Context, authorID, title s
 	return scanBook(row)
 }
 
+// SeriesIndexLabel formats a numbered position in a series.
+func SeriesIndexLabel(index *float64) string {
+	if index == nil {
+		return ""
+	}
+	return fmt.Sprintf("Book %v", *index)
+}
+
 // GetOrCreateBook finds an existing book by author and title, or inserts a new one.
 func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*database.Book, error) {
 	cleanTitle := metadata.SanitizeTitle(book.Title)
@@ -556,7 +564,7 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 
 	var indexDisplay *string
 	if book.SeriesIndex != nil {
-		d := fmt.Sprintf("#%v", *book.SeriesIndex)
+		d := SeriesIndexLabel(book.SeriesIndex)
 		indexDisplay = &d
 	}
 
@@ -726,7 +734,7 @@ func (c *Catalog) ReconcileScannedBook(ctx context.Context, sb *ScannedBook) (*I
 	}
 	var indexDisplay *string
 	if sb.SeriesIndex != nil {
-		d := fmt.Sprintf("#%v", *sb.SeriesIndex)
+		d := SeriesIndexLabel(sb.SeriesIndex)
 		indexDisplay = &d
 	}
 

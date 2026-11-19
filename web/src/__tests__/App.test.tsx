@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { App } from '../App';
@@ -331,7 +331,7 @@ describe('App Integration', () => {
                 title: 'The Obsidian Path',
                 authors: ['Alden Thorne'],
                 series_index: 1,
-                series_index_display: 'Book 1',
+                series_index_display: '#1',
                 formats: ['EPUB', 'M4B'],
                 library_book_id: 'book_1',
                 monitored: true,
@@ -349,11 +349,13 @@ describe('App Integration', () => {
     await user.click(seriesCard);
 
     const seriesDialog = await screen.findByRole('dialog', { name: 'The Obsidian Archive' });
-    expect(seriesDialog).toBeInTheDocument();
+    expect(within(seriesDialog).getAllByRole('listitem')).toHaveLength(1);
+    expect(within(seriesDialog).getByText('Book 1')).toBeInTheDocument();
 
     await user.click(await screen.findByRole('button', { name: 'The Obsidian Path' }));
     await waitFor(() => {
-      expect(screen.getByRole('dialog', { name: /Details for The Obsidian Path/i })).toBeInTheDocument();
+      const detail = screen.getByRole('dialog', { name: /Details for The Obsidian Path/i });
+      expect(within(detail).getByText('(Book 1)')).toBeInTheDocument();
     });
   });
 
