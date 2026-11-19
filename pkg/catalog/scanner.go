@@ -116,9 +116,13 @@ func ScanLibrary(libraryRoot string) (*ScanReport, error) {
 		}
 
 		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".callimachus-") {
+			if path != cleanRoot && strings.HasPrefix(d.Name(), ".") {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+
+		if strings.HasPrefix(d.Name(), ".") {
 			return nil
 		}
 
