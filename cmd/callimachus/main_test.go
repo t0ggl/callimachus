@@ -1071,3 +1071,150 @@ func TestSettingsAudiobookSizeRoundTrip(t *testing.T) {
 		t.Fatal("cannot disable audiobook limit")
 	}
 }
+
+func TestSettingsBundleSeriesRoundTripAndAuthMePreferences(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "bundle_series.db")
+	testutil.PrepareTestDBFile(t, dbPath)
+
+	srv, err := NewServer(Config{
+		ConfigDir:           tempDir,
+		DBPath:              dbPath,
+		LibraryPath:         tempDir,
+		Host:                "127.0.0.1",
+		Port:                0,
+		IndexerSyncInterval: 1 * time.Hour,
+		StagingPollInterval: 1 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	adminCookie := createTestSessionCookie(t, srv, "bundle-admin", "bundleadmin", auth.RoleAdmin)
+	curatorCookie := createTestSessionCookie(t, srv, "bundle-curator", "bundlecurator", auth.RoleCurator)
+	requesterCookie := createTestSessionCookie(t, srv, "bundle-requester", "bundlerequester", auth.RoleRequester)
+	guestCookie := createTestSessionCookie(t, srv, "bundle-guest", "bundleguest", auth.RoleGuest)
+
+	getSettings := func() APISettingsResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+		req.AddCookie(adminCookie)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/settings = %d: %s", rec.Code, rec.Body.String())
+		}
+		var out APISettingsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	putSettings := func(body string) APISettingsResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(adminCookie)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT /api/settings = %d: %s", rec.Code, rec.Body.String())
+		}
+		var out APISettingsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	getMePref := func(cookie *http.Cookie) bool {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/auth/me = %d: %s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			Role        string              `json:"role"`
+			Preferences *auth.UIPreferences `json:"preferences"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Preferences == nil {
+			t.Fatalf("expected preferences in /api/auth/me response, got: %s", rec.Body.String())
+		}
+		return payload.Preferences.BundleSeriesInLibrary
+	}
+
+	// Default is true across settings and /api/auth/me for all roles
+	if !getSettings().Library.BundleSeriesInLibrary {
+		t.Fatal("expected default bundleSeriesInLibrary=true")
+	}
+	for name, ck := range map[string]*http.Cookie{
+		"admin":     adminCookie,
+		"curator":   curatorCookie,
+		"requester": requesterCookie,
+		"guest":     guestCookie,
+	} {
+		if !getMePref(ck) {
+			t.Fatalf("expected default bundleSeriesInLibrary=true on /api/auth/me for %s", name)
+		}
+	}
+
+	// Admin disables bundling -> reflected in /api/settings and /api/auth/me for all roles
+	updated := putSettings(`{"library":{"bundleSeriesInLibrary":false}}`)
+	if updated.Library.BundleSeriesInLibrary {
+		t.Fatal("expected bundleSeriesInLibrary=false after PUT")
+	}
+	for name, ck := range map[string]*http.Cookie{
+		"admin":     adminCookie,
+		"curator":   curatorCookie,
+		"requester": requesterCookie,
+		"guest":     guestCookie,
+	} {
+		if getMePref(ck) {
+			t.Fatalf("expected bundleSeriesInLibrary=false on /api/auth/me for %s after admin toggle", name)
+		}
+	}
+
+	// Non-admin still cannot read or mutate /api/settings
+	for name, ck := range map[string]*http.Cookie{
+		"curator":   curatorCookie,
+		"requester": requesterCookie,
+		"guest":     guestCookie,
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+		req.AddCookie(ck)
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 on GET /api/settings for %s, got %d", name, rec.Code)
+		}
+	}
+
+	// Env override takes precedence and locks DB writes
+	t.Setenv("CALLIMACHUS_BUNDLE_SERIES_IN_LIBRARY", "true")
+	overridden := putSettings(`{"library":{"bundleSeriesInLibrary":false}}`)
+	if !overridden.Library.BundleSeriesInLibrary {
+		t.Fatal("expected env override true to win")
+	}
+	if !overridden.Overrides[config.KeyBundleSeriesInLibrary].IsOverridden ||
+		overridden.Overrides[config.KeyBundleSeriesInLibrary].OverriddenBy != "CALLIMACHUS_BUNDLE_SERIES_IN_LIBRARY" {
+		t.Fatalf("expected override metadata for bundle_series_in_library: %+v", overridden.Overrides[config.KeyBundleSeriesInLibrary])
+	}
+	if !getMePref(guestCookie) {
+		t.Fatal("expected env override true on /api/auth/me for guest")
+	}
+
+	// Clearing env override restores persisted DB false
+	t.Setenv("CALLIMACHUS_BUNDLE_SERIES_IN_LIBRARY", "")
+	if getSettings().Library.BundleSeriesInLibrary {
+		t.Fatal("expected persisted false after clearing env override")
+	}
+}
+

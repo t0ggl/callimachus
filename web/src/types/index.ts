@@ -127,11 +127,16 @@ export interface BookRequest {
   requestedAt: string;
 }
 
+export interface UIPreferences {
+  bundleSeriesInLibrary: boolean;
+}
+
 export interface UserProfile {
   id: string;
   username: string;
   role: 'admin' | 'curator' | 'requester' | 'guest' | 'user';
   email: string;
+  preferences?: UIPreferences;
 }
 
 export interface IndexerConfig {
@@ -158,6 +163,7 @@ export interface LibrarySettings {
   rootPath: string;
   stagingPollInterval: string;
   indexerSyncInterval: string;
+  bundleSeriesInLibrary?: boolean;
 }
 
 export interface ProwlarrSettings {

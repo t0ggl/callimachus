@@ -251,3 +251,191 @@ it('offers retry on failure and explains incomplete order', async () => {
   await waitFor(() => expect(screen.getByText(/Showing known catalog/)).toBeInTheDocument());
   expect(screen.getByText('No books found for this series.')).toBeInTheDocument();
 });
+
+it('bundles series books in grid and list views by default while keeping standalone books individual', async () => {
+  const books: Book[] = [
+    {
+      id: 'book-dune-2',
+      title: 'Dune Messiah',
+      authorId: 'auth-1',
+      authorName: 'Frank Herbert',
+      seriesId: 'ser-dune',
+      seriesTitle: 'Dune Chronicles',
+      seriesIndex: 2,
+      seriesIndexDisplay: 'Book 2',
+      coverUrl: '/api/books/book-dune-2/cover',
+      releaseDate: '1969-10-15',
+      formats: ['M4B'],
+      editions: [{ id: 'ed-2', bookId: 'book-dune-2', format: 'M4B', language: 'en', assets: [] }],
+    },
+    {
+      id: 'book-dune-1',
+      title: 'Dune',
+      authorId: 'auth-1',
+      authorName: 'Frank Herbert',
+      seriesId: 'ser-dune',
+      seriesTitle: 'Dune Chronicles',
+      seriesIndex: 1,
+      seriesIndexDisplay: 'Book 1',
+      coverUrl: '/api/books/book-dune-1/cover',
+      releaseDate: '1965-08-01',
+      formats: ['EPUB'],
+      editions: [{ id: 'ed-1', bookId: 'book-dune-1', format: 'EPUB', language: 'en', assets: [] }],
+    },
+    {
+      id: 'book-standalone',
+      title: 'Standalone Tales',
+      authorId: 'auth-2',
+      authorName: 'Ursula Le Guin',
+      coverUrl: '/api/books/book-standalone/cover',
+      releaseDate: '1975-01-01',
+      formats: ['EPUB'],
+      editions: [{ id: 'ed-3', bookId: 'book-standalone', format: 'EPUB', language: 'en', assets: [] }],
+    },
+  ];
+  const onSelectBook = vi.fn();
+  const user = userEvent.setup({ delay: null });
+
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        title: 'Dune Chronicles',
+        status: 'ongoing',
+        monitored: true,
+        authors: ['Frank Herbert'],
+        total_books: 6,
+        owned_count: 2,
+        complete: true,
+        books: [
+          { title: 'Dune', authors: ['Frank Herbert'], series_index: 1, library_book_id: 'book-dune-1', formats: ['EPUB'], monitored: true },
+          { title: 'Dune Messiah', authors: ['Frank Herbert'], series_index: 2, library_book_id: 'book-dune-2', formats: ['M4B'], monitored: true },
+        ],
+      }),
+    })
+  );
+
+  render(
+    <CatalogView
+      books={books}
+      authors={[
+        { id: 'auth-1', name: 'Frank Herbert', sortName: 'Herbert, Frank', bookCount: 2 },
+        { id: 'auth-2', name: 'Ursula Le Guin', sortName: 'Le Guin, Ursula', bookCount: 1 },
+      ]}
+      series={[{ id: 'ser-dune', title: 'Dune Chronicles', totalBooks: 6, status: 'ongoing' }]}
+      onSelectBook={onSelectBook}
+      selectedIndex={-1}
+    />
+  );
+
+  // Grid view: 1 bundled series card + 1 standalone book card
+  const seriesCard = screen.getByTestId('series-card-ser-dune');
+  expect(seriesCard).toBeInTheDocument();
+  expect(within(seriesCard).getByText('Series')).toBeInTheDocument();
+  expect(within(seriesCard).getByText('2 books')).toBeInTheDocument();
+  expect(within(seriesCard).getByText(/of 6 in series/)).toBeInTheDocument();
+  expect(within(seriesCard).getByText('EPUB')).toBeInTheDocument();
+  expect(within(seriesCard).getByText('M4B')).toBeInTheDocument();
+  // Picks Book 1's cover (lowest seriesIndex)
+  expect(within(seriesCard).getByRole('img', { name: 'Dune Chronicles' })).toHaveAttribute(
+    'src',
+    '/api/books/book-dune-1/cover'
+  );
+  expect(screen.queryByTestId('book-card-book-dune-1')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('book-card-book-dune-2')).not.toBeInTheDocument();
+
+  const standaloneCard = screen.getByTestId('book-card-book-standalone');
+  expect(standaloneCard).toBeInTheDocument();
+
+  // Search filter works cleanly with bundled series (matches book title inside series)
+  const searchInput = screen.getByPlaceholderText('Filter books...');
+  await user.type(searchInput, 'Messiah');
+  expect(screen.getByTestId('series-card-ser-dune')).toBeInTheDocument();
+  expect(screen.queryByTestId('book-card-book-standalone')).not.toBeInTheDocument();
+  await user.clear(searchInput);
+
+  // Format filter works cleanly with bundled series
+  await user.click(screen.getByTestId('filter-format-m4b'));
+  expect(screen.getByTestId('series-card-ser-dune')).toBeInTheDocument();
+  expect(within(screen.getByTestId('series-card-ser-dune')).getByText('1 book')).toBeInTheDocument();
+  expect(screen.queryByTestId('book-card-book-standalone')).not.toBeInTheDocument();
+  await user.click(screen.getByTestId('filter-format-all'));
+
+  // Clicking standalone book opens BookDetailModal callback
+  await user.click(screen.getByTestId('book-card-book-standalone'));
+  expect(onSelectBook).toHaveBeenCalledWith(books[2]);
+
+  // Clicking bundled series card opens SeriesDetailModal
+  await user.click(screen.getByTestId('series-card-ser-dune'));
+  const dialog = await screen.findByRole('dialog');
+  expect(within(dialog).getByRole('heading', { name: 'Dune Chronicles' })).toBeInTheDocument();
+  await user.click(within(dialog).getByTestId('close-series-detail'));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+  // List view also bundles series books and opens SeriesDetailModal on click
+  await user.click(screen.getByTestId('view-list-btn'));
+  const seriesRow = screen.getByTestId('series-row-ser-dune');
+  expect(seriesRow).toBeInTheDocument();
+  expect(within(seriesRow).getByText('Series')).toBeInTheDocument();
+  expect(within(seriesRow).getByText('2 books / 6')).toBeInTheDocument();
+  expect(within(seriesRow).getByText('2')).toBeInTheDocument(); // combined editions count
+  expect(screen.getByTestId('book-row-book-standalone')).toBeInTheDocument();
+  expect(screen.queryByTestId('book-row-book-dune-1')).not.toBeInTheDocument();
+
+  await user.click(seriesRow);
+  expect(await screen.findByRole('dialog')).toBeInTheDocument();
+});
+
+it('renders every book individually in grid and list views when bundling is disabled', async () => {
+  const books: Book[] = [
+    {
+      id: 'book-dune-1',
+      title: 'Dune',
+      authorId: 'auth-1',
+      authorName: 'Frank Herbert',
+      seriesId: 'ser-dune',
+      seriesTitle: 'Dune Chronicles',
+      seriesIndex: 1,
+      formats: ['EPUB'],
+      editions: [],
+    },
+    {
+      id: 'book-dune-2',
+      title: 'Dune Messiah',
+      authorId: 'auth-1',
+      authorName: 'Frank Herbert',
+      seriesId: 'ser-dune',
+      seriesTitle: 'Dune Chronicles',
+      seriesIndex: 2,
+      formats: ['M4B'],
+      editions: [],
+    },
+  ];
+  const onSelectBook = vi.fn();
+  const user = userEvent.setup({ delay: null });
+
+  render(
+    <CatalogView
+      books={books}
+      authors={[{ id: 'auth-1', name: 'Frank Herbert', sortName: 'Herbert, Frank', bookCount: 2 }]}
+      series={[{ id: 'ser-dune', title: 'Dune Chronicles', totalBooks: 6, status: 'ongoing' }]}
+      bundleSeriesInLibrary={false}
+      onSelectBook={onSelectBook}
+      selectedIndex={-1}
+    />
+  );
+
+  expect(screen.queryByTestId('series-card-ser-dune')).not.toBeInTheDocument();
+  expect(screen.getByTestId('book-card-book-dune-1')).toBeInTheDocument();
+  expect(screen.getByTestId('book-card-book-dune-2')).toBeInTheDocument();
+
+  await user.click(screen.getByTestId('book-card-book-dune-1'));
+  expect(onSelectBook).toHaveBeenCalledWith(books[0]);
+
+  await user.click(screen.getByTestId('view-list-btn'));
+  expect(screen.queryByTestId('series-row-ser-dune')).not.toBeInTheDocument();
+  expect(screen.getByTestId('book-row-book-dune-1')).toBeInTheDocument();
+  expect(screen.getByTestId('book-row-book-dune-2')).toBeInTheDocument();
+});
+

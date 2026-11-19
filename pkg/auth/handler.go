@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -20,15 +21,17 @@ type HandlerConfig struct {
 	DB             *database.DB
 	OIDCClient     *OIDCClient
 	FallbackAuth   *FallbackAuthenticator
+	UIPreferences  func(context.Context) *UIPreferences
 }
 
 // AuthHandler exposes HTTP authentication routes.
 type AuthHandler struct {
-	sessionMgr   *SessionManager
-	db           *database.DB
-	oidcClient   *OIDCClient
-	fallbackAuth *FallbackAuthenticator
-	mux          *http.ServeMux
+	sessionMgr    *SessionManager
+	db            *database.DB
+	oidcClient    *OIDCClient
+	fallbackAuth  *FallbackAuthenticator
+	uiPreferences func(context.Context) *UIPreferences
+	mux           *http.ServeMux
 }
 
 // NewAuthHandler creates an initialized AuthHandler with registered routes.
@@ -39,11 +42,12 @@ func NewAuthHandler(cfg HandlerConfig) *AuthHandler {
 	}
 
 	h := &AuthHandler{
-		sessionMgr:   sm,
-		db:           cfg.DB,
-		oidcClient:   cfg.OIDCClient,
-		fallbackAuth: cfg.FallbackAuth,
-		mux:          http.NewServeMux(),
+		sessionMgr:    sm,
+		db:            cfg.DB,
+		oidcClient:    cfg.OIDCClient,
+		fallbackAuth:  cfg.FallbackAuth,
+		uiPreferences: cfg.UIPreferences,
+		mux:           http.NewServeMux(),
 	}
 
 	h.registerEndpoints(h.mux, "/api/auth")
@@ -326,6 +330,18 @@ func (h *AuthHandler) handleMe(w http.ResponseWriter, r *http.Request) {
 
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	if h.uiPreferences != nil {
+		resp := struct {
+			*User
+			Preferences *UIPreferences `json:"preferences,omitempty"`
+		}{
+			User:        user,
+			Preferences: h.uiPreferences(r.Context()),
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 

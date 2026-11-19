@@ -152,6 +152,7 @@ describe('SettingsView Environment Overrides', () => {
       completedDownloadRoot: "",
       stagingPollInterval: '15s',
       indexerSyncInterval: '15m0s',
+      bundleSeriesInLibrary: true,
     });
     expect(payload.library.rootPath).toBeUndefined();
 
@@ -426,3 +427,60 @@ describe('Log Level', () => {
     expect(save.mock.calls[0][0]).not.toHaveProperty('logLevel');
   });
 });
+
+describe('Bundle series in Library view setting', () => {
+  it('defaults to enabled and saves toggled value', async () => {
+    const user = userEvent.setup({ delay: null });
+    const save = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SettingsView
+        indexers={[]}
+        librarySettings={{ ...baseLibrary, bundleSeriesInLibrary: true }}
+        qualityProfile={baseQuality}
+        onSaveSettings={save}
+      />
+    );
+
+    await user.click(screen.getByTestId('tab-settings-library'));
+    const checkbox = screen.getByRole('checkbox', { name: 'Bundle series in Library view' });
+    expect(checkbox).toBeEnabled();
+    expect(checkbox).toBeChecked();
+
+    await user.click(checkbox);
+    expect(checkbox).not.toBeChecked();
+    await user.click(screen.getByTestId('save-settings-btn'));
+
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        library: expect.objectContaining({ bundleSeriesInLibrary: false }),
+      })
+    );
+  });
+
+  it('locks the toggle and omits bundleSeriesInLibrary when overridden by env', async () => {
+    const user = userEvent.setup({ delay: null });
+    const save = vi.fn().mockResolvedValue(undefined);
+    const envVar = 'CALLIMACHUS_BUNDLE_SERIES_IN_LIBRARY';
+    render(
+      <SettingsView
+        indexers={[]}
+        librarySettings={{ ...baseLibrary, bundleSeriesInLibrary: false }}
+        qualityProfile={baseQuality}
+        overrides={{ bundle_series_in_library: { isOverridden: true, overriddenBy: envVar, envVar } }}
+        onSaveSettings={save}
+      />
+    );
+
+    await user.click(screen.getByTestId('tab-settings-library'));
+    const checkbox = screen.getByRole('checkbox', { name: 'Bundle series in Library view' });
+    expect(checkbox).not.toBeChecked();
+    expect(checkbox).toBeDisabled();
+    expect(screen.getByTestId('override-note-bundle_series_in_library')).toHaveTextContent(envVar);
+    expect(checkbox).toHaveAccessibleDescription(expect.stringContaining(envVar));
+
+    await user.click(screen.getByTestId('save-settings-btn'));
+    expect(save).toHaveBeenCalledOnce();
+    expect(save.mock.calls[0][0].library).not.toHaveProperty('bundleSeriesInLibrary');
+  });
+});
+

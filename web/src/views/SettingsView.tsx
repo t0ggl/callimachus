@@ -32,6 +32,7 @@ export interface SettingsUpdatePayload {
     completedDownloadRoot?: string;
     stagingPollInterval?: string;
     indexerSyncInterval?: string;
+    bundleSeriesInLibrary?: boolean;
   };
   prowlarr?: {
     url?: string;
@@ -65,6 +66,7 @@ const DEFAULT_LIBRARY: LibrarySettings = {
   rootPath: './books',
   stagingPollInterval: '5s',
   indexerSyncInterval: '15m0s',
+  bundleSeriesInLibrary: true,
 };
 
 const DEFAULT_PROWLARR: ProwlarrSettings = {
@@ -205,6 +207,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           : {}),
         ...(!isOverridden('indexer_sync_interval')
           ? { indexerSyncInterval: librarySettings.indexerSyncInterval }
+          : {}),
+        ...(!isOverridden('bundle_series_in_library')
+          ? { bundleSeriesInLibrary: librarySettings.bundleSeriesInLibrary ?? true }
           : {}),
       },
       prowlarr: {
@@ -705,6 +710,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 />
                 <OverrideNote settingKey="indexer_sync_interval" />
               </div>
+            </div>
+
+            <div className="pt-3 border-t border-zinc-800/80">
+              <div className="flex items-center justify-between gap-2">
+                <label
+                  htmlFor="bundle-series-in-library"
+                  className={`flex items-center gap-2.5 text-zinc-200 font-medium ${
+                    isOverridden('bundle_series_in_library') ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'
+                  }`}
+                >
+                  <input
+                    id="bundle-series-in-library"
+                    type="checkbox"
+                    checked={librarySettings.bundleSeriesInLibrary ?? true}
+                    disabled={isOverridden('bundle_series_in_library')}
+                    aria-describedby={
+                      isOverridden('bundle_series_in_library')
+                        ? 'bundle-series-help override-note-bundle_series_in_library'
+                        : 'bundle-series-help'
+                    }
+                    onChange={(e) =>
+                      setLibrarySettings((prev) => ({
+                        ...prev,
+                        bundleSeriesInLibrary: e.target.checked,
+                      }))
+                    }
+                    className="rounded-sm bg-zinc-950 border-zinc-700 text-blue-500 focus:ring-0 disabled:cursor-not-allowed"
+                  />
+                  <span>Bundle series in Library view</span>
+                </label>
+                <OverrideBadge settingKey="bundle_series_in_library" />
+              </div>
+              <p id="bundle-series-help" className="mt-1.5 text-xs text-zinc-400">
+                Group books belonging to the same series into a single series entry in the main Library view. Standalone books remain individual.
+              </p>
+              <OverrideNote settingKey="bundle_series_in_library" />
             </div>
           </div>
         </div>

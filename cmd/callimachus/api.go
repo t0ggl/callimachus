@@ -128,6 +128,7 @@ type APILibrarySettings struct {
 	RootPath              string `json:"rootPath"`
 	StagingPollInterval   string `json:"stagingPollInterval"`
 	IndexerSyncInterval   string `json:"indexerSyncInterval"`
+	BundleSeriesInLibrary bool   `json:"bundleSeriesInLibrary"`
 }
 
 type APIProwlarrSettings struct {
@@ -167,6 +168,7 @@ type APISettingsUpdateRequest struct {
 		RootPath              *string `json:"rootPath"`
 		StagingPollInterval   *string `json:"stagingPollInterval"`
 		IndexerSyncInterval   *string `json:"indexerSyncInterval"`
+		BundleSeriesInLibrary *bool   `json:"bundleSeriesInLibrary"`
 	} `json:"library"`
 	Prowlarr *struct {
 		URL          *string `json:"url"`
@@ -562,6 +564,7 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 		CompletedDownloadRoot: cfg.CompletedDownloadRoot,
 		StagingPollInterval:   cfg.StagingPollInterval.String(),
 		IndexerSyncInterval:   cfg.IndexerSyncInterval.String(),
+		BundleSeriesInLibrary: cfg.BundleSeriesInLibrary,
 	}
 
 	resp.Metadata = map[string]bool{config.KeyGoogleBooksAPIKey: cfg.GoogleBooksAPIKey != "", config.KeyHardcoverAPIKey: cfg.HardcoverAPIKey != ""}
@@ -714,6 +717,9 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Library.IndexerSyncInterval != nil {
 			updates[config.KeyIndexerSyncInterval] = *req.Library.IndexerSyncInterval
+		}
+		if req.Library.BundleSeriesInLibrary != nil {
+			updates[config.KeyBundleSeriesInLibrary] = strconv.FormatBool(*req.Library.BundleSeriesInLibrary)
 		}
 	}
 

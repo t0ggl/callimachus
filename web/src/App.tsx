@@ -1,7 +1,7 @@
 import { EntityView } from './views/EntityView';
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Layout, NavView } from './components/Layout';
-import { CatalogView } from './views/CatalogView';
+import { CatalogView, buildCatalogDisplayItems } from './views/CatalogView';
 import { ActivityView } from './views/ActivityView';
 import { SettingsView } from './views/SettingsView';
 import { CommandPalette } from './components/CommandPalette';
@@ -43,6 +43,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
         setCurrentView('settings');
       }
       setSelectedBook(null);
+      setSelectedSeries(null);
       setIsPaletteOpen(false);
     };
     window.addEventListener('hashchange', changed);
@@ -53,6 +54,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
   try { entityName = match ? decodeURIComponent(match[2]) : ''; } catch { /* Invalid routes return to the library. */ }
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
+  const [selectedSeries, setSelectedSeries] = useState<string | null>(null);
 
   // Real backend state
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
@@ -66,6 +68,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
     rootPath: './books',
     stagingPollInterval: '5s',
     indexerSyncInterval: '15m0s',
+    bundleSeriesInLibrary: true,
   });
   const [prowlarrSettings, setProwlarrSettings] = useState<ProwlarrSettings>({
     url: '',
@@ -111,8 +114,15 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
         return;
       }
       if (res.ok) {
-        const user = await res.json();
+        const user: UserProfile = await res.json();
         setCurrentUser(user);
+        if (typeof user?.preferences?.bundleSeriesInLibrary === 'boolean') {
+          const bundlePref = user.preferences.bundleSeriesInLibrary;
+          setLibrarySettings((prev) => ({
+            ...prev,
+            bundleSeriesInLibrary: bundlePref,
+          }));
+        }
       } else {
         setCurrentUser(null);
       }
@@ -292,18 +302,34 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
     }
   }, [currentUser, fetchCatalog, fetchRequests, fetchActivity, fetchSettings]);
 
+  const bundleSeriesInLibrary = librarySettings.bundleSeriesInLibrary ?? true;
+
+  const catalogDisplayItems = useMemo(
+    () => buildCatalogDisplayItems(books, series, bundleSeriesInLibrary),
+    [books, series, bundleSeriesInLibrary]
+  );
+
   // Vim navigation for catalog
   const { selectedIndex } = useKeyboardNav({
-    itemsCount: books.length,
-    enabled: currentView === 'catalog' && !isPaletteOpen && selectedBook === null,
+    itemsCount: catalogDisplayItems.length,
+    enabled:
+      currentView === 'catalog' &&
+      !isPaletteOpen &&
+      selectedBook === null &&
+      selectedSeries === null,
     onSelect: (index) => {
-      if (books[index]) {
-        setSelectedBook(books[index]);
+      const item = catalogDisplayItems[index];
+      if (!item) return;
+      if (item.kind === 'series') {
+        setSelectedSeries(item.title);
+      } else {
+        setSelectedBook(item.book);
       }
     },
     onEscape: () => {
       if (selectedBook) setSelectedBook(null);
-      if (isPaletteOpen) setIsPaletteOpen(false);
+      else if (selectedSeries) setSelectedSeries(null);
+      else if (isPaletteOpen) setIsPaletteOpen(false);
     },
   });
 
@@ -333,7 +359,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
       }
 
       // View switching shortcuts 1, 2, 3
-      if (!isInput && !isPaletteOpen && !selectedBook) {
+      if (!isInput && !isPaletteOpen && !selectedBook && !selectedSeries) {
         if (e.key === '1') {
           window.location.hash = '';
           setCurrentView('catalog');
@@ -349,7 +375,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPaletteOpen, selectedBook, isAdmin]);
+  }, [isPaletteOpen, selectedBook, selectedSeries, isAdmin]);
 
   // Request actions wired to real API
   const handleSubmitRequest = async (
@@ -397,8 +423,11 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
             books={books}
             authors={authors}
             series={series}
+            bundleSeriesInLibrary={bundleSeriesInLibrary}
             onSelectBook={(b) => setSelectedBook(b)}
             selectedIndex={selectedIndex}
+            selectedSeries={selectedSeries}
+            onSelectSeries={setSelectedSeries}
             onScanComplete={fetchCatalog}
           />
         )}

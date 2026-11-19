@@ -55,3 +55,8 @@ type User struct {
 	SubjectID    string    `json:"subject_id,omitempty" db:"oidc_sub"`
 	CreatedAt    time.Time `json:"created_at" db:"created_at"`
 }
+
+// UIPreferences holds non-sensitive UI display preferences safe for all authenticated users.
+type UIPreferences struct {
+	BundleSeriesInLibrary bool `json:"bundleSeriesInLibrary"`
+}
