@@ -7,8 +7,9 @@ import {
   Calendar,
   Check,
   Info,
+  SlidersHorizontal,
 } from 'lucide-react';
-import { EntityLink } from './EntityLink';
+import { EntityLink, entityURL } from './EntityLink';
 
 export interface SeriesBookEntry {
   title: string;
@@ -243,11 +244,17 @@ export function SeriesDetailModal({ title, onClose, onOpenBook }: SeriesDetailMo
                     )}
                   </div>
 
-                  <span className="text-xs">
-                    <EntityLink kind="series" name={displayTitle}>
-                      Manage monitoring
-                    </EntityLink>
-                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      window.location.hash = entityURL('series', displayTitle);
+                      onClose();
+                    }}
+                    className="inline-flex items-center gap-2 px-3 py-2 text-xs font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
+                  >
+                    <SlidersHorizontal className="w-4 h-4" aria-hidden="true" />
+                    Manage monitoring
+                  </button>
                 </div>
 
                 {data.description?.trim() ? (
