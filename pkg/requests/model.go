@@ -76,6 +76,7 @@ var (
 	ErrInvalidStatus     = errors.New("invalid request status")
 	ErrInvalidFormat     = errors.New("invalid request format")
 	ErrInvalidInput      = errors.New("invalid request input")
+	ErrDuplicateRequest  = errors.New("request already exists")
 )
 
 // validTransitions defines permissible state transitions for book requests.

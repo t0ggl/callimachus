@@ -5,6 +5,8 @@ import { RequestMetadata, RequestType } from '../types';
 import { SeriesBadge } from './SeriesBadge';
 import { SeriesDetailModal } from './SeriesDetailModal';
 
+type RequestFormat = 'epub' | 'm4b';
+
 type Match = {
   description?: string;
   cover_url?: string;
@@ -15,7 +17,27 @@ type Match = {
   authors?: string[];
   year: number;
   library_book_id?: string;
+  requested_formats?: string[];
+  request_status?: string;
 };
+
+function requiredFormats(format: RequestType): RequestFormat[] {
+  if (format === 'ebook') return ['epub'];
+  if (format === 'audiobook') return ['m4b'];
+  return ['epub', 'm4b'];
+}
+
+function normalizeRequestedFormats(formats?: string[]): RequestFormat[] {
+  if (!formats) return [];
+  const out: RequestFormat[] = [];
+  for (const f of formats) {
+    const norm = f.toLowerCase();
+    if (norm === 'epub' || norm === 'ebook') out.push('epub');
+    else if (norm === 'm4b' || norm === 'audiobook') out.push('m4b');
+    else if (norm === 'both') out.push('epub', 'm4b');
+  }
+  return out;
+}
 
 interface Props {
   query: string;
@@ -69,7 +91,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
   const [errorSource, setErrorSource] = useState<'search' | 'add' | null>(null);
   const [message, setMessage] = useState('');
   const [searched, setSearched] = useState(false);
-  const [added, setAdded] = useState<string[]>([]);
+  const [addedFormats, setAddedFormats] = useState<Record<string, RequestFormat[]>>({});
 
   useEffect(() => {
     const controller = new AbortController();
@@ -112,6 +134,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
     const authors = m.authors ?? [];
     const authorText = authors.join(', ');
     const itemKey = `${m.title}\0${authorText}`;
+    const targetFormats = requiredFormats(format);
     setAddingKey(itemKey);
     setError('');
     setErrorSource(null);
@@ -124,7 +147,11 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
         series_index: m.series_index,
         synopsis: m.description,
       });
-      setAdded((prev) => (prev.includes(itemKey) ? prev : [...prev, itemKey]));
+      setAddedFormats((prev) => {
+        const existing = prev[itemKey] ?? [];
+        const merged = Array.from(new Set<RequestFormat>([...existing, ...targetFormats]));
+        return { ...prev, [itemKey]: merged };
+      });
       setMessage(`Added ${m.title}. Acquisition will run in the background.`);
     } catch (e) {
       setError((e as Error).message);
@@ -227,7 +254,11 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
           {matches.map((m, i) => {
             const authors = m.authors ?? [];
             const itemKey = `${m.title}\0${authors.join(', ')}`;
-            const isAdded = added.includes(itemKey);
+            const requestedForBook = new Set<RequestFormat>([
+              ...normalizeRequestedFormats(m.requested_formats),
+              ...(addedFormats[itemKey] ?? []),
+            ]);
+            const isAdded = requiredFormats(format).every((f) => requestedForBook.has(f));
             const isAddingThis = addingKey === itemKey;
 
             return (
@@ -267,6 +298,26 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
                           </span>
                           <span className="font-mono text-[11px] text-zinc-400 tabular-nums">
                             {m.year}
+                          </span>
+                        </>
+                      )}
+                      {!m.library_book_id && requestedForBook.size > 0 && (
+                        <>
+                          <span className="text-zinc-600" aria-hidden="true">
+                            ·
+                          </span>
+                          <span className="text-[11px] font-medium text-emerald-300">
+                            {[
+                              requestedForBook.has('epub') ? 'eBook' : null,
+                              requestedForBook.has('m4b') ? 'Audiobook' : null,
+                            ]
+                              .filter(Boolean)
+                              .join(' & ')}{' '}
+                            {m.request_status === 'downloading'
+                              ? 'downloading'
+                              : m.request_status === 'searching'
+                                ? 'searching'
+                                : 'requested'}
                           </span>
                         </>
                       )}

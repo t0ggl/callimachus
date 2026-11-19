@@ -180,4 +180,89 @@ describe('book discovery', () => {
     expect(alert).toHaveTextContent('Request quota exceeded');
     expect(within(alert).queryByRole('button', { name: 'Retry search' })).not.toBeInTheDocument();
   });
+
+  it('shows Added from server active requests across reopen/re-search and allows requesting other formats', async () => {
+    const user = userEvent.setup({ delay: null });
+    const add = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => [
+          {
+            title: 'Dune',
+            authors: ['Frank Herbert'],
+            year: 1965,
+            requested_formats: ['epub'],
+            request_status: 'searching',
+          },
+        ],
+      }),
+    );
+
+    const { unmount } = render(<DiscoveryResults query="Dune" defaultSearchFormat="ebook" onSubmitRequest={add} />);
+
+    // Persisted server-reported eBook request shows Added (disabled) immediately
+    expect(await screen.findByRole('button', { name: 'Added Dune' })).toBeDisabled();
+    expect(screen.getByText('eBook searching')).toBeInTheDocument();
+
+    // Switching format to Audiobook enables adding Audiobook
+    const formatSelect = screen.getByRole('combobox', { name: 'Format' });
+    await user.selectOptions(formatSelect, 'audiobook');
+    const addAudioBtn = screen.getByRole('button', { name: 'Add Dune' });
+    expect(addAudioBtn).toBeEnabled();
+
+    await user.click(addAudioBtn);
+    expect(add).toHaveBeenCalledWith('Dune', 'Frank Herbert', 'audiobook', 1965, expect.any(Object));
+    expect(await screen.findByRole('button', { name: 'Added Dune' })).toBeDisabled();
+
+    // Both format is now also Added because both epub and m4b are requested
+    await user.selectOptions(formatSelect, 'both');
+    expect(screen.getByRole('button', { name: 'Added Dune' })).toBeDisabled();
+
+    // Unmount and remount (simulating closing/reopening palette) still reflects server state
+    unmount();
+    render(<DiscoveryResults query="Frank Herbert" defaultSearchFormat="ebook" onSubmitRequest={add} />);
+    expect(await screen.findByRole('button', { name: 'Added Dune' })).toBeDisabled();
+  });
+
+  it('disables Add for all formats when server reports both epub and m4b active, and lets Both add missing format', async () => {
+    const user = userEvent.setup({ delay: null });
+    const add = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => [
+          {
+            title: 'Hyperion',
+            authors: ['Dan Simmons'],
+            year: 1989,
+            requested_formats: ['epub'],
+            request_status: 'downloading',
+          },
+          {
+            title: 'Good Omens',
+            authors: ['Terry Pratchett', 'Neil Gaiman'],
+            year: 1990,
+            requested_formats: ['epub', 'm4b'],
+            request_status: 'downloading',
+          },
+        ],
+      }),
+    );
+
+    render(<DiscoveryResults query="Sci-fi" defaultSearchFormat="both" onSubmitRequest={add} />);
+
+    // Good Omens has both formats active -> Added (disabled) in Both, eBook, and Audiobook
+    expect(await screen.findByRole('button', { name: 'Added Good Omens' })).toBeDisabled();
+    // Hyperion only has epub active -> Add enabled in Both so missing Audiobook can be requested
+    const addHyperion = screen.getByRole('button', { name: 'Add Hyperion' });
+    expect(addHyperion).toBeEnabled();
+    expect(screen.getByText('eBook downloading')).toBeInTheDocument();
+
+    await user.click(addHyperion);
+    expect(add).toHaveBeenCalledWith('Hyperion', 'Dan Simmons', 'both', 1989, expect.any(Object));
+    expect(await screen.findByRole('button', { name: 'Added Hyperion' })).toBeDisabled();
+  });
 });

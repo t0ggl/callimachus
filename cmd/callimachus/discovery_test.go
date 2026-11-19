@@ -121,7 +121,9 @@ func TestGroupDiscoveryBooksRetainsAliasesAndDistinctWorks(t *testing.T) {
 
 type discoverTestMatch struct {
 	metadata.BookMetadata
-	LibraryBookID string `json:"library_book_id"`
+	LibraryBookID    string   `json:"library_book_id"`
+	RequestedFormats []string `json:"requested_formats"`
+	RequestStatus    string   `json:"request_status"`
 }
 
 func discoverTestMatches(t *testing.T, s *Server) []discoverTestMatch {
@@ -261,4 +263,51 @@ func TestDiscoveryRespectsOpenLibraryEnabled(t *testing.T) {
 			t.Fatalf("status = %d, want 502: %s", w.Code, w.Body.String())
 		}
 	})
+}
+
+func TestDiscoverReportsActiveRequestsAndIgnoresFailedOrCancelled(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	if _, err := db.Exec(`INSERT INTO users(id,username,email,role,auth_source) VALUES('u1','u1','u1@example.test','requester','local')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{
+		// Normalized author ("Herbert, Frank" -> "Frank Herbert") in searching state
+		`INSERT INTO book_requests(user_id,title,author,format,status,dismissed) VALUES('u1','Dune','Herbert, Frank','epub','searching',0)`,
+		// Multi-author book with both formats active (downloading takes precedence over available)
+		`INSERT INTO book_requests(user_id,title,author,format,status,dismissed) VALUES('u1','Good Omens','Terry Pratchett, Neil Gaiman','epub','available',0)`,
+		`INSERT INTO book_requests(user_id,title,author,format,status,dismissed) VALUES('u1','Good Omens','Terry Pratchett, Neil Gaiman','m4b','downloading',0)`,
+		// Failed and cancelled/dismissed requests must NOT block re-requesting
+		`INSERT INTO book_requests(user_id,title,author,format,status,dismissed) VALUES('u1','Failed Book','Writer One','epub','error',0)`,
+		`INSERT INTO book_requests(user_id,title,author,format,status,dismissed) VALUES('u1','Cancelled Book','Writer Two','m4b','cancelled',1)`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mt := testutil.NewMockTransport()
+	mt.RegisterString("/search.json", 200, `{"docs":[
+		{"key":"/works/OL1W","title":"Dune","author_name":["Frank Herbert"]},
+		{"key":"/works/OL2W","title":"Good Omens","author_name":["Terry Pratchett","Neil Gaiman"]},
+		{"key":"/works/OL3W","title":"Failed Book","author_name":["Writer One"]},
+		{"key":"/works/OL4W","title":"Cancelled Book","author_name":["Writer Two"]}
+	]}`, nil)
+
+	matches := discoverTestMatches(t, &Server{db: db, prowlarrHTTPClient: mt.Client()})
+	if len(matches) != 4 {
+		t.Fatalf("expected 4 matches, got %d: %+v", len(matches), matches)
+	}
+
+	if !slices.Equal(matches[0].RequestedFormats, []string{"epub"}) || matches[0].RequestStatus != "searching" {
+		t.Errorf("Dune expected requested_formats=[epub] status=searching, got formats=%v status=%q", matches[0].RequestedFormats, matches[0].RequestStatus)
+	}
+	if !slices.Equal(matches[1].RequestedFormats, []string{"epub", "m4b"}) || matches[1].RequestStatus != "downloading" {
+		t.Errorf("Good Omens expected requested_formats=[epub m4b] status=downloading, got formats=%v status=%q", matches[1].RequestedFormats, matches[1].RequestStatus)
+	}
+	if len(matches[2].RequestedFormats) != 0 || matches[2].RequestStatus != "" {
+		t.Errorf("Failed Book should have no active request state, got formats=%v status=%q", matches[2].RequestedFormats, matches[2].RequestStatus)
+	}
+	if len(matches[3].RequestedFormats) != 0 || matches[3].RequestStatus != "" {
+		t.Errorf("Cancelled Book should have no active request state, got formats=%v status=%q", matches[3].RequestedFormats, matches[3].RequestStatus)
+	}
 }

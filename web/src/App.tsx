@@ -398,7 +398,13 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title, author, format, year, ...metadata }),
       });
-      if (!res.ok) throw new Error('Unable to add this book. Please try again.');
+      if (!res.ok) {
+        if (res.status === 409) {
+          await fetchRequests();
+          throw new Error('This book has already been added for the selected format.');
+        }
+        throw new Error('Unable to add this book. Please try again.');
+      }
       await fetchRequests();
     } catch (err) { throw err; }
   };

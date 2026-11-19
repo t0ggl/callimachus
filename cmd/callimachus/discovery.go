@@ -17,6 +17,7 @@ import (
 
 	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/metadata"
+	"github.com/t0ggl/callimachus/pkg/requests"
 )
 
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +113,9 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	}
 	type match struct {
 		metadata.BookMetadata
-		LibraryBookID string `json:"library_book_id,omitempty"`
+		LibraryBookID    string   `json:"library_book_id,omitempty"`
+		RequestedFormats []string `json:"requested_formats,omitempty"`
+		RequestStatus    string   `json:"request_status,omitempty"`
 	}
 	inventory := map[string]string{}
 	rows, err := s.db.QueryContext(r.Context(), `SELECT DISTINCT b.id,b.title,a.name FROM books b JOIN authors a ON a.id=b.author_id JOIN book_editions e ON e.book_id=b.id JOIN media_assets m ON m.edition_id=e.id`)
@@ -135,6 +138,80 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to read inventory", 500)
 		return
 	}
+
+	type activeRequest struct {
+		formats map[string]bool
+		status  string
+	}
+	statusRank := func(status string) int {
+		switch status {
+		case requests.StatusDownloading:
+			return 3
+		case requests.StatusSearching:
+			return 2
+		case requests.StatusAvailable:
+			return 1
+		default:
+			return 0
+		}
+	}
+	recordActive := func(target map[string]*activeRequest, key, format, status string) {
+		if key == "" {
+			return
+		}
+		entry := target[key]
+		if entry == nil {
+			entry = &activeRequest{formats: map[string]bool{}}
+			target[key] = entry
+		}
+		switch strings.ToLower(format) {
+		case requests.FormatBoth:
+			entry.formats[requests.FormatEPUB] = true
+			entry.formats[requests.FormatM4B] = true
+		case requests.FormatEPUB, requests.FormatM4B:
+			entry.formats[strings.ToLower(format)] = true
+		}
+		lowerStatus := strings.ToLower(status)
+		if statusRank(lowerStatus) > statusRank(entry.status) {
+			entry.status = lowerStatus
+		}
+	}
+
+	activeByKey := map[string]*activeRequest{}
+	activeByBookID := map[string]*activeRequest{}
+	reqRows, err := s.db.QueryContext(r.Context(), `
+		SELECT r.format, r.status, r.title, r.author, COALESCE(r.book_id, ''), COALESCE(b.title, ''), COALESCE(a.name, '')
+		FROM book_requests r
+		LEFT JOIN books b ON b.id = r.book_id
+		LEFT JOIN authors a ON a.id = b.author_id
+		WHERE r.dismissed = 0 AND r.status IN (?, ?, ?)
+	`, requests.StatusSearching, requests.StatusDownloading, requests.StatusAvailable)
+	if err != nil {
+		http.Error(w, "Unable to read active requests", 500)
+		return
+	}
+	for reqRows.Next() {
+		var rFormat, rStatus, rTitle, rAuthor, rBookID, bTitle, aName string
+		if err := reqRows.Scan(&rFormat, &rStatus, &rTitle, &rAuthor, &rBookID, &bTitle, &aName); err != nil {
+			reqRows.Close()
+			http.Error(w, "Unable to read active requests", 500)
+			return
+		}
+		recordActive(activeByKey, discoveryKey(rTitle, rAuthor), rFormat, rStatus)
+		if bTitle != "" && aName != "" {
+			recordActive(activeByKey, discoveryKey(bTitle, aName), rFormat, rStatus)
+		}
+		if rBookID != "" {
+			recordActive(activeByBookID, rBookID, rFormat, rStatus)
+		}
+	}
+	err = reqRows.Err()
+	reqRows.Close()
+	if err != nil {
+		http.Error(w, "Unable to read active requests", 500)
+		return
+	}
+
 	out := []match{}
 	for _, group := range groupDiscoveryBooks(books) {
 		first := slices.IndexFunc(group, func(b metadata.BookMetadata) bool {
@@ -144,20 +221,53 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		result := match{BookMetadata: group[first]}
+		matchedFormats := map[string]bool{}
+		matchedStatus := ""
+		mergeActive := func(entry *activeRequest) {
+			if entry == nil {
+				return
+			}
+			for f := range entry.formats {
+				matchedFormats[f] = true
+			}
+			if statusRank(entry.status) > statusRank(matchedStatus) {
+				matchedStatus = entry.status
+			}
+		}
+
 		for i, b := range group {
 			if i != first {
 				mergeDiscoveryBook(&result.BookMetadata, b)
 			}
-			if result.LibraryBookID != "" {
-				continue
+			titles := []string{b.Title}
+			if b.Subtitle != "" {
+				titles = append(titles, b.Title+": "+b.Subtitle)
 			}
-			for _, author := range b.Authors {
-				if id := inventory[discoveryKey(b.Title, author)]; id != "" {
-					result.LibraryBookID = id
-					break
+			authorCandidates := append([]string(nil), b.Authors...)
+			if len(b.Authors) > 1 {
+				authorCandidates = append(authorCandidates, strings.Join(b.Authors, ", "), strings.Join(b.Authors, " & "))
+			}
+			for _, title := range titles {
+				for _, author := range authorCandidates {
+					key := discoveryKey(title, author)
+					if result.LibraryBookID == "" {
+						if id := inventory[key]; id != "" {
+							result.LibraryBookID = id
+						}
+					}
+					mergeActive(activeByKey[key])
 				}
 			}
 		}
+		if result.LibraryBookID != "" {
+			mergeActive(activeByBookID[result.LibraryBookID])
+		}
+		for _, f := range []string{requests.FormatEPUB, requests.FormatM4B} {
+			if matchedFormats[f] {
+				result.RequestedFormats = append(result.RequestedFormats, f)
+			}
+		}
+		result.RequestStatus = matchedStatus
 		out = append(out, result)
 	}
 	slog.DebugContext(ctx, "metadata discovery search completed", "results", len(out))
@@ -174,7 +284,7 @@ func logMetadataResponse(ctx context.Context, provider string, count int, err er
 }
 
 func discoveryKey(title, author string) string {
-	return strings.ToLower(strings.TrimSpace(metadata.SanitizeTitle(title))) + "\x00" + strings.ToLower(strings.TrimSpace(metadata.NormalizeAuthor(author)))
+	return metadata.DiscoveryKey(title, author)
 }
 
 var (

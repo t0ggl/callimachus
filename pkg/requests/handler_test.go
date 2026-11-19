@@ -149,3 +149,33 @@ func TestHandler_ValidationAndQuotaErrors(t *testing.T) {
 		t.Fatalf("expected 429 Too Many Requests on quota exceed, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestHandler_DuplicateRequestConflict(t *testing.T) {
+	t.Parallel()
+	h, _, sm, _ := setupHandlerTest(t)
+
+	userSess, err := sm.CreateSession("user-1", "synthetic-user1", auth.RoleRequester)
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	post := func(payload map[string]string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/requests", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+userSess.Token)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := post(map[string]string{"title": "Dune", "author": "Frank Herbert", "format": "epub"}); rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := post(map[string]string{"title": "Dune", "author": "Herbert, Frank", "format": "epub"}); rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for duplicate normalized request, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := post(map[string]string{"title": "Dune", "author": "Frank Herbert", "format": "m4b"}); rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created for non-duplicate format, got %d: %s", rec.Code, rec.Body.String())
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/database"
+	"github.com/t0ggl/callimachus/pkg/metadata"
 )
 
 // ServiceConfig holds configuration for the Overseerr-style book request workflow.
@@ -177,6 +178,22 @@ func (s *RequestService) insertRequests(ctx context.Context, input CreateRequest
 		}
 	}
 
+	formats := []string{input.Format}
+	if input.Format == FormatBoth {
+		formats = []string{FormatEPUB, FormatM4B}
+	}
+	providedBookID := ""
+	if input.BookID != nil {
+		providedBookID = *input.BookID
+	}
+	needed, err := s.missingActiveFormats(ctx, providedBookID, input.Title, input.Author, formats)
+	if err != nil {
+		return nil, err
+	}
+	if len(needed) == 0 {
+		return nil, fmt.Errorf("%w: active request already exists for %q (%s)", ErrDuplicateRequest, input.Title, input.Format)
+	}
+
 	if input.BookID == nil || *input.BookID == "" {
 		c := catalog.New(s.db)
 		author, err := c.GetOrCreateAuthor(ctx, input.Author)
@@ -202,6 +219,13 @@ func (s *RequestService) insertRequests(ctx context.Context, input CreateRequest
 			return nil, err
 		}
 		input.BookID = &book.ID
+		needed, err = s.missingActiveFormats(ctx, *input.BookID, input.Title, input.Author, formats)
+		if err != nil {
+			return nil, err
+		}
+		if len(needed) == 0 {
+			return nil, fmt.Errorf("%w: active request already exists for %q (%s)", ErrDuplicateRequest, input.Title, input.Format)
+		}
 	}
 	if cover, err := url.Parse(input.CoverURL); err != nil || cover.Host == "" || (cover.Scheme != "https" && cover.Scheme != "http") || cover.User != nil {
 		input.CoverURL = ""
@@ -217,12 +241,8 @@ func (s *RequestService) insertRequests(ctx context.Context, input CreateRequest
 	if input.ManualOnly {
 		status = StatusError
 	}
-	formats := []string{input.Format}
-	if input.Format == FormatBoth {
-		formats = []string{FormatEPUB, FormatM4B}
-	}
 	var created []*BookRequest
-	for i, format := range formats {
+	for i, format := range needed {
 		res, err := tx.ExecContext(ctx, `INSERT INTO book_requests
 			(user_id, book_id, title, author, format, status, created_at, updated_at, year, counts_toward_quota, cover_url)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
@@ -245,6 +265,53 @@ func (s *RequestService) insertRequests(ctx context.Context, input CreateRequest
 		return nil, err
 	}
 	return created, tx.Commit()
+}
+
+func (s *RequestService) missingActiveFormats(ctx context.Context, bookID, title, author string, requested []string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT r.format, COALESCE(r.book_id, ''), r.title, r.author, COALESCE(b.title, ''), COALESCE(a.name, '')
+		FROM book_requests r
+		LEFT JOIN books b ON b.id = r.book_id
+		LEFT JOIN authors a ON a.id = b.author_id
+		WHERE r.dismissed = 0 AND r.status IN (?, ?, ?)
+	`, StatusSearching, StatusDownloading, StatusAvailable)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check existing requests: %w", err)
+	}
+	defer rows.Close()
+
+	targetKey := metadata.DiscoveryKey(title, author)
+	active := make(map[string]bool)
+	for rows.Next() {
+		var rFormat, rBookID, rTitle, rAuthor, bTitle, aName string
+		if err := rows.Scan(&rFormat, &rBookID, &rTitle, &rAuthor, &bTitle, &aName); err != nil {
+			return nil, fmt.Errorf("failed to scan existing request: %w", err)
+		}
+		matched := (bookID != "" && rBookID == bookID) ||
+			metadata.DiscoveryKey(rTitle, rAuthor) == targetKey ||
+			(bTitle != "" && aName != "" && metadata.DiscoveryKey(bTitle, aName) == targetKey)
+		if !matched {
+			continue
+		}
+		switch strings.ToLower(rFormat) {
+		case FormatBoth:
+			active[FormatEPUB] = true
+			active[FormatM4B] = true
+		case FormatEPUB, FormatM4B:
+			active[strings.ToLower(rFormat)] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate existing requests: %w", err)
+	}
+
+	var needed []string
+	for _, f := range requested {
+		if !active[f] {
+			needed = append(needed, f)
+		}
+	}
+	return needed, nil
 }
 
 // MarkDownloading transitions a searching request to downloading status.
