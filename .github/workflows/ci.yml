@@ -4,88 +4,17 @@ on:
   pull_request:
     branches:
       - '*'
-  push:
-    branches:
-      - main
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test-backend:
-    name: Backend Tests & Lint
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Set up Go
-        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
-
-      - name: Install C compiler for race tests
-        if: ${{ runner.environment == 'self-hosted' }}
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc libc6-dev
-
-      - name: Verify Go Modules & Tests
-        shell: bash
-        run: |
-          go vet ./...
-          go test -v -race -timeout 5m ./...
-
-      - name: Test release cleanup
-        run: bash scripts/prune-releases-test.sh
-
-  test-frontend:
-    name: Frontend Tests & Build
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Install Node.js runtime dependencies
-        if: ${{ runner.environment == 'self-hosted' }}
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libatomic1
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: '26'
-          cache: 'npm'
-          cache-dependency-path: 'web/package-lock.json'
-
-      - name: Install Dependencies
-        shell: bash
-        run: |
-          cd web
-          npm ci
-
-      - name: Run Vitest Component Tests
-        shell: bash
-        run: |
-          cd web
-          npm test
-
-      - name: Build Web Production Assets
-        shell: bash
-        run: |
-          cd web
-          npm run build
-
-      - name: Upload Web Production Assets
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: web-dist
-          path: web/dist
-          retention-days: 7
-
   sast:
     name: SAST (Semgrep)
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -100,7 +29,7 @@ jobs:
 
       - name: Install C compiler for Semgrep dependencies
         if: ${{ runner.environment == 'self-hosted' }}
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc libc6-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc libc6-dev make
 
       - name: Install Semgrep
         shell: bash
@@ -108,4 +37,49 @@ jobs:
 
       - name: Run Semgrep SAST
         shell: bash
-        run: ./scripts/sast.sh
+        run: make sast
+
+  test-backend:
+    name: Backend Tests & Lint
+    needs: sast
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install C compiler for race tests
+        if: ${{ runner.environment == 'self-hosted' }}
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc libc6-dev make
+
+      - name: Run Backend Tests and Lint
+        shell: bash
+        run: make test-backend
+
+      - name: Build Backend Binaries
+        run: make build-backend
+
+  test-frontend:
+    name: Frontend Tests & Build
+    needs: sast
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Node.js runtime dependencies
+        if: ${{ runner.environment == 'self-hosted' }}
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libatomic1 make
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '26'
+
+      - name: Test and build frontend
+        run: make test-frontend build-frontend

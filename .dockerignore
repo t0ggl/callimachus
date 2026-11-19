@@ -3,8 +3,7 @@
 node_modules
 web/node_modules
 bin
-dist
-!web/dist
+web/dist
 *.exe
 *.test
 *.db
