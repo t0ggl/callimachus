@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/t0ggl/callimachus/pkg/auth"
@@ -17,6 +18,7 @@ import (
 )
 
 func TestLibraryScanDiscoveryAndMissingFiles(t *testing.T) {
+	logs := testutil.CaptureLogs(t)
 	db := testutil.NewTestDB(t)
 	root := t.TempDir()
 	dir := filepath.Join(root, "Author", "Series", "Book (2024)")
@@ -74,6 +76,11 @@ func TestLibraryScanDiscoveryAndMissingFiles(t *testing.T) {
 	}
 	if discover() != "" {
 		t.Fatal("missing media still marked in library")
+	}
+	for _, event := range []string{"library scan started", "library scan completed"} {
+		if !strings.Contains(logs.String(), event) {
+			t.Errorf("missing log event %q", event)
+		}
 	}
 }
 

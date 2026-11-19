@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,10 +72,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		default:
 		}
 
-		processed, err := w.RunOnce(ctx)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			// Log error or continue to next iteration after poll interval
-		}
+		processed, _ := w.RunOnce(ctx)
 
 		if !processed {
 			select {
@@ -91,16 +89,22 @@ func (w *Worker) Run(ctx context.Context) error {
 func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	job, err := w.queue.LeaseJob(ctx, w.cfg.WorkerID)
 	if err != nil {
+		if ctx.Err() == nil {
+			slog.ErrorContext(ctx, "conversion worker could not lease job")
+		}
 		return false, fmt.Errorf("lease job failed: %w", err)
 	}
 	if job == nil {
 		return false, nil
 	}
 
+	slog.InfoContext(ctx, "conversion job started", "job_id", job.ID, "attempt", job.Attempts)
 	err = w.ProcessJob(ctx, job)
 	if err != nil {
+		slog.WarnContext(ctx, "conversion job failed", "job_id", job.ID, "attempt", job.Attempts)
 		failErr := w.queue.FailJob(ctx, job.ID, err)
 		if failErr != nil {
+			slog.ErrorContext(ctx, "conversion worker could not save job failure", "job_id", job.ID)
 			return true, fmt.Errorf("job failed with: %v, queue fail update failed: %w", err, failErr)
 		}
 		return true, err
@@ -108,13 +112,14 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 
 	completeErr := w.queue.CompleteJob(ctx, job.ID)
 	if completeErr != nil {
+		slog.ErrorContext(ctx, "conversion worker could not mark job complete", "job_id", job.ID)
 		return true, fmt.Errorf("complete job failed: %w", completeErr)
 	}
 
 	if w.cfg.OnStageChange != nil {
 		w.cfg.OnStageChange(StageCompleted, 100.0)
 	}
-
+	slog.InfoContext(ctx, "conversion job completed", "job_id", job.ID)
 	return true, nil
 }
 
@@ -250,6 +255,7 @@ func (w *Worker) ProcessJob(ctx context.Context, job *database.ConversionQueueIt
 }
 
 func (w *Worker) reportStage(ctx context.Context, jobID, stage string, percent float64) {
+	slog.DebugContext(ctx, "conversion job stage changed", "job_id", jobID, "stage", stage)
 	_ = w.queue.UpdateProgress(ctx, jobID, stage, percent, nil)
 	if w.cfg.OnStageChange != nil {
 		w.cfg.OnStageChange(stage, percent)

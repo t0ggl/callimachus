@@ -14,6 +14,7 @@ import (
 )
 
 func TestCatalogMonitoringManualBackgroundDiscovery(t *testing.T) {
+	logs := testutil.CaptureLogs(t)
 	db := testutil.NewTestDB(t)
 	if _, err := db.Exec(`INSERT INTO settings(key,value) VALUES('hardcover_api_key','mock')`); err != nil {
 		t.Fatal(err)
@@ -61,6 +62,11 @@ func TestCatalogMonitoringManualBackgroundDiscovery(t *testing.T) {
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM book_requests`).Scan(&count); err != nil || count != 0 {
 		t.Fatal("future title entered acquisition")
+	}
+	for _, event := range []string{"catalog monitoring check started", "catalog discovery check", "catalog availability check", "catalog monitoring check completed"} {
+		if !strings.Contains(logs.String(), event) {
+			t.Errorf("missing log event %q", event)
+		}
 	}
 }
 

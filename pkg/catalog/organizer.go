@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -187,6 +188,7 @@ func OrganizeBook(libraryRoot string, book BookDetails, mediaSrcPath string, cov
 	if err := AtomicMove(mediaSrcPath, mediaPath); err != nil {
 		return nil, fmt.Errorf("atomic move media file: %w", err)
 	}
+	slog.Debug("library media organized", "cover_written", finalCoverPath != "")
 	return &OrganizedResult{
 		CanonicalDir: titleDir,
 		MediaPath:    mediaPath,

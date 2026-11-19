@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 )
 
@@ -18,11 +18,9 @@ func (s *Server) maintainLogs(ctx context.Context, ticks <-chan time.Time) {
 		if ctx.Err() != nil {
 			return
 		}
-		if _, err := s.scanLibrary(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("[library] scan failed: %v", err)
-		}
+		_, _ = s.scanLibrary(ctx)
 		if err := s.db.PruneLogs(ctx, s.maintenance.LogRetentionDays); err != nil && ctx.Err() == nil {
-			log.Printf("[maintenance] log retention cleanup failed: %v", err)
+			slog.WarnContext(ctx, "log retention cleanup failed")
 		}
 		select {
 		case <-ctx.Done():

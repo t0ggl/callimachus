@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -96,8 +97,10 @@ func (a *Acquisition) refresh(ctx context.Context, id int64) error {
 	if err := a.DB.QueryRowContext(ctx, `SELECT title,author,format,year FROM book_requests WHERE id=?`, id).Scan(&title, &author, &format, &year); err != nil {
 		return err
 	}
+	slog.DebugContext(ctx, "acquisition search started", "request_id", id)
 	releases, err := a.Search(ctx, title+" "+author)
 	if err != nil {
+		slog.WarnContext(ctx, "acquisition search failed", "request_id", id)
 		return err
 	}
 	candidates := []Candidate{}
@@ -114,6 +117,7 @@ func (a *Acquisition) refresh(ctx context.Context, id int64) error {
 			c.Breakdown["quality"] = -1000
 			c.Score -= 1000
 		}
+		slog.DebugContext(ctx, "acquisition candidate scored", "request_id", id, "indexer_id", r.IndexerID, "score", c.Score)
 		candidates = append(candidates, c)
 	}
 	tx, err := a.DB.BeginTx(ctx, nil)
@@ -136,7 +140,11 @@ func (a *Acquisition) refresh(ctx context.Context, id int64) error {
 	if _, err = tx.ExecContext(ctx, `UPDATE book_requests SET searched_at=CURRENT_TIMESTAMP WHERE id=?`, id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	slog.InfoContext(ctx, "acquisition search completed", "request_id", id, "releases", len(releases), "candidates", len(candidates))
+	return nil
 }
 
 func (a *Acquisition) Refresh(ctx context.Context, id int64) error {
@@ -176,13 +184,18 @@ func (a *Acquisition) dispatch(ctx context.Context, id int64, c Candidate) error
 	if err = tx.Commit(); err != nil {
 		return err
 	}
+	slog.InfoContext(ctx, "requesting Prowlarr grab", "request_id", id, "queue_id", qid, "indexer_id", c.Release.IndexerID)
 	if err = a.Grab(ctx, c.Release); err != nil {
+		slog.WarnContext(ctx, "Prowlarr grab failed", "request_id", id, "queue_id", qid, "indexer_id", c.Release.IndexerID)
 		if _, e := a.DB.ExecContext(ctx, `UPDATE download_queue SET status='failed',error_message=? WHERE id=?`, err.Error(), qid); e != nil {
 			return e
 		}
 		return fmt.Errorf("%w: %v", errTransferFailed, err)
 	}
 	_, err = a.DB.ExecContext(ctx, `UPDATE download_queue SET status='queued' WHERE id=?`, qid)
+	if err == nil {
+		slog.InfoContext(ctx, "acquisition dispatched", "request_id", id, "queue_id", qid)
+	}
 	return err
 }
 
@@ -319,8 +332,11 @@ func (a *Acquisition) Tick(ctx context.Context) error {
 	}
 	var first error
 	for _, id := range ids {
-		if err := a.process(ctx, id); err != nil && first == nil {
-			first = err
+		if err := a.process(ctx, id); err != nil {
+			slog.WarnContext(ctx, "book request processing failed", "request_id", id)
+			if first == nil {
+				first = err
+			}
 		}
 	}
 	return first

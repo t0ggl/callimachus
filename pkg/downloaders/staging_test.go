@@ -19,7 +19,7 @@ import (
 func setupTestDB(t *testing.T) *database.DB { t.Helper(); return testutil.NewTestDB(t) }
 
 func TestStagingMonitor_EBookIngestionLifecycle(t *testing.T) {
-	t.Parallel()
+	logs := testutil.CaptureLogs(t)
 
 	db := setupTestDB(t)
 	ctx := context.Background()
@@ -94,6 +94,11 @@ func TestStagingMonitor_EBookIngestionLifecycle(t *testing.T) {
 	}
 	if assetCount != 1 {
 		t.Errorf("expected 1 media asset, got %d", assetCount)
+	}
+	for _, event := range []string{"download staging polled", "staged download processing started", "library media organized", "staged download processing completed"} {
+		if !strings.Contains(logs.String(), event) {
+			t.Errorf("missing log event %q", event)
+		}
 	}
 }
 

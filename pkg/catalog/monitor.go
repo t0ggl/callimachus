@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +66,7 @@ func (m *Monitor) Queue(ctx context.Context, kind, id, action string) error {
 func (m *Monitor) Tick(ctx context.Context, now time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	slog.DebugContext(ctx, "catalog monitoring check started")
 	now = now.UTC()
 	var failures []string
 	for _, kind := range []string{"authors", "series"} {
@@ -98,6 +100,7 @@ func (m *Monitor) Tick(ctx context.Context, now time.Time) error {
 			day := min(last.Day(), next.AddDate(0, 1, -1).Day())
 			next = next.AddDate(0, 0, day-1)
 			if e.discover || (e.monitored && (last.IsZero() || !now.Before(next))) {
+				slog.DebugContext(ctx, "catalog discovery check", "entity_kind", kind, "entity_id", e.id)
 				found, err := m.Discover(ctx, kind, e.name)
 				if err == nil {
 					err = m.persist(ctx, kind, e.name, found)
@@ -134,6 +137,7 @@ func (m *Monitor) Tick(ctx context.Context, now time.Time) error {
 	if len(failures) > 0 {
 		return fmt.Errorf("catalog monitor: %s", strings.Join(failures, "; "))
 	}
+	slog.DebugContext(ctx, "catalog monitoring check completed")
 	return nil
 }
 
@@ -220,6 +224,7 @@ func (m *Monitor) checkBooks(ctx context.Context, now time.Time, column, id stri
 	if err != nil {
 		return err
 	}
+	slog.DebugContext(ctx, "catalog availability check", "books", len(ids), "forced", force)
 	for _, id := range ids {
 		if err = m.Search(ctx, id); err != nil {
 			return err

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -25,11 +26,14 @@ func (s *Server) handleSearchReleases(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Configure the Prowlarr URL and API key in Settings", http.StatusServiceUnavailable)
 		return
 	}
+	slog.DebugContext(r.Context(), "manual acquisition search started")
 	releases, err := client.Search(r.Context(), r.URL.Query().Get("query"), indexers.DefaultCategories)
 	if err != nil {
+		slog.WarnContext(r.Context(), "manual acquisition search failed")
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	slog.DebugContext(r.Context(), "manual acquisition search completed", "releases", len(releases))
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(releases)
 }
@@ -62,7 +66,9 @@ func (s *Server) handleGrabRelease(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to queue release", http.StatusInternalServerError)
 		return
 	}
+	slog.InfoContext(r.Context(), "requesting manual Prowlarr grab", "queue_id", id, "indexer_id", release.IndexerID)
 	if err := client.Grab(r.Context(), release); err != nil {
+		slog.WarnContext(r.Context(), "manual Prowlarr grab failed", "queue_id", id, "indexer_id", release.IndexerID)
 		_, _ = s.db.ExecContext(r.Context(), `UPDATE download_queue SET status = 'failed', error_message = ? WHERE id = ?`, err.Error(), id)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -71,5 +77,6 @@ func (s *Server) handleGrabRelease(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Release dispatched but queue update failed", http.StatusInternalServerError)
 		return
 	}
+	slog.InfoContext(r.Context(), "manual acquisition dispatched", "queue_id", id)
 	w.WriteHeader(http.StatusAccepted)
 }

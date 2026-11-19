@@ -6,7 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -77,6 +77,7 @@ func (sm *StagingMonitor) Start(ctx context.Context) error {
 	sm.stopCh = make(chan struct{})
 	sm.mu.Unlock()
 
+	slog.InfoContext(ctx, "download staging monitor started", "interval", sm.pollInterval)
 	sm.wg.Add(1)
 	go func() {
 		defer sm.wg.Done()
@@ -91,7 +92,7 @@ func (sm *StagingMonitor) Start(ctx context.Context) error {
 				return
 			case <-ticker.C:
 				if err := sm.PollOnce(ctx); err != nil {
-					log.Printf("[staging] %v", err)
+					slog.WarnContext(ctx, "download staging poll failed")
 				}
 			}
 		}
@@ -135,6 +136,7 @@ func (sm *StagingMonitor) PollOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read completed downloads: %w", err)
 	}
+	slog.DebugContext(ctx, "download staging polled", "entries", len(entries))
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), ".") || entry.Type()&os.ModeSymlink != 0 {
 			continue
@@ -168,7 +170,9 @@ func (sm *StagingMonitor) PollOnce(ctx context.Context) error {
 		if _, err := sm.db.ExecContext(ctx, `UPDATE download_queue SET staging_path = ?, status = 'importing', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, path, item.ID); err != nil {
 			return err
 		}
+		slog.InfoContext(ctx, "staged download processing started", "queue_id", item.ID)
 		if err := sm.dispatchPostProcessing(ctx, item, path); err != nil {
+			slog.WarnContext(ctx, "staged download processing failed", "queue_id", item.ID)
 			if _, resetErr := sm.db.ExecContext(ctx, `UPDATE download_queue SET status = 'queued' WHERE id = ?`, item.ID); resetErr != nil {
 				return resetErr
 			}
@@ -178,6 +182,7 @@ func (sm *StagingMonitor) PollOnce(ctx context.Context) error {
 		if _, err := sm.db.ExecContext(ctx, `UPDATE download_queue SET status = 'completed', progress_percent = 100, error_message = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, item.ID); err != nil {
 			return err
 		}
+		slog.InfoContext(ctx, "staged download processing completed", "queue_id", item.ID)
 	}
 	return nil
 }

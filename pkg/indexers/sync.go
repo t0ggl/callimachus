@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -142,9 +143,11 @@ func (s *Syncer) runLoop(ctx context.Context) {
 func (s *Syncer) SyncOnce(ctx context.Context) ([]Release, error) {
 	active, err := s.fetchActiveIndexers(ctx)
 	if err != nil {
+		slog.ErrorContext(ctx, "indexer sync could not load active indexers")
 		return nil, fmt.Errorf("sync: failed to query active indexers: %w", err)
 	}
 
+	slog.DebugContext(ctx, "indexer sync started", "indexers", len(active))
 	var allReleases []Release
 
 	for _, idx := range active {
@@ -162,7 +165,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) ([]Release, error) {
 
 		releases, err := client.FetchRecent(ctx, cats, s.cfg.Limit)
 		if err != nil {
-			// Record failure or continue with remaining indexers
+			slog.WarnContext(ctx, "indexer sync could not fetch releases", "indexer_id", idx.ID)
 			continue
 		}
 
@@ -195,9 +198,12 @@ func (s *Syncer) SyncOnce(ctx context.Context) ([]Release, error) {
 		}
 
 		// Update last_sync_at on the indexer in the database
-		_ = s.updateIndexerSyncTime(ctx, idx.ID, now)
+		if err := s.updateIndexerSyncTime(ctx, idx.ID, now); err != nil {
+			slog.WarnContext(ctx, "indexer sync could not update last sync time", "indexer_id", idx.ID)
+		}
 	}
 
+	slog.DebugContext(ctx, "indexer sync completed", "indexers", len(active), "new_releases", len(allReleases))
 	return allReleases, nil
 }
 

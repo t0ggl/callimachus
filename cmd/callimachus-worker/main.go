@@ -2,15 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/t0ggl/callimachus/internal/logging"
 	"github.com/t0ggl/callimachus/internal/uuid"
 	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/converter"
@@ -70,6 +72,12 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 
+	resolved, err := config.Load(migrateCtx, db, config.Overrides{})
+	if err != nil {
+		return fmt.Errorf("load configuration: %w", err)
+	}
+	logging.Level.Set(resolved.Settings.LogLevel)
+
 	queue := converter.NewQueue(db)
 	runner := converter.NewRealRunner()
 	worker := converter.NewWorker(queue, runner, converter.WorkerConfig{
@@ -78,7 +86,7 @@ func run(ctx context.Context, args []string) error {
 		WorkDir:      workDir,
 	})
 
-	log.Printf("[worker] Worker %s running. Listening for jobs...", workerID)
+	slog.Info("conversion worker listening for jobs")
 	err = worker.Run(ctx)
 	if err != nil && err != context.Canceled {
 		return err
@@ -87,10 +95,16 @@ func run(ctx context.Context, args []string) error {
 }
 
 func main() {
+	slog.SetDefault(logging.New(os.Stderr))
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	if err := run(ctx, os.Args[1:]); err != nil {
-		log.Fatalf("[worker] fatal error: %v", err)
+		if errors.Is(err, config.ErrInvalidLogLevel) {
+			slog.Error(config.ErrInvalidLogLevel.Error(), "setting", config.EnvVarName(config.KeyLogLevel))
+		} else {
+			slog.Error("conversion worker stopped with an error")
+		}
+		os.Exit(1)
 	}
 }

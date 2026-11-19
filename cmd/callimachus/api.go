@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/t0ggl/callimachus/internal/logging"
 	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/config"
 )
@@ -149,6 +150,7 @@ type APIQualityProfileSettings struct {
 }
 
 type APISettingsResponse struct {
+	LogLevel       string                         `json:"logLevel"`
 	Metadata       map[string]bool                `json:"metadata"`
 	Indexers       []APIIndexerConfig             `json:"indexers"`
 	Library        APILibrarySettings             `json:"library"`
@@ -158,6 +160,7 @@ type APISettingsResponse struct {
 }
 
 type APISettingsUpdateRequest struct {
+	LogLevel *string           `json:"logLevel"`
 	Metadata map[string]string `json:"metadata"`
 	Library  *struct {
 		CompletedDownloadRoot *string `json:"completedDownloadRoot"`
@@ -231,7 +234,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 	`
 	rows, err := s.db.QueryContext(r.Context(), query)
 	if err != nil {
-		log.Printf("[api] get books query error: %v", err)
+		slog.Error("get books query failed")
 		_ = json.NewEncoder(w).Encode([]APIBook{})
 		return
 	}
@@ -249,7 +252,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 			&b.SeriesID, &b.SeriesTitle, &seriesIdx,
 			&b.SeriesIndexDisplay, &b.ReleaseDate, &b.Synopsis,
 		); err != nil {
-			log.Printf("[api] scan book error: %v", err)
+			slog.Error("scan book failed")
 			continue
 		}
 		if seriesIdx.Valid {
@@ -278,7 +281,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 			FROM media_assets ORDER BY file_path, id
 		`)
 		if err != nil {
-			log.Printf("[api] get book assets query error: %v", err)
+			slog.Error("get book assets query failed")
 			http.Error(w, "Unable to load book files", http.StatusInternalServerError)
 			return
 		}
@@ -287,7 +290,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 			var asset APIMediaAsset
 			var serverPath string
 			if err := assetRows.Scan(&asset.ID, &asset.EditionID, &serverPath, &asset.FileSizeBytes); err != nil {
-				log.Printf("[api] scan book asset error: %v", err)
+				slog.Error("scan book asset failed")
 				http.Error(w, "Unable to load book files", http.StatusInternalServerError)
 				return
 			}
@@ -306,7 +309,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 			assetsByEdition[asset.EditionID] = append(assetsByEdition[asset.EditionID], asset)
 		}
 		if err := assetRows.Err(); err != nil {
-			log.Printf("[api] read book assets error: %v", err)
+			slog.Error("read book assets failed")
 			http.Error(w, "Unable to load book files", http.StatusInternalServerError)
 			return
 		}
@@ -373,7 +376,7 @@ func (s *Server) handleGetAuthors(w http.ResponseWriter, r *http.Request) {
 	`
 	rows, err := s.db.QueryContext(r.Context(), query)
 	if err != nil {
-		log.Printf("[api] get authors query error: %v", err)
+		slog.Error("get authors query failed")
 		_ = json.NewEncoder(w).Encode([]APIAuthor{})
 		return
 	}
@@ -405,7 +408,7 @@ func (s *Server) handleGetSeries(w http.ResponseWriter, r *http.Request) {
 	`
 	rows, err := s.db.QueryContext(r.Context(), query)
 	if err != nil {
-		log.Printf("[api] get series query error: %v", err)
+		slog.Error("get series query failed")
 		_ = json.NewEncoder(w).Encode([]APISeries{})
 		return
 	}
@@ -544,13 +547,14 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 		var err error
 		resolved, err = config.Load(ctx, s.db, s.baseOverrides)
 		if err != nil {
-			log.Printf("[api] warning: failed to load resolved config: %v", err)
+			slog.Error("failed to load resolved configuration")
 			resolved = &config.ResolvedSettings{Overrides: map[string]config.OverrideInfo{}}
 		}
 	}
 
 	cfg := resolved.Settings
 	resp.Overrides = resolved.Overrides
+	resp.LogLevel = strings.ToLower(cfg.LogLevel.String())
 
 	// Library & Storage
 	resp.Library = APILibrarySettings{
@@ -689,6 +693,9 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updates := make(map[string]string)
+	if req.LogLevel != nil {
+		updates[config.KeyLogLevel] = *req.LogLevel
+	}
 	for key, value := range req.Metadata {
 		if key == config.KeyGoogleBooksAPIKey || key == config.KeyHardcoverAPIKey {
 			updates[key] = value
@@ -757,18 +764,33 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resolved, err := config.SaveNonOverridden(r.Context(), s.db, updates, s.baseOverrides)
+	resolved, err := s.saveSettings(r.Context(), updates)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
+	resp := s.buildSettingsResponse(r.Context(), resolved)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) saveSettings(ctx context.Context, updates map[string]string) (*config.ResolvedSettings, error) {
+	// Keep runtime updates in the same order as successful database commits.
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+	resolved, err := config.SaveNonOverridden(ctx, s.db, updates, s.baseOverrides)
+	if err != nil {
+		return nil, err
+	}
+	if previous := logging.Level.Level(); previous != resolved.Settings.LogLevel {
+		logging.Level.Set(resolved.Settings.LogLevel)
+		slog.InfoContext(ctx, "log level updated", "log_level", strings.ToLower(resolved.Settings.LogLevel.String()))
+	}
 	if s.stagingMon != nil {
 		s.stagingMon.SetCompletedRoot(resolved.Settings.CompletedDownloadRoot)
 	}
-	resp := s.buildSettingsResponse(r.Context(), resolved)
-	_ = json.NewEncoder(w).Encode(resp)
+	return resolved, nil
 }
 
 func (s *Server) handleSyncProwlarr(w http.ResponseWriter, r *http.Request) {

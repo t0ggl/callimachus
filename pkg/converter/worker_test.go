@@ -3,7 +3,6 @@ package converter
 import (
 	"context"
 	"fmt"
-	"github.com/t0ggl/callimachus/pkg/catalog"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,9 +10,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/t0ggl/callimachus/pkg/catalog"
+	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
 func TestWorker_EndToEndWithMockRunner(t *testing.T) {
+	logs := testutil.CaptureLogs(t)
 	q, _ := setupTestQueueDB(t)
 	ctx := context.Background()
 
@@ -152,6 +155,11 @@ func TestWorker_EndToEndWithMockRunner(t *testing.T) {
 	if finalItem.ProgressPercent != 100.0 {
 		t.Errorf("expected final progress 100.0, got %f", finalItem.ProgressPercent)
 	}
+	for _, event := range []string{"conversion job queued", "conversion job started", "conversion job stage changed", "conversion job completed"} {
+		if !strings.Contains(logs.String(), event) {
+			t.Errorf("missing log event %q", event)
+		}
+	}
 }
 
 func TestWorker_EndToEndMultiStage(t *testing.T) {
@@ -286,6 +294,7 @@ func TestWorker_EndToEndMultiStage(t *testing.T) {
 }
 
 func TestWorker_FailureHandling(t *testing.T) {
+	logs := testutil.CaptureLogs(t)
 	q, _ := setupTestQueueDB(t)
 	ctx := context.Background()
 
@@ -323,6 +332,9 @@ func TestWorker_FailureHandling(t *testing.T) {
 	}
 	if failedJob.Attempts != 1 {
 		t.Errorf("expected attempts 1, got %d", failedJob.Attempts)
+	}
+	if !strings.Contains(logs.String(), "conversion job failed") || strings.Contains(logs.String(), nonExistentDir) {
+		t.Error("expected a conversion failure event without the raw error path")
 	}
 }
 

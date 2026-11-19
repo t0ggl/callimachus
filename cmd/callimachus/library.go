@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,7 +17,15 @@ import (
 // Serialize manual and scheduled scans so reconciliation cannot race itself.
 var libraryScanMu sync.Mutex
 
-func (s *Server) scanLibrary(ctx context.Context) (int, error) {
+func (s *Server) scanLibrary(ctx context.Context) (books int, scanErr error) {
+	slog.InfoContext(ctx, "library scan started")
+	defer func() {
+		if scanErr == nil {
+			slog.InfoContext(ctx, "library scan completed", "books", books)
+		} else if ctx.Err() == nil {
+			slog.ErrorContext(ctx, "library scan failed")
+		}
+	}()
 	libraryScanMu.Lock()
 	defer libraryScanMu.Unlock()
 	cfg, err := config.Load(ctx, s.db, s.baseOverrides)

@@ -2,6 +2,8 @@ package config
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"reflect"
 	"testing"
 	"time"
@@ -64,6 +66,9 @@ func TestAllRegisteredSettings_AutoEnvOverridePrecedence(t *testing.T) {
 		}
 		if spec.Key == KeyEbookTargetFormat {
 			envVal = "AZW3"
+		}
+		if spec.Key == KeyLogLevel {
+			envVal = "warn"
 		}
 		t.Setenv(envName, envVal)
 	}
@@ -327,5 +332,64 @@ func TestAudiobookSizeInvalidEnvironment(t *testing.T) {
 		if _, err := Load(context.Background(), nil, Overrides{}); err == nil {
 			t.Fatalf("accepted invalid audiobook size %q", value)
 		}
+	}
+}
+
+func TestLogLevelSettings(t *testing.T) {
+	const env = "CALLIMACHUS_LOG_LEVEL"
+	t.Setenv(env, "")
+	t.Setenv("LOG_LEVEL", "debug")
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	spec, ok := LookupSpec(KeyLogLevel)
+	if !ok || spec.Default != "info" || EnvVarName(KeyLogLevel) != env {
+		t.Fatalf("incorrect log level registration: %+v", spec)
+	}
+	got, err := Load(ctx, db, Overrides{})
+	if err != nil || got.Settings.LogLevel != slog.LevelInfo || got.Overrides[KeyLogLevel] != (OverrideInfo{EnvVar: env}) {
+		t.Fatalf("default log level: %+v, %v", got, err)
+	}
+
+	for _, tc := range []struct {
+		raw  string
+		want slog.Level
+	}{
+		{"debug", slog.LevelDebug},
+		{"info", slog.LevelInfo},
+		{"  WARN  ", slog.LevelWarn},
+		{"error", slog.LevelError},
+	} {
+		got, err := SaveNonOverridden(ctx, db, map[string]string{KeyLogLevel: tc.raw}, Overrides{})
+		if err != nil || got.Settings.LogLevel != tc.want {
+			t.Fatalf("save %q: %+v, %v", tc.raw, got, err)
+		}
+	}
+	for _, invalid := range []string{"verbose", "", "INFO+1", "warning"} {
+		if _, err := SaveNonOverridden(ctx, db, map[string]string{KeyLogLevel: invalid}, Overrides{}); !errors.Is(err, ErrInvalidLogLevel) {
+			t.Errorf("expected validation error for %q, got %v", invalid, err)
+		}
+	}
+
+	t.Setenv(env, " DeBuG ")
+	got, err = SaveNonOverridden(ctx, db, map[string]string{KeyLogLevel: "warn"}, Overrides{})
+	if err != nil || got.Settings.LogLevel != slog.LevelDebug ||
+		got.Overrides[KeyLogLevel] != (OverrideInfo{IsOverridden: true, OverriddenBy: env, EnvVar: env}) {
+		t.Fatalf("environment override: %+v, %v", got, err)
+	}
+	var stored string
+	if err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key=?", KeyLogLevel).Scan(&stored); err != nil || stored != "error" {
+		t.Fatalf("stored log level: %q, %v", stored, err)
+	}
+
+	t.Setenv(env, "invalid")
+	if _, err := Load(ctx, db, Overrides{}); !errors.Is(err, ErrInvalidLogLevel) {
+		t.Fatalf("invalid override must fail validation: %v", err)
+	}
+	t.Setenv(env, "")
+	if _, err := db.ExecContext(ctx, "UPDATE settings SET value='trace' WHERE key=?", KeyLogLevel); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(ctx, db, Overrides{}); !errors.Is(err, ErrInvalidLogLevel) {
+		t.Fatalf("invalid database value must fail validation: %v", err)
 	}
 }

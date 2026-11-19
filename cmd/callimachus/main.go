@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,9 +16,11 @@ import (
 	"os/signal"
 	"path"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/t0ggl/callimachus/internal/logging"
 	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/config"
@@ -63,6 +66,7 @@ type Server struct {
 	acquisitionDone    chan struct{}
 	cfg                Config
 	baseOverrides      config.Overrides
+	settingsMu         sync.Mutex
 	db                 *database.DB
 	sessionMgr         *auth.SessionManager
 	maintenance        config.MaintenanceConfig
@@ -127,6 +131,7 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	sCfg := resolved.Settings
+	logging.Level.Set(sCfg.LogLevel)
 	cfg.LibraryPath = sCfg.LibraryRoot
 	cfg.ProwlarrURL = sCfg.ProwlarrURL
 	cfg.ProwlarrAPIKey = sCfg.ProwlarrAPIKey
@@ -145,7 +150,7 @@ func NewServer(cfg Config) (*Server, error) {
 	var oidcClient *auth.OIDCClient
 	oidcReady, oidcWarnings := authCfg.ValidateOIDC()
 	for _, w := range oidcWarnings {
-		log.Printf("[auth] warning: %s", w)
+		slog.Warn(w)
 	}
 	if oidcReady {
 		oc, err := auth.NewOIDCClient(auth.OIDCConfig{
@@ -159,17 +164,17 @@ func NewServer(cfg Config) (*Server, error) {
 			DefaultRole:   authCfg.OIDCDefaultRole,
 		})
 		if err != nil {
-			log.Printf("[auth] warning: failed to initialize OIDC client: %v", err)
+			slog.Warn("OIDC client initialization failed")
 		} else {
 			oidcClient = oc
-			log.Printf("[auth] OIDC client configured (issuer: %s, clientID: %s)", authCfg.OIDCIssuerURL, authCfg.OIDCClientID)
+			slog.Info("OIDC authentication configured")
 		}
 	}
 
 	var fallbackAuth *auth.FallbackAuthenticator
 	if authCfg.AdminPassword != "" {
 		fallbackAuth = auth.NewFallbackAuthenticator(auth.FallbackConfig{AdminPassword: authCfg.AdminPassword}, db, sessionMgr)
-		log.Printf("[auth] single password fallback authentication enabled")
+		slog.Info("password authentication enabled")
 	}
 
 	authHandler := auth.NewAuthHandler(auth.HandlerConfig{
@@ -259,6 +264,7 @@ func NewServer(cfg Config) (*Server, error) {
 
 	srv.httpServer = &http.Server{
 		Handler:      handler,
+		ErrorLog:     log.New(httpErrorWriter{}, "", 0),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -291,7 +297,7 @@ func (s *Server) Start(ctx context.Context) error {
 				return
 			case <-ticker.C:
 				if err := s.acquisition.Tick(workerCtx); err != nil {
-					log.Printf("[acquisition] %v", err)
+					slog.ErrorContext(workerCtx, "acquisition reconciliation failed")
 				}
 			}
 		}
@@ -308,7 +314,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Start background staging monitor
 	if err := s.stagingMon.Start(ctx); err != nil {
-		log.Printf("[staging] warning: failed to start staging monitor: %v", err)
+		slog.WarnContext(ctx, "staging monitor could not start")
 	}
 
 	// Start background Prowlarr sync if configured
@@ -319,7 +325,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Run HTTP listener in background
 	go func() {
 		if err := s.httpServer.Serve(s.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("[http] server error: %v", err)
+			slog.ErrorContext(ctx, "HTTP listener failed")
 		}
 	}()
 
@@ -386,18 +392,14 @@ func (s *Server) runProwlarrSync(ctx context.Context) {
 	defer ticker.Stop()
 
 	// Initial sync pass
-	if _, err := client.SyncIndexers(ctx, s.db); err != nil {
-		log.Printf("[prowlarr] initial sync error: %v", err)
-	}
+	_, _ = client.SyncIndexers(ctx, s.db)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := client.SyncIndexers(ctx, s.db); err != nil {
-				log.Printf("[prowlarr] periodic sync error: %v", err)
-			}
+			_, _ = client.SyncIndexers(ctx, s.db)
 		}
 	}
 }
@@ -407,9 +409,21 @@ type HealthResponse struct {
 	Status string `json:"status"`
 }
 
-func (s *Server) withAuthGate(next http.Handler) http.Handler {
+func (s *Server) withAuthGate(next *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cleanPath := path.Clean("/" + r.URL.Path)
+		isAPI := cleanPath == "/api" || strings.HasPrefix(cleanPath, "/api/")
+		if isAPI && slog.Default().Enabled(r.Context(), slog.LevelDebug) {
+			// Log the registered route, which omits query strings and wildcard values.
+			route := "unmatched"
+			// ServeMux can return the request path as the pattern for CONNECT redirects.
+			if r.Method != http.MethodConnect {
+				if _, pattern := next.Handler(r); pattern != "" && pattern != "/" {
+					route = pattern
+				}
+			}
+			slog.DebugContext(r.Context(), "API request", "route", route)
+		}
 
 		// Always allow public health probes and OIDC initiation/callback endpoints
 		if cleanPath == "/healthz" ||
@@ -434,7 +448,8 @@ func (s *Server) withAuthGate(next http.Handler) http.Handler {
 		}
 
 		// Unauthenticated API requests must receive HTTP 401 Unauthorized JSON
-		if cleanPath == "/api" || strings.HasPrefix(cleanPath, "/api/") {
+		if isAPI {
+			slog.DebugContext(r.Context(), "API request denied", "reason", "unauthenticated")
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
@@ -574,10 +589,10 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("start server: %w", err)
 	}
 
-	log.Printf("[callimachus] Callimachus %s (commit %s) listening on %s", version, commit, srv.Addr())
+	slog.Info("server listening", "version", version, "commit", commit, "address", srv.Addr())
 
 	<-ctx.Done()
-	log.Printf("[callimachus] Shutting down gracefully...")
+	slog.Info("server shutting down")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
@@ -586,15 +601,29 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 
-	log.Printf("[callimachus] Server stopped cleanly.")
+	slog.Info("server stopped")
 	return nil
 }
 
+// net/http diagnostics can contain arbitrary panic values or request data.
+type httpErrorWriter struct{}
+
+func (httpErrorWriter) Write(p []byte) (int, error) {
+	slog.Error("HTTP server request handling failed")
+	return len(p), nil
+}
+
 func main() {
+	slog.SetDefault(logging.New(os.Stderr))
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	if err := run(ctx, os.Args[1:]); err != nil && !errors.Is(err, context.Canceled) {
-		log.Fatalf("[callimachus] fatal error: %v", err)
+		if errors.Is(err, config.ErrInvalidLogLevel) {
+			slog.Error(config.ErrInvalidLogLevel.Error(), "setting", config.EnvVarName(config.KeyLogLevel))
+		} else {
+			slog.Error("server could not complete startup or shutdown")
+		}
+		os.Exit(1)
 	}
 }
