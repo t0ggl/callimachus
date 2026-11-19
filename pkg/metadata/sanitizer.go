@@ -400,6 +400,11 @@ func SanitizeTitle(title string) string {
 	return strings.Trim(t, " -:,_./()[]{}#")
 }
 
+// DiscoveryKey returns a normalized comparison key for matching a book by title and author.
+func DiscoveryKey(title, author string) string {
+	return strings.ToLower(strings.TrimSpace(SanitizeTitle(title))) + "\x00" + strings.ToLower(strings.TrimSpace(NormalizeAuthor(author)))
+}
+
 // NormalizeAuthor normalizes an author string, converting "Last, First" into "First Last",
 // separating multiple co-authors (with " & "), cleaning dot-separated names ("First.Last" -> "First Last"),
 // while preserving initials and multi-part surnames.

@@ -158,6 +158,10 @@ func (h *Handler) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusTooManyRequests, err.Error())
 			return
 		}
+		if errors.Is(err, ErrDuplicateRequest) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		if errors.Is(err, ErrInvalidFormat) || errors.Is(err, ErrInvalidInput) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return

@@ -3,6 +3,7 @@ package requests
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -122,7 +123,7 @@ func TestService_QuotaEnforcement(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		_, err := svc.SubmitRequest(ctx, CreateRequestInput{
 			UserID: "admin-1",
-			Title:  "Synthetic Admin Title",
+			Title:  fmt.Sprintf("Synthetic Admin Title %d", i),
 			Author: "Admin Author",
 		})
 		if err != nil {
@@ -186,5 +187,121 @@ func TestService_ListAndFilters(t *testing.T) {
 	}
 	if len(listLimit) != 1 {
 		t.Errorf("expected 1 request with limit=1, got %d", len(listLimit))
+	}
+}
+
+func TestService_PreventDuplicateActiveRequests(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	createTestUser(t, db, "user-1", "synthetic-user1", auth.RoleRequester)
+	createTestUser(t, db, "user-2", "synthetic-user2", auth.RoleRequester)
+
+	trigger := &mockSearchTrigger{}
+	svc := NewRequestService(db, ServiceConfig{SearchTrigger: trigger})
+
+	// 1. Initial epub request succeeds
+	first, err := svc.SubmitRequest(ctx, CreateRequestInput{
+		UserID: "user-1",
+		Title:  "Dune",
+		Author: "Frank Herbert",
+		Format: FormatEPUB,
+	})
+	if err != nil {
+		t.Fatalf("initial SubmitRequest failed: %v", err)
+	}
+
+	// 2. Duplicate epub with different casing/formatting ("Herbert, Frank", "(1965)") is rejected
+	_, err = svc.SubmitRequest(ctx, CreateRequestInput{
+		UserID: "user-2",
+		Title:  "Dune (1965)",
+		Author: "Herbert, Frank",
+		Format: FormatEPUB,
+	})
+	if !errors.Is(err, ErrDuplicateRequest) {
+		t.Fatalf("expected ErrDuplicateRequest for normalized duplicate epub, got %v", err)
+	}
+
+	// 3. Requesting m4b for the same book succeeds
+	second, err := svc.SubmitRequest(ctx, CreateRequestInput{
+		UserID: "user-1",
+		Title:  "Dune",
+		Author: "Frank Herbert",
+		Format: FormatM4B,
+	})
+	if err != nil {
+		t.Fatalf("different format SubmitRequest failed: %v", err)
+	}
+
+	// 4. Transitioning to downloading and available still blocks duplicate
+	if err := svc.MarkDownloading(ctx, first.ID); err != nil {
+		t.Fatalf("MarkDownloading failed: %v", err)
+	}
+	if _, err := svc.SubmitRequest(ctx, CreateRequestInput{
+		UserID: "user-1",
+		Title:  "Dune",
+		Author: "Frank Herbert",
+		Format: FormatEPUB,
+	}); !errors.Is(err, ErrDuplicateRequest) {
+		t.Fatalf("expected ErrDuplicateRequest during downloading, got %v", err)
+	}
+
+	if err := svc.MarkAvailable(ctx, first.ID); err != nil {
+		t.Fatalf("MarkAvailable failed: %v", err)
+	}
+	if _, err := svc.SubmitRequest(ctx, CreateRequestInput{
+		UserID: "user-1",
+		Title:  "Dune",
+		Author: "Frank Herbert",
+		Format: FormatBoth,
+	}); !errors.Is(err, ErrDuplicateRequest) {
+		t.Fatalf("expected ErrDuplicateRequest for both when epub+m4b are active, got %v", err)
+	}
+
+	// 5. Partial 'both': if only epub is active and m4b was cancelled/dismissed, 'both' adds only m4b
+	if err := svc.dismiss(ctx, second.ID); err != nil {
+		t.Fatalf("dismiss m4b failed: %v", err)
+	}
+	partial, err := svc.SubmitRequest(ctx, CreateRequestInput{
+		UserID: "user-1",
+		Title:  "Dune",
+		Author: "Frank Herbert",
+		Format: FormatBoth,
+	})
+	if err != nil {
+		t.Fatalf("partial both SubmitRequest failed: %v", err)
+	}
+	if partial.Format != FormatM4B {
+		t.Fatalf("expected only missing m4b to be created, got %s", partial.Format)
+	}
+
+	// 6. Failed (error) request does not block re-requesting
+	if _, err := db.Exec(`UPDATE book_requests SET status = ? WHERE id = ?`, StatusError, partial.ID); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := svc.SubmitRequest(ctx, CreateRequestInput{
+		UserID: "user-1",
+		Title:  "Dune",
+		Author: "Frank Herbert",
+		Format: FormatM4B,
+	})
+	if err != nil {
+		t.Fatalf("re-requesting after error failed: %v", err)
+	}
+	if retried.Format != FormatM4B {
+		t.Fatalf("expected m4b retry, got %s", retried.Format)
+	}
+
+	// Verify exact number of active requests (epub available + m4b error + m4b searching = 3 non-dismissed)
+	list, err := svc.ListRequests(ctx, RequestFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("expected 3 non-dismissed requests without duplicates, got %d", len(list))
+	}
+	if trigger.CallCount() != 4 {
+		t.Fatalf("expected 4 search triggers (initial epub, initial m4b, partial m4b, retry m4b), got %d", trigger.CallCount())
 	}
 }
