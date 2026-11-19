@@ -117,3 +117,106 @@ it('keeps the row and shows the API error when cancellation fails', async () => 
   expect(await screen.findByRole('alert')).toHaveTextContent('Import is finishing');
   expect(screen.getByRole('button', { name: 'Cancel Dune eBook' })).toBeEnabled();
 });
+
+it('renders loading skeleton on initial load and keeps items visible during refresh', async () => {
+  const user = userEvent.setup({ delay: null });
+  const onRetry = vi.fn();
+  const { rerender } = render(<ActivityView {...base} loading={true} onRetry={onRetry} />);
+
+  expect(screen.getByRole('status')).toHaveTextContent('Loading activity…');
+  expect(screen.queryByText(/No activity yet/)).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Refresh' })).toBeDisabled();
+
+  rerender(<ActivityView {...base} downloads={testDownloads} loading={false} onRetry={onRetry} />);
+  expect(screen.getByRole('list', { name: 'Book activity' })).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Refresh' }));
+  expect(onRetry).toHaveBeenCalledOnce();
+});
+
+it('renders load error alert with retry control without showing empty state', async () => {
+  const user = userEvent.setup({ delay: null });
+  const onRetry = vi.fn();
+  render(<ActivityView {...base} error="Unable to load activity. Try again." onRetry={onRetry} />);
+
+  expect(screen.getByRole('alert')).toHaveTextContent('Unable to load activity. Try again.');
+  expect(screen.queryByText(/No activity yet/)).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Retry' }));
+  expect(onRetry).toHaveBeenCalledOnce();
+});
+
+it('renders card metadata, responsive touch targets, cover fallback, and connection states cleanly', async () => {
+  const { fireEvent } = await import('@testing-library/react');
+  const { rerender } = render(
+    <ActivityView
+      {...base}
+      connectionStatus="connecting"
+      requests={[{ ...ebook, coverUrl: '/broken-cover.jpg', requestType: 'audiobook', stage: 'downloading' }]}
+    />
+  );
+
+  expect(screen.getByText('Connecting…')).toBeInTheDocument();
+  expect(screen.getByText('by Frank Herbert')).toBeInTheDocument();
+  expect(screen.getByText('Audiobook')).toBeInTheDocument();
+
+  const card = screen.getByTestId('activity-request:1');
+  expect(card).toHaveClass('rounded-xl', 'border', 'bg-zinc-900/90');
+
+  const cover = card.querySelector('img');
+  expect(cover).toHaveAttribute('src', '/broken-cover.jpg');
+  fireEvent.error(cover!);
+  expect(card.querySelector('img')).not.toBeInTheDocument();
+
+  const cancelBtn = screen.getByRole('button', { name: 'Cancel Dune Audiobook' });
+  expect(cancelBtn).toHaveClass('min-h-11');
+
+  rerender(<ActivityView {...base} connectionStatus="disconnected" />);
+  expect(screen.getByText('Live updates paused')).toBeInTheDocument();
+  expect(screen.queryByText(/SSE Live/i)).not.toBeInTheDocument();
+});
+
+it('supports keyboard navigation across card controls and search log', async () => {
+  const user = userEvent.setup({ delay: null });
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url === '/api/books?id=book') {
+      return Response.json([{ id: 'book', title: 'Dune', authorName: 'Frank Herbert', formats: [], editions: [] }]);
+    }
+    if (url === '/api/requests/1') {
+      return Response.json({ events: [] });
+    }
+    if (url === '/api/requests/1/candidates') {
+      return Response.json([]);
+    }
+    return new Response(null, { status: 204 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<ActivityView {...base} requests={[ebook]} />);
+
+  const titleBtn = screen.getByRole('button', { name: /Dune eBook · Evaluating releases/ });
+  const manualBtn = screen.getByRole('button', { name: 'Manual Search for Dune' });
+  const cancelBtn = screen.getByRole('button', { name: 'Cancel Dune eBook' });
+
+  titleBtn.focus();
+  expect(titleBtn).toHaveFocus();
+  await user.keyboard('{Enter}');
+
+  const detailsDialog = await screen.findByRole('dialog', { name: 'Details for Dune' });
+  const logToggle = within(detailsDialog).getByRole('button', { name: 'View Search Log' });
+  expect(logToggle).toHaveAttribute('aria-expanded', 'false');
+  expect(logToggle).toHaveAttribute('aria-controls', 'activity-search-log');
+  logToggle.focus();
+  await user.keyboard('{Enter}');
+  expect(logToggle).toHaveAttribute('aria-expanded', 'true');
+  expect(await within(detailsDialog).findByText('No search events recorded yet.')).toBeInTheDocument();
+
+  await user.click(within(detailsDialog).getByRole('button', { name: 'Close details' }));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+  titleBtn.focus();
+  await user.tab();
+  expect(manualBtn).toHaveFocus();
+  await user.tab();
+  expect(cancelBtn).toHaveFocus();
+  await user.keyboard(' ');
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/requests/1', { method: 'DELETE' }));
+});
