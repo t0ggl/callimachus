@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
+import type { BookState } from '../types';
 
-type Data = { monitored: boolean; books: { id: string; title: string; releaseDate: string; seriesIndex?: number; state: string }[] };
+type Data = { monitored: boolean; books: { id: string; title: string; releaseDate: string; seriesIndex?: number; state: BookState }[] };
 export function EntityView({ kind, name, canManage, onOpenBook }: { kind: 'authors' | 'series'; name: string; canManage: boolean; onOpenBook: (id: string) => void }) {
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState('');

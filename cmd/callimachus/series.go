@@ -20,7 +20,7 @@ type seriesBook struct {
 	SeriesIndexDisplay string   `json:"series_index_display,omitempty"`
 	Formats            []string `json:"formats"`
 	LibraryBookID      string   `json:"library_book_id,omitempty"`
-	Monitored          bool     `json:"monitored"`
+	State              string   `json:"state"`
 }
 
 type seriesBooksResponse struct {
@@ -97,8 +97,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 		rows, err := s.db.QueryContext(r.Context(), `
 			SELECT b.id, b.title, COALESCE(b.subtitle, ''), a.name, b.series_index,
 			       COALESCE(b.release_date, ''),
-			       COALESCE(b.synopsis, ''), b.monitored,
-			       EXISTS(SELECT 1 FROM book_editions e JOIN media_assets m ON m.edition_id=e.id WHERE e.book_id=b.id)
+			       COALESCE(b.synopsis, ''), `+bookAvailabilitySQL+`
 			FROM books b
 			JOIN authors a ON a.id=b.author_id
 			JOIN series s ON s.id=b.series_id
@@ -111,10 +110,9 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var b seriesBook
 			var id, author string
-			var held bool
 			if err := rows.Scan(
 				&id, &b.Title, &b.Subtitle, &author, &b.SeriesIndex,
-				&b.PublishDate, &b.Description, &b.Monitored, &held,
+				&b.PublishDate, &b.Description, &b.State,
 			); err != nil {
 				rows.Close()
 				http.Error(w, "Unable to load series", 500)
@@ -130,7 +128,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 			if b.Formats == nil {
 				b.Formats = []string{}
 			}
-			if held {
+			if b.State != "" {
 				b.LibraryBookID = id
 			}
 			if s.bookCover(r, id) != "" {
@@ -174,7 +172,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 					if score == 2 || (score == 1 && titleMatch == -1) {
 						titleMatch = i
 					}
-					if score > bestScore {
+					if score > bestScore || (score > 0 && score == bestScore && books[best].LibraryBookID == "" && books[i].LibraryBookID != "") {
 						best, bestScore = i, score
 					}
 				}
@@ -182,7 +180,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 					best = titleMatch
 				}
 				if best >= 0 {
-					if books[best].LibraryBookID != "" {
+					if books[best].State == "In library" {
 						for i := range books[:localCount] {
 							if books[i].LibraryBookID == "" && seriesBookMatch(books[i], remote) > 0 {
 								redundant[i] = true
@@ -232,10 +230,12 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 	authors := make([]string, 0)
 	seenAuthor := make(map[string]bool)
 	ownedCount := 0
+	today := time.Now().UTC().Format(time.DateOnly)
 	for i := range books {
 		b := &books[i]
 		b.SeriesIndexDisplay = catalog.SeriesIndexLabel(b.SeriesIndex)
-		if b.LibraryBookID != "" {
+		b.State = bookAvailability(b.State, b.PublishDate, today)
+		if b.State == "In library" {
 			ownedCount++
 		}
 		for _, a := range b.Authors {
@@ -287,7 +287,7 @@ func seriesBookMatch(local seriesBook, remote metadata.BookMetadata) int {
 		remoteTitle, _ := discoveryTitleParts(seriesTitleAnnotation.ReplaceAllString(remote.Title, ""), remote.Authors)
 		exact := discoveryKey(local.Title, local.Authors[0]) == discoveryKey(remote.Title, author)
 		sameTitle := discoveryTitleKey(localTitle) == discoveryTitleKey(remoteTitle)
-		if local.LibraryBookID != "" {
+		if local.State == "In library" {
 			if exact {
 				return 5
 			}

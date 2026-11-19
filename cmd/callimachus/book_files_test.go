@@ -41,7 +41,7 @@ func TestBookFilesAPI(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("status %d: %s", w.Code, w.Body)
 	}
-	for _, forbidden := range []string{"private", "library", "filePath", "file_path", `C:`} {
+	for _, forbidden := range []string{"private", "/library/", "filePath", "file_path", `C:`} {
 		if strings.Contains(w.Body.String(), forbidden) {
 			t.Fatalf("leaked %q: %s", forbidden, w.Body)
 		}

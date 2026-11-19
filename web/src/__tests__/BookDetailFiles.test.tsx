@@ -1,6 +1,8 @@
 import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
 import { BookDetailModal } from '../components/BookDetailModal';
+import { CatalogView } from '../views/CatalogView';
 import { testBooks } from './testFixtures';
 import type { Book } from '../types';
 
@@ -64,7 +66,20 @@ it('explains when an edition has no files', () => {
   expect(screen.queryByRole('link', { name: /^Download/ })).not.toBeInTheDocument();
 });
 
-it('explains when the book has no editions', () => {
-  render(<BookDetailModal book={{ ...book, editions: [] }} onClose={vi.fn()} />);
+it('shows a pending book in the Library and explains the absence of files in its details', async () => {
+  const pending: Book = { ...book, state: 'Downloading', coverUrl: undefined, formats: [], editions: [] };
+  const select = vi.fn();
+  const user = userEvent.setup({ delay: null });
+  const { rerender } = render(<CatalogView books={[pending]} authors={[]} series={[]}
+    bundleSeriesInLibrary={false} selectedIndex={-1} onSelectBook={select} />);
+  expect(screen.getByText('Downloading')).toBeVisible();
+  await user.click(screen.getByRole('heading', { name: pending.title }));
+  expect(select).toHaveBeenCalledWith(pending);
+  await user.click(screen.getByRole('button', { name: 'List View' }));
+  expect(screen.getByText('Downloading')).toBeVisible();
+
+  rerender(<BookDetailModal book={pending} onClose={vi.fn()} />);
+  expect(screen.getByText('Downloading')).toBeVisible();
   expect(screen.getByText('No files available.')).toBeVisible();
+  expect(screen.queryByRole('link', { name: /^Download/ })).not.toBeInTheDocument();
 });

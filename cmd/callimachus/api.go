@@ -40,6 +40,7 @@ type APIBookEdition struct {
 }
 
 type APIBook struct {
+	State              string           `json:"state"`
 	CoverURL           string           `json:"coverUrl,omitempty"`
 	ID                 string           `json:"id"`
 	Title              string           `json:"title"`
@@ -234,6 +235,33 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/releases/grab", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleGrabRelease)))
 }
 
+// bookAvailabilitySQL uses the books alias b. A held format takes precedence
+// over a request for an additional format.
+const bookAvailabilitySQL = `CASE
+	WHEN EXISTS(SELECT 1 FROM book_editions e JOIN media_assets m ON m.edition_id=e.id WHERE e.book_id=b.id)
+		THEN 'In library'
+	ELSE COALESCE((
+		SELECT CASE r.status
+			WHEN 'downloading' THEN 'Downloading'
+			WHEN 'searching' THEN 'Searching'
+			ELSE 'Requested'
+		END
+		FROM book_requests r
+		WHERE r.book_id=b.id AND r.dismissed=0 AND r.status IN ('downloading','searching','error')
+		ORDER BY CASE r.status WHEN 'downloading' THEN 1 WHEN 'searching' THEN 2 ELSE 3 END
+		LIMIT 1
+	), '') END`
+
+func bookAvailability(state, releaseDate string, today string) string {
+	if state != "" {
+		return state
+	}
+	if releaseDate > today {
+		return "Scheduled"
+	}
+	return "Not in library"
+}
+
 func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if s.db == nil {
@@ -245,7 +273,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 		SELECT b.id, b.title, COALESCE(b.subtitle, ''), b.author_id, COALESCE(a.name, ''),
 		       COALESCE(b.series_id, ''), COALESCE(s.title, ''), b.series_index,
 		       COALESCE(b.release_date, ''),
-		       COALESCE(b.synopsis, '')
+		       COALESCE(b.synopsis, ''), ` + bookAvailabilitySQL + `
 		FROM books b
 		LEFT JOIN authors a ON b.author_id = a.id
 		LEFT JOIN series s ON b.series_id = s.id
@@ -264,6 +292,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 	books := make([]APIBook, 0)
 	bookIDs := make([]string, 0)
 	bookMap := make(map[string]*APIBook)
+	today := time.Now().UTC().Format(time.DateOnly)
 
 	for rows.Next() {
 		var b APIBook
@@ -271,7 +300,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(
 			&b.ID, &b.Title, &b.Subtitle, &b.AuthorID, &b.AuthorName,
 			&b.SeriesID, &b.SeriesTitle, &seriesIdx,
-			&b.ReleaseDate, &b.Synopsis,
+			&b.ReleaseDate, &b.Synopsis, &b.State,
 		); err != nil {
 			slog.Error("scan book failed")
 			continue
@@ -281,6 +310,7 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 			b.SeriesIndex = &val
 		}
 		b.SeriesIndexDisplay = catalog.SeriesIndexLabel(b.SeriesIndex)
+		b.State = bookAvailability(b.State, b.ReleaseDate, today)
 		b.Formats = make([]string, 0)
 		b.Editions = make([]APIBookEdition, 0)
 		if s.bookCover(r, b.ID) != "" {
@@ -354,6 +384,9 @@ func (s *Server) handleGetBooks(w http.ResponseWriter, r *http.Request) {
 					}
 					if parent, ok := bookMap[ed.BookID]; ok {
 						parent.Editions = append(parent.Editions, ed)
+						if len(ed.Assets) == 0 {
+							continue
+						}
 						fmtUpper := strings.ToUpper(ed.Format)
 						found := false
 						for _, f := range parent.Formats {
