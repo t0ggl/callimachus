@@ -14,7 +14,7 @@ it('scans the library and refreshes catalog data', async () => {
   const response = new Promise<Response>((resolve) => { completeScan = resolve; });
   const fetch = vi.fn().mockReturnValue(response);
   vi.stubGlobal('fetch', fetch);
-  render(<CatalogView books={[]} authors={[]} series={[]} selectedIndex={0} onSelectBook={vi.fn()} onScanComplete={refresh} />);
+  render(<CatalogView books={[]} authors={[]} series={[]} onSelectBook={vi.fn()} onScanComplete={refresh} />);
   const heading = screen.getByRole('heading', { name: 'Library' });
   const scan = screen.getByRole('button', { name: 'Scan Library' });
   const books = screen.getByRole('button', { name: 'Books (0)' });
@@ -33,7 +33,7 @@ it('scans the library and refreshes catalog data', async () => {
 it('offers recovery when a library scan fails', async () => {
   const user = userEvent.setup({ delay: null });
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }));
-  render(<CatalogView books={[]} authors={[]} series={[]} selectedIndex={0} onSelectBook={vi.fn()} />);
+  render(<CatalogView books={[]} authors={[]} series={[]} onSelectBook={vi.fn()} />);
   await user.click(screen.getByRole('button', { name: 'Scan Library' }));
   expect(await screen.findByRole('status')).toHaveTextContent('permissions, then retry');
   expect(screen.getByRole('button', { name: 'Scan Library' })).toBeEnabled();
