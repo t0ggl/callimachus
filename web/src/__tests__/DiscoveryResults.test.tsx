@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { DiscoveryResults } from '../components/DiscoveryResults';
@@ -22,6 +22,52 @@ describe('book discovery', () => {
     await user.selectOptions(select, 'both');
     rerender(<DiscoveryResults query="" defaultSearchFormat="ebook" onSubmitRequest={add} />);
     expect(select).toHaveValue('both');
+  });
+
+  it('shows five ranked matches, reveals the rest by keyboard, and resets for a new query', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const user = userEvent.setup({ delay: null });
+      const search = (prefix: string, count: number) => ({
+        ok: true,
+        json: async () => Array.from({ length: count }, (_, index) => ({
+          title: `${prefix} ${index + 1}`,
+          year: 2000,
+          library_book_id: index === 5 ? 'owned-book' : undefined,
+        })),
+      });
+      const fetch = vi.fn().mockResolvedValueOnce(search('First', 8)).mockResolvedValueOnce(search('Second', 6));
+      vi.stubGlobal('fetch', fetch);
+      const onOpenBook = vi.fn();
+      const props = { onSubmitRequest: vi.fn(), onOpenBook };
+      const { rerender } = render(<DiscoveryResults query="First" {...props} />);
+      await act(() => vi.advanceTimersByTimeAsync(250));
+      vi.useRealTimers();
+
+      const showMore = screen.getByRole('button', { name: 'Show more (3 more)' });
+      expect(screen.getAllByRole('listitem')).toHaveLength(5);
+      expect(screen.getByRole('heading', { name: 'First 5' })).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'First 6' })).not.toBeInTheDocument();
+
+      showMore.focus();
+      await user.keyboard('{Enter}');
+      expect(screen.getAllByRole('listitem')).toHaveLength(8);
+      expect(screen.queryByRole('button', { name: /Show more/ })).not.toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'First 6' }).closest('li')).toHaveFocus();
+      await user.tab();
+      expect(screen.getByRole('button', { name: 'In Library: First 6' })).toHaveFocus();
+      await user.keyboard('{Enter}');
+      expect(onOpenBook).toHaveBeenCalledWith('owned-book');
+      expect(fetch).toHaveBeenCalledTimes(1);
+
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      rerender(<DiscoveryResults query="Second" {...props} />);
+      await act(() => vi.advanceTimersByTimeAsync(250));
+      expect(screen.getAllByRole('listitem')).toHaveLength(5);
+      expect(screen.getByRole('button', { name: 'Show more (1 more)' })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('confirms metadata with a single compact Add action and loading/added states', async () => {

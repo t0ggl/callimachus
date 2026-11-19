@@ -1,11 +1,13 @@
 import { EntityLink } from './EntityLink';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Check, Plus, Loader2, BookOpen, AlertCircle, CheckCircle2, Search } from 'lucide-react';
 import { RequestMetadata, RequestType } from '../types';
 import { SeriesBadge } from './SeriesBadge';
 import { SeriesDetailModal } from './SeriesDetailModal';
 
 type RequestFormat = 'epub' | 'm4b';
+
+const INITIAL_RESULT_LIMIT = 5;
 
 type Match = {
   description?: string;
@@ -84,6 +86,9 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
   const [selectedFormat, setSelectedFormat] = useState<RequestType>();
   const format = selectedFormat ?? defaultSearchFormat;
   const [matches, setMatches] = useState<Match[]>([]);
+  const [expanded, setExpanded] = useState(false);
+  const firstRevealedResult = useRef<HTMLLIElement>(null);
+  const remainingCount = matches.length - INITIAL_RESULT_LIMIT;
   const [retry, setRetry] = useState(0);
   const [addingKey, setAddingKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -97,6 +102,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
     const controller = new AbortController();
     let current = true;
     setMatches([]);
+    setExpanded(false);
     setError('');
     setErrorSource(null);
     setMessage('');
@@ -129,6 +135,10 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
       controller.abort();
     };
   }, [query, retry]);
+
+  useEffect(() => {
+    if (expanded) firstRevealedResult.current?.focus();
+  }, [expanded]);
 
   const add = async (m: Match) => {
     const authors = m.authors ?? [];
@@ -251,7 +261,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
 
       {matches.length > 0 && (
         <ul className="space-y-2.5" aria-label="Book discovery results">
-          {matches.map((m, i) => {
+          {(expanded ? matches : matches.slice(0, INITIAL_RESULT_LIMIT)).map((m, i) => {
             const authors = m.authors ?? [];
             const itemKey = `${m.title}\0${authors.join(', ')}`;
             const requestedForBook = new Set<RequestFormat>([
@@ -264,7 +274,9 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
             return (
               <li
                 key={`${itemKey}-${i}`}
-                className="bg-zinc-950/60 border border-zinc-800 hover:border-zinc-700 rounded-lg p-3 flex items-center justify-between gap-3 sm:gap-4 transition-colors duration-150"
+                ref={i === INITIAL_RESULT_LIMIT ? firstRevealedResult : undefined}
+                tabIndex={i === INITIAL_RESULT_LIMIT ? -1 : undefined}
+                className="bg-zinc-950/60 border border-zinc-800 hover:border-zinc-700 rounded-lg p-3 flex items-center justify-between gap-3 sm:gap-4 transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400"
               >
                 <div className="flex items-center gap-3 min-w-0 flex-1">
                   <DiscoveryCover coverUrl={m.cover_url} title={m.title} />
@@ -375,6 +387,15 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', onSubmi
             );
           })}
         </ul>
+      )}
+      {!expanded && remainingCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="px-3 py-2 text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded-md border border-zinc-700 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400"
+        >
+          Show more ({remainingCount} more)
+        </button>
       )}
 
       {searched && !matches.length && !busy && !error && (
