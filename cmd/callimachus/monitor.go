@@ -199,18 +199,20 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 		State string   `json:"state"`
 	}
 	books := []entry{}
-	rows, err := s.db.QueryContext(r.Context(), `SELECT b.id,b.title,COALESCE(b.release_date,''),b.series_index,CASE WHEN EXISTS(SELECT 1 FROM book_editions e JOIN media_assets m ON m.edition_id=e.id WHERE e.book_id=b.id) THEN 'In library' WHEN b.release_date>date('now') THEN 'Scheduled' WHEN b.monitored=1 THEN 'Monitored' ELSE 'Not monitored' END FROM books b WHERE b.`+bookColumn+`=? ORDER BY b.series_index,b.release_date,b.title`, id)
+	rows, err := s.db.QueryContext(r.Context(), `SELECT b.id,b.title,COALESCE(b.release_date,''),b.series_index,`+bookAvailabilitySQL+` FROM books b WHERE b.`+bookColumn+`=? ORDER BY b.series_index,b.release_date,b.title`, id)
 	if err != nil {
 		http.Error(w, "Unable to load books", 500)
 		return
 	}
 	defer rows.Close()
+	today := time.Now().UTC().Format(time.DateOnly)
 	for rows.Next() {
 		var b entry
 		if err = rows.Scan(&b.ID, &b.Title, &b.Date, &b.Index, &b.State); err != nil {
 			http.Error(w, "Unable to load books", 500)
 			return
 		}
+		b.State = bookAvailability(b.State, b.Date, today)
 		books = append(books, b)
 	}
 	if rows.Err() != nil {

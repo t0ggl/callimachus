@@ -20,6 +20,7 @@ func TestCatalogMonitoringManualBackgroundDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	mt := testutil.NewMockTransport()
+	mt.PanicOnUnmocked = true
 	mt.RegisterString("/v1/graphql", 200, `{"data":{"books":[{"id":99,"title":"Future Work","release_date":"2099-05-10","contributions":[{"author":{"name":"Author"}}]}]}}`, nil)
 	s := &Server{db: db, prowlarrHTTPClient: mt.Client(), monitorWake: make(chan struct{}, 1)}
 	s.acquisition = s.newAcquisition()
@@ -109,6 +110,11 @@ func TestCatalogMonitoringReusesAcquisitionRequest(t *testing.T) {
 	}
 	if _, err := db.Exec(`UPDATE book_requests SET status='downloading'`); err != nil {
 		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.handleCatalogEntity(w, httptest.NewRequest("GET", "/api/catalog/entity?kind=authors&name=Author", nil))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"state":"Downloading"`) {
+		t.Fatalf("author book state: %d %s", w.Code, w.Body)
 	}
 	if err := s.searchMonitoredBook(context.Background(), "b"); err != nil {
 		t.Fatal(err)

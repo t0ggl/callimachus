@@ -58,9 +58,14 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({ book, onClose,
         </div>}
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-950/40">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <h2 className="text-lg font-semibold text-zinc-100">{book.title}</h2>
             <div className="flex gap-1.5">
+              {book.state && book.state !== 'In library' && (
+                <span className="rounded-sm border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-xs text-zinc-200">
+                  {book.state}
+                </span>
+              )}
               {book.formats.map((fmt) => (
                 <span
                   key={fmt}

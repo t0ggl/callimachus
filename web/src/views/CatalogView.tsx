@@ -27,6 +27,7 @@ export type CatalogDisplayItem =
       formats: FormatType[];
       totalBooks?: number;
       editionsCount: number;
+      pendingCount: number;
     };
 
 export function buildCatalogDisplayItems(
@@ -102,8 +103,12 @@ export function buildCatalogDisplayItems(
     const formats: FormatType[] = [];
     const seenFormats = new Set<FormatType>();
     let editionsCount = 0;
+    let pendingCount = 0;
 
     for (const b of orderedBooks) {
+      if (b.state === 'Requested' || b.state === 'Searching' || b.state === 'Downloading') {
+        pendingCount++;
+      }
       const author = b.authorName.trim();
       if (author && !seenAuthors.has(author.toLowerCase())) {
         seenAuthors.add(author.toLowerCase());
@@ -131,6 +136,7 @@ export function buildCatalogDisplayItems(
       formats,
       totalBooks: group.totalBooks,
       editionsCount,
+      pendingCount,
     };
   });
 
@@ -472,6 +478,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                           {item.totalBooks && item.totalBooks > 0
                             ? ` of ${item.totalBooks} in series`
                             : ' in library'}
+                          {item.pendingCount > 0 && <span className="block text-zinc-400">{item.pendingCount} pending</span>}
                         </span>
                       </div>
                     </div>
@@ -506,6 +513,11 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
 
                       {/* Format Badges Overlay */}
                       <div className="absolute top-2 right-2 flex flex-col gap-1 items-end">
+                        {book.formats.length === 0 && (
+                          <span className="rounded-sm border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-200">
+                            {book.state ?? 'No files'}
+                          </span>
+                        )}
                         {book.formats.map((fmt) => (
                           <span
                             key={fmt}
@@ -609,6 +621,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                                 {item.books.length} {item.books.length === 1 ? 'book' : 'books'}
                                 {item.totalBooks && item.totalBooks > 0 ? ` / ${item.totalBooks}` : ''}
                               </span>
+                              {item.pendingCount > 0 && <span className="text-xs text-zinc-400">{item.pendingCount} pending</span>}
                             </div>
                           </td>
                           <td className="py-3 px-4">
@@ -660,6 +673,9 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                         </td>
                         <td className="py-3 px-4">
                           <div className="flex gap-1">
+                            {book.formats.length === 0 && (
+                              <span className="text-xs text-zinc-300">{book.state ?? 'No files'}</span>
+                            )}
                             {book.formats.map((fmt) => (
                               <span
                                 key={fmt}

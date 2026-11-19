@@ -78,10 +78,10 @@ func TestSeriesReadingOrder(t *testing.T) {
 	}
 	// Ordered: 0.5 -> 1 -> nil (unindexed)
 	first, second, third := result.Books[0], result.Books[1], result.Books[2]
-	if first.Title != "First" || first.SeriesIndexDisplay != "Book 0.5" || first.SeriesIndex == nil || *first.SeriesIndex != 0.5 || first.CoverURL != "https://covers.example/first.jpg" || first.Description != "The prequel novella." || first.Subtitle != "Origins" || first.LibraryBookID != "" || len(first.Formats) != 0 {
+	if first.Title != "First" || first.SeriesIndexDisplay != "Book 0.5" || first.SeriesIndex == nil || *first.SeriesIndex != 0.5 || first.CoverURL != "https://covers.example/first.jpg" || first.Description != "The prequel novella." || first.Subtitle != "Origins" || first.LibraryBookID != "" || len(first.Formats) != 0 || first.State != "Not in library" {
 		t.Fatalf("unexpected first book: %+v", first)
 	}
-	if second.Title != "Second: A Novel (Sequence Book 1)" || second.LibraryBookID != "b" || !second.Monitored || second.PublishDate != "2020-01-01" || second.SeriesIndexDisplay != "Book 1" || second.HardcoverID != "2" || second.Subtitle != "The Middle Volume" || second.Description != "Local synopsis" {
+	if second.Title != "Second: A Novel (Sequence Book 1)" || second.LibraryBookID != "b" || second.State != "In library" || second.PublishDate != "2020-01-01" || second.SeriesIndexDisplay != "Book 1" || second.HardcoverID != "2" || second.Subtitle != "The Middle Volume" || second.Description != "Local synopsis" {
 		t.Fatalf("unexpected second book: %+v", second)
 	}
 	// Local cover takes precedence over remote cover, and only owned formats are listed.
@@ -136,6 +136,8 @@ func TestSeriesBooksMissingMetadataAndValidation(t *testing.T) {
 		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date,monitored) VALUES('b_nil_late','a1','Zeta Unindexed','s1',NULL,'2022-01-01',0)`,
 		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date,monitored) VALUES('b_nil_early','a1','Alpha Unindexed','s1',NULL,'2021-01-01',0)`,
 		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date,monitored) VALUES('b_one','a1','First Volume','s1',1.0,'2020-01-01',1)`,
+		`INSERT INTO users(id,username,email) VALUES('reader','Reader','reader@example.test')`,
+		`INSERT INTO book_requests(user_id,book_id,title,author,format,status) VALUES('reader','b_one','First Volume','Alpha Author','epub','searching')`,
 	} {
 		if _, err := db.Exec(query); err != nil {
 			t.Fatal(err)
@@ -154,5 +156,9 @@ func TestSeriesBooksMissingMetadataAndValidation(t *testing.T) {
 	}
 	if len(result.Books) != 3 || result.Books[0].Title != "First Volume" || result.Books[1].Title != "Alpha Unindexed" || result.Books[2].Title != "Zeta Unindexed" {
 		t.Fatalf("unexpected unindexed ordering: %+v", result.Books)
+	}
+	pending := result.Books[0]
+	if pending.State != "Searching" || pending.LibraryBookID != "b_one" || len(pending.Formats) != 0 || result.Books[1].State != "Not in library" {
+		t.Fatalf("unexpected availability: %+v", result.Books)
 	}
 }

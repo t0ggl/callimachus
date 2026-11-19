@@ -59,7 +59,8 @@ it('opens reading order from discovery with series details, covers, formats, and
               series_index: 0.5,
               publish_date: '2018-03-01',
               formats: [],
-              monitored: false,
+              state: 'Searching',
+              library_book_id: 'book-pending',
             },
             {
               title: 'Novella',
@@ -71,7 +72,7 @@ it('opens reading order from discovery with series details, covers, formats, and
               series_index_display: '#2.5',
               publish_date: '2020-01-02',
               formats: ['EPUB', 'M4B'],
-              monitored: true,
+              state: 'In library',
               library_book_id: 'book-25',
             },
             {
@@ -79,7 +80,7 @@ it('opens reading order from discovery with series details, covers, formats, and
               authors: ['Co-Author'],
               series_index: null,
               formats: [],
-              monitored: false,
+              state: 'Not in library',
             },
           ],
         }),
@@ -103,8 +104,8 @@ it('opens reading order from discovery with series details, covers, formats, and
   expect(within(items[0]).getByText('Book 0.5')).toBeInTheDocument();
   expect(within(items[0]).getByText('Prelude')).toBeInTheDocument();
   expect(within(items[0]).getByRole('img', { name: 'Cover of Prelude' })).toHaveAttribute('src', 'https://covers.example/prelude.jpg');
-  expect(within(items[0]).getByText('Not in library')).toBeInTheDocument();
-  expect(within(items[0]).getByText('Not monitored')).toBeInTheDocument();
+  expect(within(items[0]).getByText('Searching')).toBeInTheDocument();
+  expect(within(items[0]).getByRole('button', { name: 'Prelude' })).toBeInTheDocument();
 
   expect(within(dialog).getAllByText('Book 2.5')).toHaveLength(1);
   expect(within(items[1]).getByText('Book 2.5')).toBeInTheDocument();
@@ -113,11 +114,12 @@ it('opens reading order from discovery with series details, covers, formats, and
   expect(within(items[1]).getByText('M4B')).toBeInTheDocument();
   expect(within(items[1]).getByText('2020-01-02')).toBeInTheDocument();
   expect(within(items[1]).getByText('In library')).toBeInTheDocument();
-  expect(within(items[1]).getByText('Monitored')).toBeInTheDocument();
 
   expect(within(items[2]).getByText('Unindexed')).toBeInTheDocument();
   expect(within(items[2]).getByText('Release date unknown')).toBeInTheDocument();
   expect(within(items[2]).getByLabelText('No cover available')).toBeInTheDocument();
+  expect(within(items[2]).getByText('Not in library')).toBeInTheDocument();
+  expect(within(dialog).queryByText(/^(Not monitored|Monitored)$/)).not.toBeInTheDocument();
 
   await user.click(within(items[1]).getByRole('button', { name: 'Novella' }));
   expect(openBook).toHaveBeenCalledWith('book-25');

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { BookState } from '../types';
 import {
   X,
   Layers,
@@ -22,7 +23,7 @@ export interface SeriesBookEntry {
   series_index_display?: string;
   formats?: string[];
   library_book_id?: string;
-  monitored: boolean;
+  state?: BookState;
 }
 
 export interface SeriesBooksData {
@@ -114,7 +115,7 @@ export function SeriesDetailModal({ title, onClose, onOpenBook }: SeriesDetailMo
 
   const displayTitle = data?.title || title;
   const books = data?.books ?? [];
-  const ownedCount = data?.owned_count ?? books.filter((b) => Boolean(b.library_book_id)).length;
+  const ownedCount = data?.owned_count ?? books.filter((b) => b.state ? b.state === 'In library' : Boolean(b.library_book_id)).length;
   const totalBooks = data?.total_books ?? books.length;
   const seriesAuthors =
     data?.authors && data.authors.length > 0
@@ -297,8 +298,9 @@ export function SeriesDetailModal({ title, onClose, onOpenBook }: SeriesDetailMo
                     {books.map((book, i) => {
                       const indexLabel = book.series_index != null ? `Book ${book.series_index}` : 'Unindexed';
                       const formats = book.formats ?? [];
-                      const isOwned = Boolean(book.library_book_id);
-                      const canOpen = isOwned && Boolean(onOpenBook);
+                      const state = book.state ?? (book.library_book_id ? 'In library' : 'Not in library');
+                      const isOwned = state === 'In library';
+                      const canOpen = Boolean(book.library_book_id && onOpenBook);
 
                       return (
                         <li
@@ -387,18 +389,9 @@ export function SeriesDetailModal({ title, onClose, onOpenBook }: SeriesDetailMo
                                   </span>
                                 ) : (
                                   <span className="px-2 py-0.5 rounded-sm text-[11px] font-medium bg-zinc-900 text-zinc-400 border border-zinc-800">
-                                    Not in library
+                                    {state}
                                   </span>
                                 )}
-                                <span
-                                  className={`px-2 py-0.5 rounded-sm text-[11px] font-medium border ${
-                                    book.monitored
-                                      ? 'bg-blue-950/60 text-blue-300 border-blue-800/50'
-                                      : 'bg-zinc-900 text-zinc-400 border-zinc-800'
-                                  }`}
-                                >
-                                  {book.monitored ? 'Monitored' : 'Not monitored'}
-                                </span>
                               </div>
                             </div>
                           </div>

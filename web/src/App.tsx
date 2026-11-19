@@ -292,7 +292,8 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
       return;
     }
     setCurrentView(v);
-  }, [isAdmin]);
+    if (v === 'catalog') void fetchCatalog();
+  }, [isAdmin, fetchCatalog]);
 
   useEffect(() => {
     fetchAuthUser();
@@ -405,7 +406,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
         }
         throw new Error('Unable to add this book. Please try again.');
       }
-      await fetchRequests();
+      await Promise.all([fetchRequests(), fetchCatalog()]);
     } catch (err) { throw err; }
   };
 

@@ -49,8 +49,11 @@ export interface BookEdition {
   assets: MediaAsset[];
 }
 
+export type BookState = 'In library' | 'Downloading' | 'Searching' | 'Requested' | 'Scheduled' | 'Not in library';
+
 export interface Book {
   id: string;
+  state?: BookState;
   title: string;
   subtitle?: string;
   authorId: string;
