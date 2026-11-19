@@ -22,7 +22,7 @@ func withAdminUser(req *http.Request) *http.Request {
 }
 
 func TestConnectionChecks(t *testing.T) {
-	for _, service := range []string{"prowlarr", "google-books", "hardcover"} {
+	for _, service := range []string{"prowlarr", "google-books", "hardcover", "openlibrary"} {
 		for _, outcome := range []string{"success", "unauthorized", "forbidden", "rate-limit", "server-error", "malformed", "wrong-shape", "graphql-error", "network", "redirect"} {
 			t.Run(service+"/"+outcome, func(t *testing.T) {
 				db := testutil.NewTestDB(t)
@@ -39,6 +39,9 @@ func TestConnectionChecks(t *testing.T) {
 				}
 				if service == "hardcover" {
 					path, body = "/v1/graphql", `{"data":{"me":[{"id":1}]}}`
+				}
+				if service == "openlibrary" {
+					path, body = "/search.json", `{"numFound":1,"docs":[{"key":"/works/OL1W","title":"Fantastic Mr Fox"}]}`
 				}
 				calls := 0
 				mt.RegisterHandler(path, func(req *http.Request) (*http.Response, error) {
@@ -59,6 +62,10 @@ func TestConnectionChecks(t *testing.T) {
 						b, _ := io.ReadAll(req.Body)
 						if !strings.Contains(string(b), "me { id }") {
 							t.Fatal("unexpected query")
+						}
+					case "openlibrary":
+						if req.Method != "GET" || req.URL.Host != "openlibrary.org" {
+							t.Fatalf("unexpected openlibrary request: %s %s", req.Method, req.URL.String())
 						}
 					}
 					code := 200
@@ -198,4 +205,18 @@ func TestConnectionInputValidation(t *testing.T) {
 			t.Fatalf("unexpected response: %d %s", w.Code, w.Body.String())
 		}
 	}
+
+	t.Run("openlibrary accepts empty body", func(t *testing.T) {
+		db := testutil.NewTestDB(t)
+		mt := testutil.NewMockTransportForTest(t)
+		mt.RegisterString("/search.json", 200, `{"docs":[]}`, nil)
+		s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
+		mux := http.NewServeMux()
+		s.registerAPIRoutes(mux)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, withAdminUser(httptest.NewRequest("POST", "/api/settings/openlibrary/test", nil)))
+		if w.Code != 200 {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+	})
 }

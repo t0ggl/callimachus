@@ -41,6 +41,7 @@ func TestSettingsAPI_AdminOnlyRBAC(t *testing.T) {
 	mt.RegisterString("/api/v1/indexer", http.StatusOK, `[]`, nil)
 	mt.RegisterString("/books/v1/volumes", http.StatusOK, `{"kind":"books#volumes"}`, nil)
 	mt.RegisterString("/v1/graphql", http.StatusOK, `{"data":{"me":[{"id":1}]}}`, nil)
+	mt.RegisterString("/search.json", http.StatusOK, `{"docs":[]}`, nil)
 	srv.prowlarrHTTPClient = mt.Client()
 
 	if _, err := srv.db.ExecContext(context.Background(),
@@ -114,6 +115,13 @@ func TestSettingsAPI_AdminOnlyRBAC(t *testing.T) {
 			method:      http.MethodPost,
 			path:        "/api/settings/hardcover/test",
 			body:        `{"apiKey":"hardcover-key"}`,
+			adminStatus: http.StatusOK,
+		},
+		{
+			name:        "POST /api/settings/openlibrary/test",
+			method:      http.MethodPost,
+			path:        "/api/settings/openlibrary/test",
+			body:        `{}`,
 			adminStatus: http.StatusOK,
 		},
 		{

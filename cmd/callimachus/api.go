@@ -161,8 +161,8 @@ type APISettingsResponse struct {
 }
 
 type APISettingsUpdateRequest struct {
-	LogLevel *string           `json:"logLevel"`
-	Metadata map[string]string `json:"metadata"`
+	LogLevel *string                    `json:"logLevel"`
+	Metadata map[string]json.RawMessage `json:"metadata"`
 	Library  *struct {
 		CompletedDownloadRoot *string `json:"completedDownloadRoot"`
 		RootPath              *string `json:"rootPath"`
@@ -561,7 +561,11 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 		BundleSeriesInLibrary: cfg.BundleSeriesInLibrary,
 	}
 
-	resp.Metadata = map[string]bool{config.KeyGoogleBooksAPIKey: cfg.GoogleBooksAPIKey != "", config.KeyHardcoverAPIKey: cfg.HardcoverAPIKey != ""}
+	resp.Metadata = map[string]bool{
+		config.KeyGoogleBooksAPIKey:  cfg.GoogleBooksAPIKey != "",
+		config.KeyHardcoverAPIKey:    cfg.HardcoverAPIKey != "",
+		config.KeyOpenLibraryEnabled: cfg.OpenLibraryEnabled,
+	}
 	// Prowlarr Integration (never expose raw API key)
 	resp.Prowlarr = APIProwlarrSettings{
 		URL:              cfg.ProwlarrURL,
@@ -693,9 +697,29 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if req.LogLevel != nil {
 		updates[config.KeyLogLevel] = *req.LogLevel
 	}
-	for key, value := range req.Metadata {
-		if key == config.KeyGoogleBooksAPIKey || key == config.KeyHardcoverAPIKey {
+	for key, rawVal := range req.Metadata {
+		switch key {
+		case config.KeyGoogleBooksAPIKey, config.KeyHardcoverAPIKey:
+			var value string
+			if err := json.Unmarshal(rawVal, &value); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid metadata value for " + key})
+				return
+			}
 			updates[key] = value
+		case config.KeyOpenLibraryEnabled:
+			var b bool
+			if err := json.Unmarshal(rawVal, &b); err == nil {
+				updates[key] = strconv.FormatBool(b)
+			} else {
+				var value string
+				if err := json.Unmarshal(rawVal, &value); err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid metadata value for " + key})
+					return
+				}
+				updates[key] = value
+			}
 		}
 	}
 

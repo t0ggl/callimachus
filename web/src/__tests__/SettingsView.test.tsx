@@ -334,17 +334,42 @@ describe('Connection tests', () => {
     } finally { vi.unstubAllGlobals(); }
   });
 
-  it.each(['prowlarr', 'google-books', 'hardcover'])('shows actionable %s failure and allows retry with blank saved credentials', async service => {
+  it('tests openlibrary without an API key and shows progress and success without saving or syncing', async () => {
+    const user = userEvent.setup({ delay: null });
+    let finish!: (value: unknown) => void;
+    const fetchMock = vi.fn(() => new Promise(resolve => { finish = resolve; }));
+    vi.stubGlobal('fetch', fetchMock);
+    const save = vi.fn(); const sync = vi.fn();
+    try {
+      render(<SettingsView indexers={[]} qualityProfile={baseQuality} prowlarrSettings={baseProwlarr} onSaveSettings={save} onSyncIndexers={sync} />);
+      const button = screen.getByRole('button', { name: 'Test OpenLibrary connection' });
+      await user.click(button);
+      expect(button).toBeDisabled();
+      expect(button).toHaveTextContent('Testing…');
+      expect(fetchMock).toHaveBeenCalledWith('/api/settings/openlibrary/test', expect.objectContaining({
+        method: 'POST', body: JSON.stringify({}),
+      }));
+      finish({ ok: true, json: async () => ({ message: 'Connection successful.' }) });
+      expect(await screen.findByText('Connection successful.')).toBeInTheDocument();
+      expect(button).toBeEnabled(); expect(save).not.toHaveBeenCalled(); expect(sync).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it.each(['prowlarr', 'google-books', 'hardcover', 'openlibrary'])('shows actionable %s failure and allows retry with blank saved credentials', async service => {
     const user = userEvent.setup({ delay: null });
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ message: 'Authentication failed. Check the API key and service permissions.' }) });
     vi.stubGlobal('fetch', fetchMock);
     try {
       render(<SettingsView indexers={[]} qualityProfile={baseQuality} prowlarrSettings={baseProwlarr} />);
-      const label = service === 'prowlarr' ? 'Prowlarr' : service === 'google-books' ? 'Google Books' : 'Hardcover';
+      const label = service === 'prowlarr' ? 'Prowlarr' : service === 'google-books' ? 'Google Books' : service === 'openlibrary' ? 'OpenLibrary' : 'Hardcover';
       const button = screen.getByRole('button', { name: `Test ${label} connection` });
       await user.click(button);
       expect(await screen.findByText(/Authentication failed/)).toBeInTheDocument();
-      expect(JSON.parse(fetchMock.mock.calls[0][1].body).apiKey).toBe('');
+      if (service === 'openlibrary') {
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({});
+      } else {
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body).apiKey).toBe('');
+      }
       expect(button).toBeEnabled();
       fetchMock.mockRejectedValueOnce(new Error('network'));
       await user.click(button);
@@ -363,10 +388,72 @@ describe('Connection tests', () => {
         expect(screen.getByLabelText(field)).toBeDisabled();
         await user.click(screen.getByRole('button', { name: `Test ${label} connection` }));
       }
+      await user.click(screen.getByRole('button', { name: 'Test OpenLibrary connection' }));
       expect(screen.getByRole('region', { name: 'Google Books' })).toContainElement(screen.getByLabelText('Google Books API key (optional)'));
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(screen.getByRole('region', { name: 'OpenLibrary' })).toContainElement(screen.getByRole('checkbox', { name: 'Enable OpenLibrary metadata provider' }));
+      expect(fetchMock).toHaveBeenCalledTimes(4);
       expect(screen.getByTestId('override-note-hardcover_api_key')).toHaveTextContent('CALLIMACHUS_HARDCOVER_API_KEY');
     } finally { vi.unstubAllGlobals(); }
+  });
+});
+
+describe('OpenLibrary provider setting', () => {
+  it('renders under Metadata providers with no-API-key note, defaults enabled, and saves toggled state', async () => {
+    const user = userEvent.setup({ delay: null });
+    const save = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SettingsView
+        indexers={[]}
+        metadata={{ openlibrary_enabled: true }}
+        qualityProfile={baseQuality}
+        onSaveSettings={save}
+      />
+    );
+
+    const metadataRegion = screen.getByRole('region', { name: 'Metadata providers' });
+    const openLibraryRegion = screen.getByRole('region', { name: 'OpenLibrary' });
+    expect(metadataRegion).toContainElement(openLibraryRegion);
+    expect(openLibraryRegion).toHaveTextContent(/No API key required/i);
+
+    const toggle = screen.getByRole('checkbox', { name: 'Enable OpenLibrary metadata provider' });
+    expect(toggle).toBeEnabled();
+    expect(toggle).toBeChecked();
+
+    await user.click(toggle);
+    expect(toggle).not.toBeChecked();
+    await user.click(screen.getByTestId('save-settings-btn'));
+
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ openlibrary_enabled: 'false' }),
+      })
+    );
+  });
+
+  it('locks the OpenLibrary toggle, displays env override note, and omits openlibrary_enabled from saves when overridden', async () => {
+    const user = userEvent.setup({ delay: null });
+    const save = vi.fn().mockResolvedValue(undefined);
+    const envVar = 'CALLIMACHUS_OPENLIBRARY_ENABLED';
+    render(
+      <SettingsView
+        indexers={[]}
+        metadata={{ openlibrary_enabled: false }}
+        qualityProfile={baseQuality}
+        overrides={{ openlibrary_enabled: { isOverridden: true, overriddenBy: envVar, envVar } }}
+        onSaveSettings={save}
+      />
+    );
+
+    const toggle = screen.getByRole('checkbox', { name: 'Enable OpenLibrary metadata provider' });
+    expect(toggle).not.toBeChecked();
+    expect(toggle).toBeDisabled();
+    expect(screen.getByTestId('override-note-openlibrary_enabled')).toHaveTextContent(envVar);
+    expect(toggle).toHaveAccessibleDescription(expect.stringContaining(envVar));
+    expect(screen.getByRole('button', { name: 'Test OpenLibrary connection' })).toBeEnabled();
+
+    await user.click(screen.getByTestId('save-settings-btn'));
+    expect(save).toHaveBeenCalledOnce();
+    expect(save.mock.calls[0][0].metadata).not.toHaveProperty('openlibrary_enabled');
   });
 });
 

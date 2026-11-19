@@ -36,6 +36,9 @@ func (s *Server) newCatalogMonitor() *catalog.Monitor {
 		if kind == "series" {
 			return nil, fmt.Errorf("configure Hardcover metadata to discover series releases")
 		}
+		if !cfg.Settings.OpenLibraryEnabled {
+			return nil, fmt.Errorf("enable OpenLibrary or configure Hardcover metadata to discover author releases")
+		}
 		// OpenLibrary remains available without an API key. Persist only exact memberships.
 		return metadata.NewOpenLibraryProvider(metadata.WithOpenLibraryClient(client)).Search(ctx, name)
 	}, Search: s.searchMonitoredBook}

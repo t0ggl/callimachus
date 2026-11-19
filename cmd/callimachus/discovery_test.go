@@ -222,3 +222,43 @@ func TestDiscoveryAndAutomaticAcquisition(t *testing.T) {
 		}
 	}
 }
+
+func TestDiscoveryRespectsOpenLibraryEnabled(t *testing.T) {
+	t.Run("disabled via database uses remaining providers without calling OpenLibrary", func(t *testing.T) {
+		db := testutil.NewTestDB(t)
+		mt := testutil.NewMockTransportForTest(t) // PanicOnUnmocked is true; /search.json is NOT registered
+		mt.RegisterString("/books/v1/volumes", 200, `{"items":[{"volumeInfo":{"title":"Google Only Book","authors":["Author One"],"publishedDate":"2023"}}]}`, nil)
+		for k, v := range map[string]string{
+			"openlibrary_enabled":  "false",
+			"google_books_api_key": "google-key",
+		} {
+			if _, err := db.Exec(`INSERT INTO settings(key,value) VALUES(?,?)`, k, v); err != nil {
+				t.Fatal(err)
+			}
+		}
+		s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
+		w := httptest.NewRecorder()
+		s.handleDiscover(w, httptest.NewRequest("GET", "/api/discover?q=Test", nil))
+		if w.Code != 200 {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "Google Only Book") {
+			t.Fatalf("expected Google Books result, got %s", w.Body.String())
+		}
+	})
+
+	t.Run("disabled via environment returns 502 when no other providers configured", func(t *testing.T) {
+		db := testutil.NewTestDB(t)
+		if _, err := db.Exec(`INSERT INTO settings(key,value) VALUES('openlibrary_enabled','true')`); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("CALLIMACHUS_OPENLIBRARY_ENABLED", "false")
+		mt := testutil.NewMockTransportForTest(t) // PanicOnUnmocked is true; /search.json is NOT registered
+		s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
+		w := httptest.NewRecorder()
+		s.handleDiscover(w, httptest.NewRequest("GET", "/api/discover?q=Test", nil))
+		if w.Code != 502 {
+			t.Fatalf("status = %d, want 502: %s", w.Code, w.Body.String())
+		}
+	})
+}
