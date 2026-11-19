@@ -112,8 +112,7 @@ func ReplaceSidecarMetadata(source []byte, m Metadata) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	block := replacementMetadataXML(m, parsed.metadata, parsed.identifiers, parsed.uniqueIdentifier, parsed.coverMetaItemID, parsed.isEPUB3)
-	return replaceMetadataBlock(source, block)
+	return replacementMetadataXML(source, m, parsed)
 }
 
 // WriteSidecarFile writes the Calibre-compatible companion XML sidecar file.

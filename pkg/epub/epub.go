@@ -52,7 +52,7 @@ type nativeEPUB struct {
 	uniqueIDAttr    string
 	isEPUB3         bool
 	archive         *zip.Reader
-	identifiers     []rawIdentifier
+	parsed          *parsedOPF
 }
 
 // OpenNative opens an EPUB file and parses its metadata using the pure Go engine.
@@ -123,7 +123,7 @@ func parseNativeArchive(zr *zip.Reader) (*nativeEPUB, error) {
 		coverMetaItemID: parsed.coverMetaItemID,
 		uniqueIDAttr:    parsed.uniqueIdentifier,
 		isEPUB3:         parsed.isEPUB3,
-		identifiers:     parsed.identifiers,
+		parsed:          parsed,
 	}, nil
 }
 
@@ -143,8 +143,7 @@ func (e *nativeEPUB) WriteArchive(target io.Writer, m Metadata) error {
 	if e.archive == nil {
 		return fmt.Errorf("WriteArchive requires an EPUB opened with OpenNativeReader")
 	}
-	newMeta := replacementMetadataXML(m, e.metadata, e.identifiers, e.uniqueIDAttr, e.coverMetaItemID, e.isEPUB3)
-	updatedOPF, err := replaceMetadataBlock(e.rawOPF, newMeta)
+	updatedOPF, err := replacementMetadataXML(e.rawOPF, m, e.parsed)
 	if err != nil {
 		return err
 	}
@@ -152,7 +151,7 @@ func (e *nativeEPUB) WriteArchive(target io.Writer, m Metadata) error {
 }
 
 func (e *nativeEPUB) Save(targetPath string) error {
-	newMeta := serializeMetadataXML(e.metadata, e.uniqueIDAttr, e.coverMetaItemID, e.isEPUB3, nil)
+	newMeta := serializeMetadataXML(e.metadata, e.uniqueIDAttr, e.coverMetaItemID, e.isEPUB3)
 	updatedOPF, err := replaceMetadataBlock(e.rawOPF, newMeta)
 	if err != nil {
 		return err
