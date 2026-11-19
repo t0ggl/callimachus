@@ -88,11 +88,11 @@ export const Layout: React.FC<LayoutProps> = ({
   return (
     <div className="flex flex-col md:flex-row h-screen bg-zinc-950 text-zinc-100 overflow-hidden">
       {/* Sidebar Navigation */}
-      <aside className="w-full md:w-64 bg-zinc-900/90 border-r border-zinc-800 flex flex-col justify-between shrink-0">
+      <aside className="relative w-full md:w-64 bg-zinc-900/90 border-b md:border-b-0 md:border-r border-zinc-800 flex flex-col justify-between shrink-0">
         <div>
           {/* Logo & Brand Header */}
-          <div className="h-14 flex items-center px-4 border-b border-zinc-800 gap-3">
-            <div className="w-8 h-8 rounded-lg bg-blue-600/20 border border-blue-500/40 flex items-center justify-center text-blue-400">
+          <div className="h-12 md:h-14 flex items-center pl-3 pr-16 md:px-4 md:border-b border-zinc-800 gap-2 md:gap-3">
+            <div className="w-8 h-8 shrink-0 rounded-lg bg-blue-600/20 border border-blue-500/40 flex items-center justify-center text-blue-400">
               <svg className="w-5 h-5" viewBox="0 0 32 32" fill="none" aria-hidden="true">
                 <rect x="5" y="13" width="5.5" height="14" rx="1.5" fill="#3B82F6" fillOpacity="0.25" stroke="#60A5FA" strokeWidth="2.2" />
                 <rect x="12.5" y="10" width="5.5" height="17" rx="1.5" fill="#3B82F6" fillOpacity="0.4" stroke="#60A5FA" strokeWidth="2.2" />
@@ -114,7 +114,7 @@ export const Layout: React.FC<LayoutProps> = ({
           </div>
 
           {/* Navigation Links */}
-          <nav className="p-2 grid grid-cols-2 gap-1 md:block md:p-3 md:space-y-1">
+          <nav className="flex flex-nowrap gap-1 px-2 pb-2 md:block md:p-3 md:space-y-1">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = currentView === item.id;
@@ -123,14 +123,14 @@ export const Layout: React.FC<LayoutProps> = ({
                   key={item.id}
                   onClick={() => onNavigate(item.id)}
                   data-testid={`nav-${item.id}`}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-colors duration-150 ${
+                  className={`flex flex-1 items-center justify-center gap-1 min-h-11 px-1 md:w-full md:min-h-0 md:justify-between md:px-3 md:py-2 rounded-md text-xs font-medium transition-colors duration-150 ${
                     isActive
                       ? 'bg-blue-600/15 text-blue-400 border border-blue-600/30'
                       : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60 border border-transparent'
                   }`}
                 >
                   <div className="flex items-center gap-2.5">
-                    <Icon className={`w-4 h-4 ${isActive ? 'text-blue-400' : 'text-zinc-400'}`} />
+                    <Icon className={`hidden md:block w-4 h-4 ${isActive ? 'text-blue-400' : 'text-zinc-400'}`} />
                     <span>{item.label}</span>
                   </div>
 
@@ -146,7 +146,7 @@ export const Layout: React.FC<LayoutProps> = ({
         </div>
 
         {/* Sidebar Footer: System Status */}
-        <div className="p-3 border-t border-zinc-800 space-y-3 bg-zinc-950/40">
+        <div className="contents md:block md:p-3 md:border-t border-zinc-800 md:space-y-3 md:bg-zinc-950/40">
           <div className="hidden md:block space-y-1.5 text-[11px]">
             <div className="flex items-center justify-between text-zinc-400">
               <span className="flex items-center gap-1.5">
@@ -165,10 +165,10 @@ export const Layout: React.FC<LayoutProps> = ({
           </div>
 
           {/* User info & Logout */}
-          <div className="md:pt-2 md:border-t border-zinc-800 flex items-center justify-between">
+          <div className="contents md:flex md:pt-2 md:border-t border-zinc-800 items-center justify-between">
             {user ? (
               <>
-                <div className="flex items-center gap-2 min-w-0">
+                <div className="hidden md:flex items-center gap-2 min-w-0">
                   <div className="w-6 h-6 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-[11px] font-semibold text-zinc-300 uppercase">
                     {(user.username || 'U').charAt(0)}
                   </div>
@@ -182,18 +182,21 @@ export const Layout: React.FC<LayoutProps> = ({
                 </div>
 
                 <button
+                  type="button"
                   onClick={onLogout}
                   data-testid="logout-button"
-                  className="p-1.5 text-zinc-400 hover:text-red-400 hover:bg-zinc-800/80 rounded-sm transition-colors"
+                  className="absolute top-0.5 right-2 flex size-11 items-center justify-center md:static md:size-auto md:p-1.5 text-zinc-400 hover:text-red-400 hover:bg-zinc-800/80 rounded-sm transition-colors"
+                  aria-label="Sign Out"
                   title="Sign Out"
                 >
-                  <LogOut className="w-4 h-4" />
+                  <LogOut aria-hidden="true" className="w-4 h-4" />
                 </button>
               </>
             ) : (
               <div
                 data-testid="auth-verifying"
-                className="w-full py-1.5 px-2 text-zinc-500 text-xs flex items-center gap-2"
+                role="status"
+                className="sr-only md:not-sr-only md:w-full md:py-1.5 md:px-2 text-zinc-500 text-xs md:flex items-center gap-2"
               >
                 <ShieldCheck className="w-3.5 h-3.5 text-zinc-600" />
                 <span>Verifying session...</span>
