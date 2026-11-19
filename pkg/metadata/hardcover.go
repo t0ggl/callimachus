@@ -491,7 +491,7 @@ query BookByASIN($asin: String!) {
 func (p *HardcoverProvider) SeriesBooks(ctx context.Context, title string) ([]BookMetadata, error) {
 	const query = `query SeriesBooks($title: String!, $offset: Int!) {
  books(where: {book_series: {series: {name: {_eq: $title}}}}, limit: 100, offset: $offset, order_by: {id: asc}) {
- id title release_date release_year
+ id title subtitle description release_date release_year image: cached_image
  contributions { author { name } contribution }
  book_series { series_position: position series { name books_count } }
  }

@@ -71,7 +71,13 @@ export function DiscoveryResults({ query, onSubmitRequest, onOpenBook }: Props) 
   };
   return (
     <div className="space-y-6 text-zinc-100">
-      {selectedSeries && <SeriesDetailModal title={selectedSeries} onClose={() => setSelectedSeries(null)} />}
+      {selectedSeries && (
+        <SeriesDetailModal
+          title={selectedSeries}
+          onClose={() => setSelectedSeries(null)}
+          onOpenBook={onOpenBook ? (id) => { setSelectedSeries(null); onOpenBook(id); } : undefined}
+        />
+      )}
       <div className="flex items-center justify-between gap-3">
         <h2 className="font-semibold">Find books to add</h2>
         <label className="text-sm">

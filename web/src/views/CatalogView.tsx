@@ -83,7 +83,19 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {selectedSeries && <SeriesDetailModal title={selectedSeries} onClose={() => setSelectedSeries(null)} />}
+      {selectedSeries && (
+        <SeriesDetailModal
+          title={selectedSeries}
+          onClose={() => setSelectedSeries(null)}
+          onOpenBook={(bookId) => {
+            const found = books.find((b) => b.id === bookId);
+            if (found) {
+              setSelectedSeries(null);
+              onSelectBook(found);
+            }
+          }}
+        />
+      )}
       <div className="flex flex-wrap items-center gap-3">
         <button disabled={scanning} onClick={() => void scan()} className="px-3 py-2 bg-zinc-800 text-zinc-100 rounded-md disabled:opacity-50">{scanning ? 'Scanning…' : 'Scan Library'}</button>
         {scanMessage && <p role="status" className="text-sm text-zinc-300">{scanMessage}</p>}

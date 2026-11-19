@@ -60,7 +60,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       inputRef.current?.focus();
 
       const handleGlobalKeyDown = (e: KeyboardEvent) => {
-        if (e.key === 'Escape' && !(e.target as HTMLElement | null)?.closest?.('dialog')) {
+        if (e.key === 'Escape' && !selectedSeries && !(e.target as HTMLElement | null)?.closest?.('dialog')) {
           e.preventDefault();
           closePalette();
         }
@@ -71,7 +71,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         window.removeEventListener('keydown', handleGlobalKeyDown);
       };
     }
-  }, [isOpen]);
+  }, [isOpen, selectedSeries]);
 
   const items: PaletteItem[] = useMemo(() => {
     const rawItems: PaletteItem[] = [
@@ -196,7 +196,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   return (
     <>
-    {selectedSeries && <SeriesDetailModal title={selectedSeries} onClose={() => setSelectedSeries(null)} />}
+    {selectedSeries && (
+      <SeriesDetailModal
+        title={selectedSeries}
+        onClose={() => setSelectedSeries(null)}
+        onOpenBook={onOpenBook ? (id) => { setSelectedSeries(null); onOpenBook(id); } : undefined}
+      />
+    )}
     <div
       role="dialog"
       aria-modal="true"
