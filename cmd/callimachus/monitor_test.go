@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/indexers"
 	"github.com/t0ggl/callimachus/pkg/requests"
@@ -152,16 +154,41 @@ func TestCatalogMonitoringReusesAcquisitionRequest(t *testing.T) {
 	}
 	calls := 0
 	s := &Server{db: db, acquisition: &requests.Acquisition{DB: db, Search: func(context.Context, string, string) ([]indexers.ProwlarrRelease, error) { calls++; return nil, nil }}}
+	if _, err := db.Exec(`INSERT INTO hidden_library_review(book_id,hidden_path) VALUES('b','.agents/Book.epub')`); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	monitor := s.newCatalogMonitor()
+	now := time.Now()
+	if err := monitor.Tick(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	// Also protect the write if a review became pending after selection.
+	if err := s.searchMonitoredBook(ctx, "b"); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM book_requests WHERE book_id='b'`).Scan(&count); err != nil || count != 0 || calls != 0 {
+		t.Fatalf("pending review started acquisition: requests=%d calls=%d err=%v", count, calls, err)
+	}
+	mux := http.NewServeMux()
+	s.registerAPIRoutes(mux)
+	reviewRequest(t, mux, auth.RoleAdmin, "PUT", "/api/library/review/b/keep", http.StatusNoContent)
+	if err := monitor.Tick(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("keeping the title should resume monitoring, got %d searches", calls)
+	}
 	for i := 0; i < 2; i++ {
 		if err := s.searchMonitoredBook(context.Background(), "b"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM book_requests WHERE book_id='b'`).Scan(&count); err != nil || count != 2 {
 		t.Fatalf("unexpected format request count: %d %v", count, err)
 	}
-	if calls != 4 {
+	if calls != 6 {
 		t.Fatal("manual refresh did not search immediately")
 	}
 	if _, err := db.Exec(`UPDATE book_requests SET status='downloading'`); err != nil {
@@ -175,7 +202,7 @@ func TestCatalogMonitoringReusesAcquisitionRequest(t *testing.T) {
 	if err := s.searchMonitoredBook(context.Background(), "b"); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 4 {
+	if calls != 6 {
 		t.Fatal("active acquisition searched again")
 	}
 }
