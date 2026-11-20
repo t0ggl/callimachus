@@ -50,6 +50,7 @@ export interface SeriesBooksData {
 interface SeriesDetailModalProps extends SeriesSelection {
   onClose: () => void;
   onOpenBook?: (bookId: string) => void;
+  onBookDeleted?: () => void;
   canManage?: boolean;
   canRequest?: boolean;
   isAdmin?: boolean;
@@ -89,6 +90,7 @@ export function SeriesDetailModal({
   hardcoverID,
   onClose,
   onOpenBook,
+  onBookDeleted,
   canManage = false,
   canRequest,
   isAdmin,
@@ -647,6 +649,12 @@ export function SeriesDetailModal({
           if (idx >= 0) {
             updateBookEntry(idx, { book_id: updated.id, monitored: updated.monitored });
           }
+        }}
+        onBookDeleted={() => {
+          setDetailBook(null);
+          setDetailIndex(null);
+          setAttempt((n) => n + 1);
+          onBookDeleted?.();
         }}
         onMetadataApplied={() => setAttempt((n) => n + 1)}
         onClose={() => {

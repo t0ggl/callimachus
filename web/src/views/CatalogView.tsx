@@ -271,6 +271,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
           canRequest={canRequest}
           isAdmin={isAdmin}
           onClose={() => setSelectedSeries(null)}
+          onBookDeleted={() => { void onScanComplete?.(); }}
           onOpenBook={(bookId) => {
             const found = books.find((b) => b.id === bookId);
             if (found) {

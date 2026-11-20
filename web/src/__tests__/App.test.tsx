@@ -312,6 +312,49 @@ describe('App Integration', () => {
     });
   });
 
+  it('removes a deleted standalone book from the library when an admin deletes it', async () => {
+    const user = userEvent.setup({ delay: null });
+    const standalone = {
+      ...testBooks[0],
+      seriesId: undefined,
+      seriesTitle: undefined,
+      seriesIndex: undefined,
+      seriesIndexDisplay: undefined,
+    };
+    let currentBooks = [standalone];
+    const originalFetch = vi.mocked(global.fetch).getMockImplementation()!;
+    vi.mocked(global.fetch).mockImplementation((url, options) => {
+      const target = String(url);
+      if (target === '/api/books') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => currentBooks,
+        } as unknown as Response);
+      }
+      if (target === `/api/books/${standalone.id}` && options?.method === 'DELETE') {
+        currentBooks = [];
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ deleted: true, deletedFiles: 0 }),
+        } as unknown as Response);
+      }
+      return originalFetch(url, options);
+    });
+    render(<App />);
+
+    await user.click(await screen.findByTestId('book-card-book_1'));
+    const dialog = await screen.findByRole('dialog', { name: /Details for The Obsidian Path/i });
+    await user.click(within(dialog).getByRole('button', { name: 'Delete Book' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm Delete' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: /Details for The Obsidian Path/i })).not.toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId('book-card-book_1')).not.toBeInTheDocument();
+    });
+  });
+
   it('opens author book details with the keyboard from the library', async () => {
     const user = userEvent.setup({ delay: null });
     const book = testBooks[0];

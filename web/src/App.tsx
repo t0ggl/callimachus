@@ -551,6 +551,11 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
             setSelectedBook(updated);
             setBooks((prev) => prev.map((b) => (b.id === updated.id ? updated : b)));
           }}
+          onBookDeleted={(deletedId) => {
+            setSelectedBook(null);
+            setBooks((prev) => prev.filter((b) => b.id !== deletedId));
+            void fetchCatalog();
+          }}
           onMetadataApplied={fetchCatalog}
           onClose={() => setSelectedBook(null)}
         />

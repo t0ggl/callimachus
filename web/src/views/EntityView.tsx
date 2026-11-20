@@ -364,6 +364,17 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
             ),
           } : prev);
         }}
+        onBookDeleted={(deletedId) => {
+          setSelectedBook(null);
+          setBookID(null);
+          setDetailIndex(null);
+          setData(prev => prev ? {
+            ...prev,
+            books: prev.books.filter((item) => item.id !== deletedId),
+          } : prev);
+          setAttempt((value) => value + 1);
+          onMetadataApplied?.();
+        }}
         onMetadataApplied={() => { setAttempt((value) => value + 1); onMetadataApplied?.(); }}
         onClose={() => { setSelectedBook(null); setBookID(null); setDetailIndex(null); }} />}
       {downloadBook && (
