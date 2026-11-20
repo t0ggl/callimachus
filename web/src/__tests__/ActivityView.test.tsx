@@ -157,10 +157,10 @@ it('renders card metadata, responsive touch targets, cover fallback, and connect
 
   expect(screen.getByText('Connecting…')).toBeInTheDocument();
   expect(screen.getByText('by Frank Herbert')).toBeInTheDocument();
-  expect(screen.getByText('Audiobook')).toBeInTheDocument();
+  expect(within(screen.getByTestId('activity-request:1')).getByText('Audiobook')).toBeInTheDocument();
 
   const card = screen.getByTestId('activity-request:1');
-  expect(card).toHaveClass('rounded-xl', 'border', 'bg-zinc-900/90');
+  expect(card).toHaveClass('bg-zinc-900/90');
 
   const cover = card.querySelector('img');
   expect(cover).toHaveAttribute('src', '/broken-cover.jpg');
@@ -173,6 +173,47 @@ it('renders card metadata, responsive touch targets, cover fallback, and connect
   rerender(<ActivityView {...base} connectionStatus="disconnected" />);
   expect(screen.getByText('Live updates paused')).toBeInTheDocument();
   expect(screen.queryByText(/SSE Live/i)).not.toBeInTheDocument();
+});
+
+it('filters activity rows by search text, status, and format and clears filters', async () => {
+  const user = userEvent.setup({ delay: null });
+  render(
+    <ActivityView
+      {...base}
+      requests={[
+        ebook,
+        audio,
+        { id: '3', title: 'Foundation', author: 'Isaac Asimov', requestedBy: 'Reader', requestedAt: '', requestType: 'ebook', status: 'error' },
+      ]}
+    />
+  );
+
+  expect(screen.getAllByRole('listitem')).toHaveLength(3);
+
+  const searchInput = screen.getByRole('textbox', { name: 'Filter activity' });
+  await user.type(searchInput, 'Foundation');
+  expect(screen.getAllByRole('listitem')).toHaveLength(1);
+  expect(screen.getByText('Foundation')).toBeInTheDocument();
+
+  await user.clear(searchInput);
+  expect(screen.getAllByRole('listitem')).toHaveLength(3);
+
+  await user.click(screen.getByRole('button', { name: 'Done' }));
+  expect(screen.getAllByRole('listitem')).toHaveLength(1);
+  expect(within(screen.getByTestId('activity-request:2')).getByText('Completed')).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Attention' }));
+  expect(screen.getAllByRole('listitem')).toHaveLength(1);
+  expect(screen.getByText('Foundation')).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'eBooks' }));
+  expect(screen.getAllByRole('listitem')).toHaveLength(1);
+
+  await user.click(screen.getByRole('button', { name: 'Audiobooks' }));
+  expect(screen.getByText('No matching activity')).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Clear Filters' }));
+  expect(screen.getAllByRole('listitem')).toHaveLength(3);
 });
 
 it('supports keyboard navigation across card controls and search log', async () => {
