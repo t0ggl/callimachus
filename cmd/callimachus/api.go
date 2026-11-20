@@ -236,6 +236,7 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/books/{id}/metadata-diff", adminOnly(http.HandlerFunc(s.handleBookMetadata)))
 	mux.Handle("GET /api/books/{id}/metadata-candidates", adminOnly(http.HandlerFunc(s.handleMetadataCandidates)))
 	mux.Handle("POST /api/books/{id}/fix-metadata", adminOnly(http.HandlerFunc(s.handleFixMetadata)))
+	mux.Handle("DELETE /api/books/{id}", adminOnly(http.HandlerFunc(s.handleDeleteBook)))
 	mux.Handle("GET /api/settings", adminOnly(http.HandlerFunc(s.handleGetSettings)))
 	mux.Handle("PUT /api/settings", adminOnly(http.HandlerFunc(s.handleUpdateSettings)))
 	mux.Handle("POST /api/settings", adminOnly(http.HandlerFunc(s.handleRejectSettingsPost)))

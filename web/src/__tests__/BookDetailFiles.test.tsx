@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { BookDetailModal } from '../components/BookDetailModal';
@@ -317,5 +317,85 @@ it('shows an error alert and keeps Download/Monitor closed if /api/books/resolve
   await user.click(screen.getByRole('button', { name: 'Show Download Options' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('Check permissions and retry');
   expect(screen.queryByRole('dialog', { name: 'Download Options' })).not.toBeInTheDocument();
+});
+
+it('allows only admins to delete a persisted book with file deletion defaulting to off', async () => {
+  const user = userEvent.setup({ delay: null });
+  const onBookDeleted = vi.fn();
+  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+    if (options?.method === 'DELETE' && url === '/api/books/book%2Fwith%20spaces') {
+      return Response.json({ deleted: true, deletedFiles: 0 });
+    }
+    if (options?.method === 'DELETE' && url === '/api/books/book%2Fwith%20spaces?deleteFiles=true') {
+      return Response.json({ deleted: true, deletedFiles: 3 });
+    }
+    throw new Error(`Unexpected fetch ${options?.method ?? 'GET'} ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  const { rerender } = render(<BookDetailModal book={book} onClose={vi.fn()} onBookDeleted={onBookDeleted} />);
+  expect(screen.queryByRole('button', { name: 'Delete Book' })).not.toBeInTheDocument();
+
+  rerender(<BookDetailModal book={{ ...book, id: '' }} isAdmin onClose={vi.fn()} onBookDeleted={onBookDeleted} />);
+  expect(screen.queryByRole('button', { name: 'Delete Book' })).not.toBeInTheDocument();
+
+  rerender(<BookDetailModal book={book} isAdmin onClose={vi.fn()} onBookDeleted={onBookDeleted} />);
+  const deleteTrigger = screen.getByRole('button', { name: 'Delete Book' });
+  await user.click(deleteTrigger);
+
+  const region = screen.getByRole('region', { name: 'Confirm book deletion' });
+  const checkbox = within(region).getByRole('checkbox', { name: /Also delete files from disk/i });
+  expect(checkbox).not.toBeChecked();
+
+  // Check, then cancel: checkbox resets to unchecked and focus returns to trigger.
+  await user.click(checkbox);
+  expect(checkbox).toBeChecked();
+  await user.click(within(region).getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('region', { name: 'Confirm book deletion' })).not.toBeInTheDocument();
+  const restoredTrigger = screen.getByRole('button', { name: 'Delete Book' });
+  await waitFor(() => expect(restoredTrigger).toHaveFocus());
+
+  // Reopen and confirm with default (off) file deletion.
+  await user.click(restoredTrigger);
+  const reopened = screen.getByRole('region', { name: 'Confirm book deletion' });
+  expect(within(reopened).getByRole('checkbox', { name: /Also delete files from disk/i })).not.toBeChecked();
+  await user.click(within(reopened).getByRole('button', { name: 'Confirm Delete' }));
+
+  expect(fetchMock).toHaveBeenCalledWith('/api/books/book%2Fwith%20spaces', { method: 'DELETE' });
+  expect(onBookDeleted).toHaveBeenCalledWith('book/with spaces');
+
+  // Open again, opt in to file deletion, and confirm.
+  onBookDeleted.mockClear();
+  rerender(<BookDetailModal book={{ ...book }} isAdmin onClose={vi.fn()} onBookDeleted={onBookDeleted} />);
+  await user.click(screen.getByRole('button', { name: 'Delete Book' }));
+  const secondConfirm = screen.getByRole('region', { name: 'Confirm book deletion' });
+  await user.click(within(secondConfirm).getByRole('checkbox', { name: /Also delete files from disk/i }));
+  await user.click(within(secondConfirm).getByRole('button', { name: 'Confirm Delete' }));
+
+  expect(fetchMock).toHaveBeenCalledWith('/api/books/book%2Fwith%20spaces?deleteFiles=true', { method: 'DELETE' });
+  expect(onBookDeleted).toHaveBeenCalledWith('book/with spaces');
+});
+
+it('shows an error alert when deleting a book fails', async () => {
+  const user = userEvent.setup({ delay: null });
+  const onBookDeleted = vi.fn();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockResolvedValue(
+      new Response('Cannot delete book while an import or conversion is finishing.', {
+        status: 409,
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      })
+    )
+  );
+  render(<BookDetailModal book={book} isAdmin onClose={vi.fn()} onBookDeleted={onBookDeleted} />);
+
+  await user.click(screen.getByRole('button', { name: 'Delete Book' }));
+  await user.click(screen.getByRole('button', { name: 'Confirm Delete' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Cannot delete book while an import or conversion is finishing.'
+  );
+  expect(onBookDeleted).not.toHaveBeenCalled();
 });
 

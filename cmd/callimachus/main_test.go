@@ -183,6 +183,7 @@ func TestServer_StartupHealthAndShutdown(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/books"},
 		{http.MethodGet, "/api/books/123"},
+		{http.MethodDelete, "/api/books/123"},
 		{http.MethodGet, "/api/authors"},
 		{http.MethodGet, "/api/authors/123"},
 		{http.MethodGet, "/api/series"},

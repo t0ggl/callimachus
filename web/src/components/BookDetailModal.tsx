@@ -1,6 +1,6 @@
 import { EntityLink } from './EntityLink';
 import React, { useEffect, useState } from 'react';
-import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download, Bell } from 'lucide-react';
+import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download, Bell, Trash2 } from 'lucide-react';
 import { ManualSearch } from './ManualSearch';
 import { MetadataRepairPanel } from './MetadataRepairPanel';
 import { Book } from '../types';
@@ -79,6 +79,7 @@ interface BookDetailModalProps {
   canRequest?: boolean;
   onMetadataApplied?: () => void;
   onBookUpdated?: (book: Book) => void;
+  onBookDeleted?: (bookId: string) => void;
 }
 
 function formatBytes(bytes?: number): string {
@@ -108,9 +109,12 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   canRequest,
   onMetadataApplied,
   onBookUpdated,
+  onBookDeleted,
 }) => {
   const dialog = React.useRef<HTMLDialogElement>(null);
   const fixButton = React.useRef<HTMLButtonElement>(null);
+  const deleteTrigger = React.useRef<HTMLButtonElement>(null);
+  const cancelDeleteButton = React.useRef<HTMLButtonElement>(null);
   const [prevBook, setPrevBook] = useState<Book | null>(book);
   const [activeBook, setActiveBook] = useState<Book | null>(book);
   const [repairBookID, setRepairBookID] = useState<string>();
@@ -118,6 +122,10 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   const [monitored, setMonitored] = useState(Boolean(book?.monitored));
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteFiles, setDeleteFiles] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   if (book !== prevBook) {
     const sameResolvingBook = Boolean(
@@ -131,9 +139,12 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     setActiveBook(book);
     setMonitored(Boolean(book?.monitored));
     setActionError('');
+    setDeleteError('');
     if (!sameResolvingBook) {
       setShowDownloadOptions(false);
       setRepairBookID(undefined);
+      setConfirmDelete(false);
+      setDeleteFiles(false);
     }
   }
 
@@ -143,9 +154,16 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     return () => element?.close();
   }, [Boolean(book)]);
 
+  useEffect(() => {
+    if (confirmDelete) {
+      cancelDeleteButton.current?.focus();
+    }
+  }, [confirmDelete]);
+
   const currentBook = activeBook ?? book;
   if (!currentBook) return null;
   const hasAssets = currentBook.editions.some((edition) => edition.assets.length > 0);
+  const canDelete = Boolean(isAdmin && currentBook.id);
   const canRepair = Boolean(
     isAdmin &&
       currentBook.id &&
@@ -230,6 +248,39 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
       setActionError((e as Error).message);
     } finally {
       setActionBusy(false);
+    }
+  };
+
+  const handleDeleteBook = async () => {
+    if (!currentBook.id || deleting) return;
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      const params = new URLSearchParams();
+      if (deleteFiles) {
+        params.set('deleteFiles', 'true');
+      }
+      const query = params.toString();
+      const res = await fetch(
+        `/api/books/${encodeURIComponent(currentBook.id)}${query ? `?${query}` : ''}`,
+        { method: 'DELETE' }
+      );
+      if (!res.ok) {
+        const message = res.headers.get('Content-Type')?.startsWith('text/plain')
+          ? (await res.text()).trim()
+          : '';
+        throw new Error(message || 'Unable to delete book. Check permissions and try again.');
+      }
+      if (onBookDeleted) {
+        onBookDeleted(currentBook.id);
+      } else {
+        onMetadataApplied?.();
+        onClose();
+      }
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : 'Unable to delete book.');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -478,14 +529,90 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
         </div>}
 
         {/* Footer */}
-        {!repairing && <div className="px-6 py-3 border-t border-zinc-800 bg-zinc-950/60 flex justify-end">
-          <button
-            onClick={onClose}
-            className="px-4 py-1.5 text-xs font-medium text-zinc-300 hover:text-white bg-zinc-800 hover:bg-zinc-700 rounded-md transition-colors"
+        {!repairing && confirmDelete && canDelete && (
+          <div
+            role="region"
+            aria-label="Confirm book deletion"
+            className="border-t border-zinc-800 bg-zinc-950/80 px-6 py-4 space-y-3"
           >
-            Close (Esc)
-          </button>
-        </div>}
+            <p className="text-sm font-medium text-zinc-100">
+              Delete <span className="font-semibold">{currentBook.title}</span> from the library?
+            </p>
+            <label className="flex items-start gap-2.5 cursor-pointer select-none text-xs text-zinc-200">
+              <input
+                type="checkbox"
+                checked={deleteFiles}
+                disabled={deleting}
+                onChange={(e) => setDeleteFiles(e.target.checked)}
+                className="mt-0.5 size-4 rounded-sm accent-red-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300"
+              />
+              <span>
+                <span className="font-medium text-zinc-100">Also delete files from disk</span>
+                <span className="block text-zinc-400 mt-0.5">
+                  {deleteFiles
+                    ? 'Media files, cover art, and sidecar metadata on disk will be permanently deleted.'
+                    : 'Only the library catalog entry will be removed; existing files on disk will be kept.'}
+                </span>
+              </span>
+            </label>
+            {deleteError && (
+              <p role="alert" className="text-xs text-red-300">{deleteError}</p>
+            )}
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <button
+                ref={cancelDeleteButton}
+                type="button"
+                disabled={deleting}
+                onClick={() => {
+                  setConfirmDelete(false);
+                  setDeleteFiles(false);
+                  setDeleteError('');
+                  requestAnimationFrame(() => deleteTrigger.current?.focus());
+                }}
+                className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-700 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => void handleDeleteBook()}
+                className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-red-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                {deleting ? 'Deleting…' : 'Confirm Delete'}
+              </button>
+            </div>
+          </div>
+        )}
+        {!repairing && !confirmDelete && (
+          <div className="px-6 py-3 border-t border-zinc-800 bg-zinc-950/60 flex flex-wrap items-center justify-between gap-3">
+            {canDelete ? (
+              <button
+                ref={deleteTrigger}
+                type="button"
+                onClick={() => {
+                  setDeleteFiles(false);
+                  setDeleteError('');
+                  setConfirmDelete(true);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-md border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-xs font-medium text-red-300 transition-colors hover:bg-red-950/60 hover:text-red-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300"
+              >
+                <Trash2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                Delete Book
+              </button>
+            ) : (
+              <span />
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-1.5 text-xs font-medium text-zinc-300 hover:text-white bg-zinc-800 hover:bg-zinc-700 rounded-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300"
+            >
+              Close (Esc)
+            </button>
+          </div>
+        )}
       </div>
     </dialog>
     {showDownloadOptions && currentBook.id && <ManualSearch key={currentBook.id}
