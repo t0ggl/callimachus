@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -15,10 +16,97 @@ import (
 	"path/filepath"
 	"strings"
 
+	_ "golang.org/x/image/webp"
+
 	"github.com/t0ggl/callimachus/pkg/epub"
 )
 
-const maxCoverBytes = 32 << 20
+const (
+	maxCoverBytes = 32 << 20
+
+	// MaxUploadedCoverBytes is the maximum allowed raw byte size for user-uploaded or chosen covers.
+	MaxUploadedCoverBytes = 10 << 20 // 10 MiB
+	// MinCoverDimension is the minimum allowed width or height in pixels for book covers.
+	MinCoverDimension = 200
+	// MaxCoverDimension is the maximum allowed width or height in pixels for book covers.
+	MaxCoverDimension = 4096
+	// MinCoverAspectRatio is the narrowest allowed width/height ratio (1:2 tall portrait).
+	MinCoverAspectRatio = 0.5
+	// MaxCoverAspectRatio is the widest allowed width/height ratio (5:4 slightly wide, including 1:1 audiobooks).
+	MaxCoverAspectRatio = 1.25
+)
+
+// CoverValidationError reports a user-facing validation problem with a cover image.
+type CoverValidationError struct {
+	Message string
+}
+
+func (e *CoverValidationError) Error() string {
+	return e.Message
+}
+
+// ValidatedCover holds normalized JPEG bytes and dimensions for an accepted cover image.
+type ValidatedCover struct {
+	JPEG   []byte
+	Width  int
+	Height int
+	Format string
+}
+
+// ValidateAndNormalizeCover validates raw cover image bytes (size, JPEG/PNG/WebP format,
+// pixel dimensions, and book-cover aspect ratio) and returns normalized JPEG bytes
+// suitable for companion cover art and EPUB embedding.
+func ValidateAndNormalizeCover(data []byte) (*ValidatedCover, error) {
+	if len(data) == 0 {
+		return nil, &CoverValidationError{Message: "Cover image file is empty."}
+	}
+	if len(data) > MaxUploadedCoverBytes {
+		return nil, &CoverValidationError{Message: "Cover image must be 10 MB or smaller."}
+	}
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || (format != "jpeg" && format != "png" && format != "webp") {
+		return nil, &CoverValidationError{Message: "Cover image must be a valid JPEG, PNG, or WebP file."}
+	}
+	if cfg.Width < MinCoverDimension || cfg.Height < MinCoverDimension {
+		return nil, &CoverValidationError{
+			Message: fmt.Sprintf("Cover image is too small (%d×%d px). Minimum dimensions are %d×%d px.", cfg.Width, cfg.Height, MinCoverDimension, MinCoverDimension),
+		}
+	}
+	if cfg.Width > MaxCoverDimension || cfg.Height > MaxCoverDimension {
+		return nil, &CoverValidationError{
+			Message: fmt.Sprintf("Cover image is too large (%d×%d px). Maximum dimensions are %d×%d px.", cfg.Width, cfg.Height, MaxCoverDimension, MaxCoverDimension),
+		}
+	}
+	ratio := float64(cfg.Width) / float64(cfg.Height)
+	if ratio < MinCoverAspectRatio || ratio > MaxCoverAspectRatio {
+		return nil, &CoverValidationError{
+			Message: fmt.Sprintf("Cover aspect ratio (%.2f:1) is outside the supported book cover range (%.2f:1 to %.2f:1, portrait to square).", ratio, MinCoverAspectRatio, MaxCoverAspectRatio),
+		}
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, &CoverValidationError{Message: "Cover image is corrupted or unreadable. Choose a valid JPEG, PNG, or WebP file."}
+	}
+	var out []byte
+	if format == "jpeg" {
+		out = bytes.Clone(data)
+	} else {
+		dst := image.NewRGBA(img.Bounds())
+		draw.Draw(dst, dst.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
+		draw.Draw(dst, dst.Bounds(), img, img.Bounds().Min, draw.Over)
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 90}); err != nil {
+			return nil, fmt.Errorf("encode cover jpeg: %w", err)
+		}
+		out = buf.Bytes()
+	}
+	return &ValidatedCover{
+		JPEG:   out,
+		Width:  cfg.Width,
+		Height: cfg.Height,
+		Format: format,
+	}, nil
+}
 
 // coverJPEG validates dimensions before allocating pixels and normalizes artwork.
 func coverJPEG(data []byte) ([]byte, error) {

@@ -1,8 +1,9 @@
 import { EntityLink } from './EntityLink';
 import React, { useEffect, useState } from 'react';
-import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download, Bell, Trash2 } from 'lucide-react';
+import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download, Bell, Trash2, Upload, Loader2 } from 'lucide-react';
 import { ManualSearch } from './ManualSearch';
 import { MetadataRepairPanel } from './MetadataRepairPanel';
+import { validateCoverFile } from '../utils/coverValidation';
 import { Book } from '../types';
 
 export interface ResolveBookInput {
@@ -115,6 +116,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   const fixButton = React.useRef<HTMLButtonElement>(null);
   const deleteTrigger = React.useRef<HTMLButtonElement>(null);
   const cancelDeleteButton = React.useRef<HTMLButtonElement>(null);
+  const coverInputRef = React.useRef<HTMLInputElement>(null);
   const [prevBook, setPrevBook] = useState<Book | null>(book);
   const [activeBook, setActiveBook] = useState<Book | null>(book);
   const [repairBookID, setRepairBookID] = useState<string>();
@@ -126,6 +128,9 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   const [deleteFiles, setDeleteFiles] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState('');
+  const [coverUploading, setCoverUploading] = useState(false);
+  const [coverError, setCoverError] = useState('');
+  const [coverStatus, setCoverStatus] = useState('');
 
   if (book !== prevBook) {
     const sameResolvingBook = Boolean(
@@ -135,6 +140,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
         book.title === prevBook.title &&
         book.authorName === prevBook.authorName
     );
+    const sameBook = Boolean(book && prevBook && book.id !== '' && book.id === prevBook.id);
     setPrevBook(book);
     setActiveBook(book);
     setMonitored(Boolean(book?.monitored));
@@ -145,6 +151,11 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
       setRepairBookID(undefined);
       setConfirmDelete(false);
       setDeleteFiles(false);
+    }
+    if (!sameResolvingBook && !sameBook) {
+      setCoverUploading(false);
+      setCoverError('');
+      setCoverStatus('');
     }
   }
 
@@ -164,6 +175,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   if (!currentBook) return null;
   const hasAssets = currentBook.editions.some((edition) => edition.assets.length > 0);
   const canDelete = Boolean(isAdmin && currentBook.id);
+  const canUploadCover = Boolean((canManage || isAdmin) && currentBook.id && hasAssets);
   const canRepair = Boolean(
     isAdmin &&
       currentBook.id &&
@@ -248,6 +260,56 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
       setActionError((e as Error).message);
     } finally {
       setActionBusy(false);
+    }
+  };
+
+  const handleCoverFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !currentBook.id || coverUploading) return;
+
+    setCoverError('');
+    setCoverStatus('');
+
+    const validationError = await validateCoverFile(file);
+    if (validationError) {
+      setCoverError(validationError);
+      return;
+    }
+
+    setCoverUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('cover', file);
+      const res = await fetch(`/api/books/${encodeURIComponent(currentBook.id)}/cover`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) {
+        const contentType = res.headers.get('Content-Type') ?? '';
+        let message = '';
+        if (contentType.startsWith('text/plain')) {
+          message = (await res.text()).trim();
+        } else if (contentType.includes('application/json')) {
+          const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+          message = payload?.error?.trim() ?? '';
+        }
+        throw new Error(message || 'Unable to update book cover. Check permissions and try again.');
+      }
+      const data = (await res.json()) as { coverUrl?: string; epubUpdated?: number };
+      const nextCoverUrl = data.coverUrl || `/api/books/${encodeURIComponent(currentBook.id)}/cover?v=${Date.now()}`;
+      const updated: Book = { ...currentBook, coverUrl: nextCoverUrl };
+      setActiveBook(updated);
+      onBookUpdated?.(updated);
+      setCoverStatus(
+        data.epubUpdated && data.epubUpdated > 0
+          ? 'Cover updated and embedded in EPUB.'
+          : 'Cover updated.'
+      );
+    } catch (e) {
+      setCoverError(e instanceof Error ? e.message : 'Unable to update book cover.');
+    } finally {
+      setCoverUploading(false);
     }
   };
 
@@ -369,7 +431,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
           <div className="flex flex-col sm:flex-row gap-6">
             {/* Cover art */}
             <div className="w-40 sm:w-48 shrink-0">
-              <div className="aspect-[2/3] rounded-lg overflow-hidden bg-zinc-800 border border-zinc-700/60 shadow-md">
+              <div className="group relative aspect-[2/3] rounded-lg overflow-hidden bg-zinc-800 border border-zinc-700/60 shadow-md">
                 {currentBook.coverUrl ? (
                   <img
                     src={currentBook.coverUrl}
@@ -378,12 +440,63 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                     className="w-full h-full object-cover"
                   />
                 ) : (
-                  <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600">
-                    <BookOpen className="w-12 h-12 mb-2 stroke-1" />
-                    <span className="text-xs">No Cover Art</span>
+                  <div className="w-full h-full flex flex-col items-center justify-center text-zinc-500">
+                    <BookOpen className="w-12 h-12 mb-2 stroke-1" aria-hidden="true" />
+                    <span className="text-xs text-zinc-400">No Cover Art</span>
                   </div>
                 )}
+                {canUploadCover && (
+                  <>
+                    <input
+                      ref={coverInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                      tabIndex={-1}
+                      aria-hidden="true"
+                      data-testid="cover-upload-input"
+                      onChange={(e) => void handleCoverFileChange(e)}
+                      className="sr-only"
+                    />
+                    <div
+                      className={`absolute inset-x-0 bottom-0 flex justify-center bg-gradient-to-t from-zinc-950/95 via-zinc-950/70 to-transparent p-2.5 pt-8 transition-opacity duration-150 ${
+                        coverUploading
+                          ? 'opacity-100'
+                          : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:opacity-100'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        disabled={coverUploading}
+                        onClick={() => coverInputRef.current?.click()}
+                        aria-label={coverUploading ? 'Uploading cover' : 'Upload cover'}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-md border border-zinc-600/80 bg-zinc-900/95 px-2.5 py-1.5 text-xs font-medium text-zinc-100 shadow-sm transition-colors hover:bg-zinc-800 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-70"
+                      >
+                        {coverUploading ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" aria-hidden="true" />
+                            Uploading…
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                            Upload Cover
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
+              {coverError && (
+                <p role="alert" className="mt-2 text-xs text-red-300 leading-snug">
+                  {coverError}
+                </p>
+              )}
+              {coverStatus && !coverError && (
+                <p role="status" className="mt-2 text-xs text-emerald-300 leading-snug">
+                  {coverStatus}
+                </p>
+              )}
             </div>
 
             {/* Metadata overview */}

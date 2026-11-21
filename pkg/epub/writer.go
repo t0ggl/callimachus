@@ -9,7 +9,9 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
+	"time"
 )
 
 var maxEPUBEntryBytes int64 = 256 * 1024 * 1024 // 256 MiB
@@ -60,6 +62,10 @@ func repackEPUB(sourcePath string, targetPath string, opfZipPath string, newOPFD
 }
 
 func writeArchive(zr *zip.Reader, target io.Writer, opfZipPath string, newOPFData []byte) error {
+	return writeArchiveWithEntries(zr, target, opfZipPath, newOPFData, nil)
+}
+
+func writeArchiveWithEntries(zr *zip.Reader, target io.Writer, opfZipPath string, newOPFData []byte, replacements map[string][]byte) error {
 	zw := zip.NewWriter(target)
 	if err := zw.SetComment(zr.Comment); err != nil {
 		return err
@@ -84,7 +90,14 @@ func writeArchive(zr *zip.Reader, target io.Writer, opfZipPath string, newOPFDat
 		return ErrMissingOPF
 	}
 
-	// Step 2: Copy remaining entries, injecting updated OPF
+	// Normalize replacement keys for reliable matching against archive entries.
+	pending := make(map[string][]byte, len(replacements))
+	for k, v := range replacements {
+		norm := path.Clean(filepath.ToSlash(k))
+		pending[norm] = v
+	}
+
+	// Step 2: Copy remaining entries, injecting updated OPF and any replaced entries
 	for _, f := range zr.File {
 		entryName := path.Clean(filepath.ToSlash(f.Name))
 		if strings.EqualFold(entryName, "mimetype") {
@@ -108,6 +121,25 @@ func writeArchive(zr *zip.Reader, target io.Writer, opfZipPath string, newOPFDat
 			}
 			continue
 		}
+
+		if data, ok := pending[entryName]; ok {
+			header := &zip.FileHeader{
+				Name:     f.Name,
+				Method:   zip.Store,
+				Modified: time.Now().UTC(),
+				Comment:  f.Comment,
+			}
+			w, err := zw.CreateHeader(header)
+			if err != nil {
+				return fmt.Errorf("failed to create header for replaced entry %s: %w", f.Name, err)
+			}
+			if _, err := w.Write(data); err != nil {
+				return fmt.Errorf("failed to write replaced entry %s: %w", f.Name, err)
+			}
+			delete(pending, entryName)
+			continue
+		}
+
 		// Validate decompression and CRC before copying the unchanged ZIP data.
 		rc, err := f.Open()
 		if err != nil {
@@ -142,6 +174,29 @@ func writeArchive(zr *zip.Reader, target io.Writer, opfZipPath string, newOPFDat
 		}
 		if err := zw.Copy(f); err != nil {
 			return fmt.Errorf("failed to copy entry %s: %w", f.Name, err)
+		}
+	}
+
+	// Step 3: Append any new entries (such as a newly added cover image) in deterministic order.
+	if len(pending) > 0 {
+		names := make([]string, 0, len(pending))
+		for name := range pending {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			header := &zip.FileHeader{
+				Name:     name,
+				Method:   zip.Store,
+				Modified: time.Now().UTC(),
+			}
+			w, err := zw.CreateHeader(header)
+			if err != nil {
+				return fmt.Errorf("failed to create header for new entry %s: %w", name, err)
+			}
+			if _, err := w.Write(pending[name]); err != nil {
+				return fmt.Errorf("failed to write new entry %s: %w", name, err)
+			}
 		}
 	}
 

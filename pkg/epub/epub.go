@@ -152,6 +152,24 @@ func (e *nativeEPUB) WriteArchive(target io.Writer, m Metadata) error {
 	return writeArchive(e.archive, target, e.rootfilePath, updatedOPF)
 }
 
+// WriteArchiveWithCover writes a copy of the EPUB with its embedded cover replaced
+// (or added if absent), preserving container, mimetype, metadata, and all other entries.
+func (e *nativeEPUB) WriteArchiveWithCover(target io.Writer, coverData []byte, mediaType string) error {
+	if e.archive == nil {
+		return fmt.Errorf("WriteArchiveWithCover requires an EPUB opened with OpenNativeReader")
+	}
+	if len(coverData) == 0 {
+		return fmt.Errorf("cover image data cannot be empty")
+	}
+	updatedOPF, coverZipPath, err := updateOPFCover(e.rawOPF, e.parsed, e.archive, e.rootfilePath, e.opfDir, mediaType)
+	if err != nil {
+		return err
+	}
+	return writeArchiveWithEntries(e.archive, target, e.rootfilePath, updatedOPF, map[string][]byte{
+		coverZipPath: coverData,
+	})
+}
+
 func (e *nativeEPUB) Save(targetPath string) error {
 	newMeta := serializeMetadataXML(e.metadata, e.uniqueIDAttr, e.coverMetaItemID, e.isEPUB3)
 	updatedOPF, err := replaceMetadataBlock(e.rawOPF, newMeta)

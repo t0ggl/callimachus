@@ -647,7 +647,11 @@ export function SeriesDetailModal({
                   (b) => (b.book_id && b.book_id === updated.id) || (b.library_book_id && b.library_book_id === updated.id)
                 );
           if (idx >= 0) {
-            updateBookEntry(idx, { book_id: updated.id, monitored: updated.monitored });
+            updateBookEntry(idx, {
+              book_id: updated.id,
+              monitored: updated.monitored,
+              ...(updated.coverUrl ? { cover_url: updated.coverUrl } : {}),
+            });
           }
         }}
         onBookDeleted={() => {

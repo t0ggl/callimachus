@@ -267,6 +267,7 @@ function ActivityDetails({ item, onClose, canManage, canRequest, isAdmin, onMeta
   const current = stages.findIndex(step => step.id === item.stage);
 
   return <BookDetailModal book={metadata} onClose={onClose} canManage={canManage} canRequest={canRequest} isAdmin={isAdmin}
+    onBookUpdated={(updated) => setBook(updated)}
     onBookDeleted={() => { onClose(); onMetadataApplied?.(); }}
     onMetadataApplied={() => { setBookRevision((value) => value + 1); onMetadataApplied?.(); }} activity={
     <section aria-label="Acquisition progress" className="space-y-4 border-t border-zinc-800 pt-5">

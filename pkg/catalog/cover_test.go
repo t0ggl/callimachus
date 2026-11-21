@@ -2,16 +2,21 @@ package catalog
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/binary"
+	"errors"
+	"hash/crc32"
 	"image"
 	"image/color"
+	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"context"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
@@ -190,5 +195,115 @@ func TestEPUBWithoutCover(t *testing.T) {
 	}
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Fatalf("partial cover: %v", err)
+	}
+}
+
+func TestValidateAndNormalizeCover(t *testing.T) {
+	makeJPEG := func(w, h int) []byte {
+		var buf bytes.Buffer
+		img := image.NewRGBA(image.Rect(0, 0, w, h))
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	makePNG := func(w, h int, alpha uint8) []byte {
+		var buf bytes.Buffer
+		img := image.NewRGBA(image.Rect(0, 0, w, h))
+		img.Set(0, 0, color.RGBA{0, 0, 0, alpha})
+		if err := png.Encode(&buf, img); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	makeGIF := func(w, h int) []byte {
+		var buf bytes.Buffer
+		img := image.NewPaletted(image.Rect(0, 0, w, h), color.Palette{color.White, color.Black})
+		if err := gif.Encode(&buf, img, nil); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+
+	// Valid JPEG portrait (2:3)
+	jpegData := makeJPEG(400, 600)
+	got, err := ValidateAndNormalizeCover(jpegData)
+	if err != nil {
+		t.Fatalf("valid JPEG rejected: %v", err)
+	}
+	if got.Width != 400 || got.Height != 600 || got.Format != "jpeg" || !bytes.Equal(got.JPEG, jpegData) {
+		t.Fatalf("unexpected JPEG result: %dx%d fmt=%s", got.Width, got.Height, got.Format)
+	}
+
+	// Valid square PNG (1:1 audiobook) normalized to JPEG with white alpha composite
+	pngData := makePNG(300, 300, 0)
+	got, err = ValidateAndNormalizeCover(pngData)
+	if err != nil {
+		t.Fatalf("valid PNG rejected: %v", err)
+	}
+	if got.Width != 300 || got.Height != 300 || got.Format != "png" {
+		t.Fatalf("unexpected PNG result: %dx%d fmt=%s", got.Width, got.Height, got.Format)
+	}
+	decoded, err := jpeg.Decode(bytes.NewReader(got.JPEG))
+	if err != nil {
+		t.Fatalf("normalized PNG is not valid JPEG: %v", err)
+	}
+	r, g, b, _ := decoded.At(0, 0).RGBA()
+	if r < 0xf000 || g < 0xf000 || b < 0xf000 {
+		t.Fatalf("transparent PNG pixel was not composited on white: rgb=(%x,%x,%x)", r, g, b)
+	}
+
+	// Valid lossless 200x300 WebP normalized to JPEG
+	webpData, err := base64.StdEncoding.DecodeString("UklGRiQAAABXRUJQVlA4TBgAAAAvx8BKAAdQqHqUsf8BAEX6/58i+p/6fyk=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = ValidateAndNormalizeCover(webpData)
+	if err != nil {
+		t.Fatalf("valid WebP rejected: %v", err)
+	}
+	if got.Width != 200 || got.Height != 300 || got.Format != "webp" {
+		t.Fatalf("unexpected WebP result: %dx%d fmt=%s", got.Width, got.Height, got.Format)
+	}
+	if _, err := jpeg.Decode(bytes.NewReader(got.JPEG)); err != nil {
+		t.Fatalf("normalized WebP is not valid JPEG: %v", err)
+	}
+
+	// Negative validation cases
+	// Craft a minimal valid PNG header claiming 5000x5000 (without allocating pixels) to test max dimension guard quickly.
+	oversizedDimPNG := makePNG(1, 1, 255)
+	binary.BigEndian.PutUint32(oversizedDimPNG[16:20], 5000)
+	binary.BigEndian.PutUint32(oversizedDimPNG[20:24], 5000)
+	binary.BigEndian.PutUint32(oversizedDimPNG[29:33], crc32.ChecksumIEEE(oversizedDimPNG[12:29]))
+
+	cases := []struct {
+		name       string
+		data       []byte
+		wantSubstr string
+	}{
+		{"empty", nil, "empty"},
+		{"oversized bytes", bytes.Repeat([]byte{0xff}, MaxUploadedCoverBytes+1), "10 MB"},
+		{"non-image", []byte("hello world"), "JPEG, PNG, or WebP"},
+		{"gif unsupported", makeGIF(300, 450), "JPEG, PNG, or WebP"},
+		{"too small", makeJPEG(150, 225), "too small"},
+		{"too large dimensions", oversizedDimPNG, "too large"},
+		{"too wide aspect ratio", makeJPEG(600, 300), "aspect ratio"},
+		{"too narrow aspect ratio", makeJPEG(200, 500), "aspect ratio"},
+		{"truncated jpeg", jpegData[:len(jpegData)/2], "corrupted"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ValidateAndNormalizeCover(tc.data)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantSubstr)
+			}
+			var valErr *CoverValidationError
+			if !errors.As(err, &valErr) {
+				t.Fatalf("expected CoverValidationError, got %T: %v", err, err)
+			}
+			if !strings.Contains(valErr.Error(), tc.wantSubstr) {
+				t.Fatalf("error %q does not contain %q", valErr.Error(), tc.wantSubstr)
+			}
+		})
 	}
 }

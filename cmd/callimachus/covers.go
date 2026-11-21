@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -61,6 +62,9 @@ func (s *Server) handleBookCover(w http.ResponseWriter, r *http.Request) {
 	if path == "" {
 		http.NotFound(w, r)
 		return
+	}
+	if info, err := os.Stat(path); err == nil {
+		w.Header().Set("ETag", fmt.Sprintf(`"%x-%x"`, info.Size(), info.ModTime().UnixNano()))
 	}
 	w.Header().Set("Cache-Control", "private, no-cache")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
