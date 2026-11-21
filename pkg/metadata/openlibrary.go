@@ -280,6 +280,70 @@ func (p *OpenLibraryProvider) Search(ctx context.Context, query string) ([]BookM
 	return results, nil
 }
 
+// LookupByWorkID retrieves work-level metadata (including description) from OpenLibrary.
+func (p *OpenLibraryProvider) LookupByWorkID(ctx context.Context, workID string) (*BookMetadata, error) {
+	cleanID := strings.TrimSpace(workID)
+	cleanID = strings.TrimPrefix(cleanID, "/works/")
+	cleanID = strings.TrimPrefix(cleanID, "works/")
+	if cleanID == "" || strings.ContainsAny(cleanID, "/\\?# ") {
+		return nil, fmt.Errorf("openlibrary: invalid work id: %w", ErrNotFound)
+	}
+
+	reqURL := fmt.Sprintf("%s/works/%s.json", p.baseURL, url.PathEscape(cleanID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("openlibrary: create work request: %w", err)
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("openlibrary: do work request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ErrNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("openlibrary: work unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("openlibrary: read work body: %w", err)
+	}
+
+	var work struct {
+		Key         string                  `json:"key"`
+		Title       string                  `json:"title"`
+		Subtitle    string                  `json:"subtitle"`
+		Description *openlibraryDescription `json:"description"`
+		Subjects    []string                `json:"subjects"`
+		Covers      []int                   `json:"covers"`
+	}
+	if err := json.Unmarshal(bodyBytes, &work); err != nil {
+		return nil, fmt.Errorf("openlibrary: unmarshal work: %w", err)
+	}
+
+	meta := BookMetadata{
+		Title:         work.Title,
+		Subtitle:      work.Subtitle,
+		OpenLibraryID: strings.TrimPrefix(work.Key, "/works/"),
+		Genres:        work.Subjects,
+	}
+	if meta.OpenLibraryID == "" {
+		meta.OpenLibraryID = cleanID
+	}
+	if work.Description != nil {
+		meta.Description = work.Description.Value
+	}
+	if len(work.Covers) > 0 && work.Covers[0] > 0 {
+		meta.CoverURL = fmt.Sprintf("https://covers.openlibrary.org/b/id/%d-L.jpg", work.Covers[0])
+	}
+	return &meta, nil
+}
+
 // LookupByASIN is not supported by OpenLibrary.
 func (p *OpenLibraryProvider) LookupByASIN(ctx context.Context, asin string) (*BookMetadata, error) {
 	return nil, ErrNotFound

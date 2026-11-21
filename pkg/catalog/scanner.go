@@ -47,10 +47,15 @@ type ScannedMediaFile struct {
 // ScannedBook represents a reconciled book with its media assets and companion sidecars.
 type ScannedBook struct {
 	Title       string             `json:"title"`
+	Subtitle    string             `json:"subtitle,omitempty"`
 	Author      string             `json:"author"`
 	Series      string             `json:"series,omitempty"`
 	SeriesIndex *float64           `json:"series_index,omitempty"`
 	Year        int                `json:"year,omitempty"`
+	Description string             `json:"description,omitempty"`
+	Publisher   string             `json:"publisher,omitempty"`
+	ISBN13      string             `json:"isbn13,omitempty"`
+	Language    string             `json:"language,omitempty"`
 	Directory   string             `json:"directory"`
 	Basename    string             `json:"basename"`
 	MediaFiles  []ScannedMediaFile `json:"media_files"`
@@ -252,15 +257,32 @@ func reconcileBook(root, dir, base string, media []ScannedMediaFile, sidecarPath
 	// 1. Try parsing companion OPF if available
 	if sidecarPath != "" {
 		if data, err := os.ReadFile(sidecarPath); err == nil {
-			if meta, err := epub.ParseOPF(data); err == nil && meta.Title != "" {
+			if meta, err := epub.ParseOPF(data); err == nil {
 				sb.OPFMetadata = &meta
-				rawTitle = meta.Title
-				sb.Title = meta.Title
+				if meta.Title != "" {
+					rawTitle = meta.Title
+					sb.Title = meta.Title
+				}
+				if meta.Subtitle != "" {
+					sb.Subtitle = strings.TrimSpace(meta.Subtitle)
+				}
 				if len(meta.Authors) > 0 {
 					sb.Author = meta.Authors[0]
 				}
 				sb.Series = meta.Series
 				sb.SeriesIndex = meta.SeriesIndex
+				if meta.Description != "" {
+					sb.Description = metadata.CleanDescription(meta.Description)
+				}
+				if meta.Publisher != "" {
+					sb.Publisher = strings.TrimSpace(meta.Publisher)
+				}
+				if meta.ISBN13 != "" {
+					sb.ISBN13 = strings.TrimSpace(meta.ISBN13)
+				}
+				if meta.Language != "" {
+					sb.Language = strings.TrimSpace(meta.Language)
+				}
 				if meta.PublishDate != "" {
 					if m := reYearInString.FindString(meta.PublishDate); m != "" {
 						if y, err := strconv.Atoi(m); err == nil {
@@ -362,9 +384,10 @@ func reconcileBook(root, dir, base string, media []ScannedMediaFile, sidecarPath
 		}
 	}
 
-	// 3. If title, author, series, or series index is still missing, inspect EPUB media file if present
+	// 3. Inspect EPUB media file when core or descriptive metadata is still missing
 	var epubTitle string
-	if sb.Title == "" || sb.Author == "" || sb.Series == "" || sb.SeriesIndex == nil {
+	if sb.Title == "" || sb.Author == "" || sb.Series == "" || sb.SeriesIndex == nil ||
+		sb.Description == "" || sb.Subtitle == "" || sb.Publisher == "" || sb.ISBN13 == "" || sb.Language == "" {
 		for _, m := range media {
 			if m.Format == "epub" {
 				if ep, err := epub.Open(m.Path); err == nil {
@@ -372,6 +395,9 @@ func reconcileBook(root, dir, base string, media []ScannedMediaFile, sidecarPath
 					epubTitle = meta.Title
 					if sb.Title == "" && meta.Title != "" {
 						sb.Title = meta.Title
+					}
+					if sb.Subtitle == "" && strings.TrimSpace(meta.Subtitle) != "" {
+						sb.Subtitle = strings.TrimSpace(meta.Subtitle)
 					}
 					if sb.Author == "" && len(meta.Authors) > 0 {
 						sb.Author = meta.Authors[0]
@@ -383,6 +409,18 @@ func reconcileBook(root, dir, base string, media []ScannedMediaFile, sidecarPath
 						(meta.Series == "" || sb.Series == "" || strings.EqualFold(meta.Series, sb.Series)) {
 						idx := *meta.SeriesIndex
 						sb.SeriesIndex = &idx
+					}
+					if sb.Description == "" && meta.Description != "" {
+						sb.Description = metadata.CleanDescription(meta.Description)
+					}
+					if sb.Publisher == "" && strings.TrimSpace(meta.Publisher) != "" {
+						sb.Publisher = strings.TrimSpace(meta.Publisher)
+					}
+					if sb.ISBN13 == "" && strings.TrimSpace(meta.ISBN13) != "" {
+						sb.ISBN13 = strings.TrimSpace(meta.ISBN13)
+					}
+					if sb.Language == "" && strings.TrimSpace(meta.Language) != "" {
+						sb.Language = strings.TrimSpace(meta.Language)
 					}
 					if sb.Year <= 0 && meta.PublishDate != "" {
 						if ym := reYearInString.FindString(meta.PublishDate); ym != "" {

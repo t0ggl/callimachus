@@ -4,6 +4,7 @@ package metadata
 
 import (
 	"fmt"
+	"html"
 	"regexp"
 	"strconv"
 	"strings"
@@ -731,4 +732,47 @@ func FormatBitrate(bitrateKbps int) string {
 		return ""
 	}
 	return fmt.Sprintf("%dkbps", bitrateKbps)
+}
+
+var (
+	reHTMLBlockBreak = regexp.MustCompile(`(?i)<\s*(?:br\s*/?|/\s*(?:p|div|li|h[1-6]|blockquote))\s*>`)
+	reHTMLTag        = regexp.MustCompile(`</?[a-zA-Z][^>]*>`)
+)
+
+// CleanDescription normalizes a book description/synopsis into clean readable plain text.
+// Plain text without HTML markup is preserved with normalized line endings and trimmed whitespace.
+func CleanDescription(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	if strings.ContainsRune(s, '<') && reHTMLTag.MatchString(s) {
+		s = reHTMLBlockBreak.ReplaceAllString(s, "\n")
+		s = reHTMLTag.ReplaceAllString(s, "")
+		s = html.UnescapeString(s)
+	}
+	lines := strings.Split(s, "\n")
+	cleaned := make([]string, 0, len(lines))
+	blankCount := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			if len(cleaned) == 0 {
+				continue
+			}
+			blankCount++
+			if blankCount == 1 {
+				cleaned = append(cleaned, "")
+			}
+			continue
+		}
+		blankCount = 0
+		cleaned = append(cleaned, trimmed)
+	}
+	for len(cleaned) > 0 && cleaned[len(cleaned)-1] == "" {
+		cleaned = cleaned[:len(cleaned)-1]
+	}
+	return strings.Join(cleaned, "\n")
 }

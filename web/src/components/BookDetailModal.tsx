@@ -1,6 +1,6 @@
 import { EntityLink } from './EntityLink';
 import React, { useEffect, useState } from 'react';
-import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download, Bell, Trash2, Upload, Search, Loader2 } from 'lucide-react';
+import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download, Bell, Trash2, Upload, Search, Loader2, RefreshCw } from 'lucide-react';
 import { ManualSearch } from './ManualSearch';
 import { MetadataRepairPanel } from './MetadataRepairPanel';
 import { CoverFinderPanel } from './CoverFinderPanel';
@@ -131,6 +131,8 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   const [monitored, setMonitored] = useState(Boolean(book?.monitored));
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshStatus, setRefreshStatus] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteFiles, setDeleteFiles] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -164,6 +166,8 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
       setCoverUploading(false);
       setCoverError('');
       setCoverStatus('');
+      setRefreshing(false);
+      setRefreshStatus('');
     }
   }
 
@@ -183,6 +187,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   if (!currentBook) return null;
   const hasAssets = currentBook.editions.some((edition) => edition.assets.length > 0);
   const canDelete = Boolean(isAdmin && currentBook.id);
+  const canRefreshMetadata = Boolean((canManage || isAdmin) && currentBook.id);
   const canUploadCover = Boolean((canManage || isAdmin) && currentBook.id && hasAssets);
   const findingCover = canUploadCover && findingCoverBookID === currentBook.id;
   const canRepair = Boolean(
@@ -328,6 +333,43 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     }
   };
 
+  const handleRefreshMetadata = async () => {
+    if (!currentBook.id || refreshing || actionBusy) return;
+    setRefreshing(true);
+    setActionError('');
+    setRefreshStatus('');
+    try {
+      const res = await fetch(`/api/books/${encodeURIComponent(currentBook.id)}/refresh`, {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        const contentType = res.headers.get('Content-Type') ?? '';
+        let message = '';
+        if (contentType.startsWith('text/plain')) {
+          message = (await res.text()).trim();
+        } else if (contentType.includes('application/json')) {
+          const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+          message = payload?.error?.trim() ?? '';
+        }
+        throw new Error(message || 'Unable to refresh metadata. Try again shortly.');
+      }
+      const refreshed: Book = await res.json();
+      const merged: Book = {
+        ...refreshed,
+        coverUrl: refreshed.coverUrl || currentBook.coverUrl,
+      };
+      const synopsisUpdated = Boolean(merged.synopsis && merged.synopsis !== currentBook.synopsis);
+      setActiveBook(merged);
+      onBookUpdated?.(merged);
+      onMetadataApplied?.();
+      setRefreshStatus(synopsisUpdated ? 'Metadata refreshed. Synopsis updated.' : 'Metadata refreshed.');
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Unable to refresh metadata. Try again shortly.');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const handleDeleteBook = async () => {
     if (!currentBook.id || deleting) return;
     setDeleting(true);
@@ -371,9 +413,9 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
       onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       <div className="max-h-[90dvh] flex flex-col">
-        {!activity && !subpanelOpen && (allowRequest || showMonitorControl) && <div className="px-6 pt-4 flex flex-wrap items-center gap-3">
+        {!activity && !subpanelOpen && (allowRequest || showMonitorControl || canRefreshMetadata) && <div className="px-6 pt-4 flex flex-wrap items-center gap-3">
           {allowRequest && (
-            <button type="button" disabled={actionBusy} onClick={() => void handleShowDownloadOptions()}
+            <button type="button" disabled={actionBusy || refreshing} onClick={() => void handleShowDownloadOptions()}
               className="inline-flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50">
               <Download size={16} aria-hidden="true" />
               Show Download Options
@@ -382,7 +424,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
           {showMonitorControl && (
             <button
               type="button"
-              disabled={actionBusy}
+              disabled={actionBusy || refreshing}
               aria-pressed={monitored}
               onClick={() => void handleToggleMonitor()}
               className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50 ${
@@ -395,8 +437,26 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
               {monitored ? 'Monitoring Book' : 'Monitor Book'}
             </button>
           )}
+          {canRefreshMetadata && (
+            <button
+              type="button"
+              disabled={actionBusy || refreshing}
+              onClick={() => void handleRefreshMetadata()}
+              className="inline-flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
+            >
+              <RefreshCw
+                size={16}
+                className={refreshing ? 'motion-safe:animate-spin' : undefined}
+                aria-hidden="true"
+              />
+              {refreshing ? 'Refreshing…' : 'Refresh Metadata'}
+            </button>
+          )}
           {actionError && (
             <p role="alert" className="text-xs text-red-300">{actionError}</p>
+          )}
+          {refreshStatus && !actionError && (
+            <p role="status" className="text-xs text-emerald-300">{refreshStatus}</p>
           )}
         </div>}
         {/* Header */}
@@ -594,7 +654,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                   <div className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-1">
                     Synopsis
                   </div>
-                  {currentBook.synopsis}
+                  <p className="whitespace-pre-line">{currentBook.synopsis}</p>
                 </div>
               )}
             </div>

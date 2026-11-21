@@ -451,6 +451,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
             canManage={canManage}
             canRequest={canRequest}
             isAdmin={isAdmin}
+            canRefresh={canManage}
             onSelectBook={(b) => setSelectedBook(b)}
             keyboardNavigationEnabled={!isPaletteOpen && selectedBook === null}
             selectedSeries={selectedSeries}

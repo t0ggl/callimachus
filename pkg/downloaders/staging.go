@@ -23,6 +23,7 @@ import (
 // StagingConfig defines configuration options for StagingMonitor.
 type StagingConfig struct {
 	QualityProfile func(context.Context) (QualityProfile, error)
+	EnrichMetadata func(context.Context, catalog.BookDetails) catalog.BookDetails
 	DB             *database.DB
 	Catalog        *catalog.Catalog
 	Converter      *converter.Queue
@@ -34,6 +35,7 @@ type StagingConfig struct {
 // StagingMonitor sends completed downloads to the post-processing pipeline.
 type StagingMonitor struct {
 	qualityProfile func(context.Context) (QualityProfile, error)
+	enrichMetadata func(context.Context, catalog.BookDetails) catalog.BookDetails
 	db             *database.DB
 	catalog        *catalog.Catalog
 	converter      *converter.Queue
@@ -56,6 +58,7 @@ func NewStagingMonitor(cfg StagingConfig) *StagingMonitor {
 
 	return &StagingMonitor{
 		qualityProfile: cfg.QualityProfile,
+		enrichMetadata: cfg.EnrichMetadata,
 		db:             cfg.DB,
 		catalog:        cfg.Catalog,
 		converter:      cfg.Converter,
@@ -63,6 +66,13 @@ func NewStagingMonitor(cfg StagingConfig) *StagingMonitor {
 		pollInterval:   pollInterval,
 		completedRoot:  cfg.CompletedRoot,
 	}
+}
+
+// SetEnrichMetadata configures an optional metadata enrichment callback used during staging ingestion.
+func (sm *StagingMonitor) SetEnrichMetadata(fn func(context.Context, catalog.BookDetails) catalog.BookDetails) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.enrichMetadata = fn
 }
 
 // Start begins periodic polling in a background goroutine.
@@ -239,6 +249,9 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 		}
 	}
 	bookDetails := sm.resolveBookDetails(ctx, item)
+	if strings.TrimSpace(bookDetails.Description) == "" && sm.enrichMetadata != nil {
+		bookDetails = sm.enrichMetadata(ctx, bookDetails)
+	}
 
 	// 1. Process recognized eBooks
 	if len(ebookFiles) > 0 {
@@ -284,7 +297,15 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 						value := fmt.Sprintf("%04d", bookDetails.Year)
 						date = &value
 					}
-					book, err := sm.catalog.GetOrCreateBook(ctx, &database.Book{AuthorID: author.ID, Title: bookDetails.Title, SeriesID: seriesID, SeriesIndex: bookDetails.SeriesIndex, ReleaseDate: date, Synopsis: &bookDetails.Description})
+					var subtitle *string
+					if sub := strings.TrimSpace(bookDetails.Subtitle); sub != "" {
+						subtitle = &sub
+					}
+					var synopsis *string
+					if syn := metadata.CleanDescription(bookDetails.Description); syn != "" {
+						synopsis = &syn
+					}
+					book, err := sm.catalog.GetOrCreateBook(ctx, &database.Book{AuthorID: author.ID, Title: bookDetails.Title, Subtitle: subtitle, SeriesID: seriesID, SeriesIndex: bookDetails.SeriesIndex, ReleaseDate: date, Synopsis: synopsis})
 					if err != nil {
 						return err
 					}
@@ -370,9 +391,33 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 			if editionID == "" && sm.catalog != nil {
 				author, err := sm.catalog.GetOrCreateAuthor(ctx, bookDetails.Author)
 				if err == nil {
+					var seriesID *string
+					if bookDetails.Series != "" {
+						if series, sErr := sm.catalog.GetOrCreateSeries(ctx, bookDetails.Series, author.ID, 0); sErr == nil && series != nil {
+							seriesID = &series.ID
+						}
+					}
+					var date *string
+					if bookDetails.Year > 0 {
+						value := fmt.Sprintf("%04d", bookDetails.Year)
+						date = &value
+					}
+					var subtitle *string
+					if sub := strings.TrimSpace(bookDetails.Subtitle); sub != "" {
+						subtitle = &sub
+					}
+					var synopsis *string
+					if syn := metadata.CleanDescription(bookDetails.Description); syn != "" {
+						synopsis = &syn
+					}
 					book, err := sm.catalog.GetOrCreateBook(ctx, &database.Book{
-						AuthorID: author.ID,
-						Title:    bookDetails.Title,
+						AuthorID:    author.ID,
+						Title:       bookDetails.Title,
+						Subtitle:    subtitle,
+						SeriesID:    seriesID,
+						SeriesIndex: bookDetails.SeriesIndex,
+						ReleaseDate: date,
+						Synopsis:    synopsis,
 					})
 					if err == nil {
 						ed, err := sm.catalog.GetOrCreateEdition(ctx, &database.BookEdition{
@@ -419,9 +464,33 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 				if editionID == "" && sm.catalog != nil {
 					author, err := sm.catalog.GetOrCreateAuthor(ctx, bookDetails.Author)
 					if err == nil {
+						var seriesID *string
+						if bookDetails.Series != "" {
+							if series, sErr := sm.catalog.GetOrCreateSeries(ctx, bookDetails.Series, author.ID, 0); sErr == nil && series != nil {
+								seriesID = &series.ID
+							}
+						}
+						var date *string
+						if bookDetails.Year > 0 {
+							value := fmt.Sprintf("%04d", bookDetails.Year)
+							date = &value
+						}
+						var subtitle *string
+						if sub := strings.TrimSpace(bookDetails.Subtitle); sub != "" {
+							subtitle = &sub
+						}
+						var synopsis *string
+						if syn := metadata.CleanDescription(bookDetails.Description); syn != "" {
+							synopsis = &syn
+						}
 						book, err := sm.catalog.GetOrCreateBook(ctx, &database.Book{
-							AuthorID: author.ID,
-							Title:    bookDetails.Title,
+							AuthorID:    author.ID,
+							Title:       bookDetails.Title,
+							Subtitle:    subtitle,
+							SeriesID:    seriesID,
+							SeriesIndex: bookDetails.SeriesIndex,
+							ReleaseDate: date,
+							Synopsis:    synopsis,
 						})
 						if err == nil {
 							ed, err := sm.catalog.GetOrCreateEdition(ctx, &database.BookEdition{

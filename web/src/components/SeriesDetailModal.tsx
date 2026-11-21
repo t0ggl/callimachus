@@ -649,6 +649,11 @@ export function SeriesDetailModal({
           if (idx >= 0) {
             updateBookEntry(idx, {
               book_id: updated.id,
+              title: updated.title,
+              subtitle: updated.subtitle,
+              publish_date: updated.releaseDate,
+              description: updated.synopsis,
+              series_index: updated.seriesIndex ?? null,
               monitored: updated.monitored,
               ...(updated.coverUrl ? { cover_url: updated.coverUrl } : {}),
             });

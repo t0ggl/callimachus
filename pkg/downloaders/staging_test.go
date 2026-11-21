@@ -479,3 +479,41 @@ func TestStagingIgnoresLateCancelledDownload(t *testing.T) {
 		t.Fatalf("late cancelled release queued again: %d %v", count, err)
 	}
 }
+
+func TestStagingMonitor_EnrichMetadataPersistsSynopsisOnNewImport(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	ctx := context.Background()
+	libraryRoot := t.TempDir()
+	completedRoot := t.TempDir()
+	stagingDir := filepath.Join(completedRoot, "Author Enriched - Fresh Import (2025)")
+	if err := os.MkdirAll(stagingDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stagingDir, "Fresh Import.epub"), []byte("dummy epub"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{
+		DB:            db,
+		Catalog:       catalog.New(db),
+		LibraryRoot:   libraryRoot,
+		CompletedRoot: completedRoot,
+		EnrichMetadata: func(_ context.Context, details catalog.BookDetails) catalog.BookDetails {
+			details.Description = "Enriched description from metadata provider."
+			details.Subtitle = "An Enriched Subtitle"
+			return details
+		},
+	})
+	if err := sm.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce failed: %v", err)
+	}
+
+	var synopsis, subtitle string
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(synopsis, ''), COALESCE(subtitle, '') FROM books LIMIT 1`).Scan(&synopsis, &subtitle); err != nil {
+		t.Fatal(err)
+	}
+	if synopsis != "Enriched description from metadata provider." || subtitle != "An Enriched Subtitle" {
+		t.Fatalf("expected enriched synopsis/subtitle, got (%q, %q)", synopsis, subtitle)
+	}
+}

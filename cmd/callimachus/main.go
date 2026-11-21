@@ -253,6 +253,8 @@ func NewServer(cfg Config) (*Server, error) {
 		staticFS:       staticFS,
 	}
 
+	srv.refreshBookMetadata = srv.refreshBookMetadataByID
+	stagingMon.SetEnrichMetadata(srv.enrichStagedBookDetails)
 	srv.acquisition = srv.newAcquisition()
 	srv.catalogMonitor = srv.newCatalogMonitor()
 	srv.monitorWake = make(chan struct{}, 1)

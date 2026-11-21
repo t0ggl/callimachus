@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/t0ggl/callimachus/pkg/database"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
@@ -679,6 +680,133 @@ func TestCatalog_ReconcileBackfillsSeriesIndexOnRescan(t *testing.T) {
 	}
 	if idx2 != 2 || disp2 != "Book 2" {
 		t.Fatalf("expected vol 2 index=2 disp='Book 2', got %v / %q", idx2, disp2)
+	}
+}
+
+func TestScanAndReconcilePersistsDescriptionsFromEPUBAndSidecar(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	cat := New(db)
+	root := t.TempDir()
+
+	// Canonical EPUB without OPF sidecar: scanner must still extract dc:description and persist synopsis.
+	epubPath := filepath.Join(root, "Ursula Le Guin", "A Wizard of Earthsea (1968)", "A Wizard of Earthsea (1968) - Ursula Le Guin.epub")
+	writeTestEPUB(t, epubPath, `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>A Wizard of Earthsea</dc:title>
+    <dc:creator>Ursula Le Guin</dc:creator>
+    <dc:description>&lt;p&gt;Ged was the greatest sorcerer in all Earthsea.&lt;/p&gt;</dc:description>
+    <dc:publisher>Parnassus Press</dc:publisher>
+    <dc:identifier>9780547773742</dc:identifier>
+    <dc:language>en</dc:language>
+  </metadata>
+</package>`)
+
+	report, err := ScanLibrary(root)
+	if err != nil {
+		t.Fatalf("ScanLibrary failed: %v", err)
+	}
+	if len(report.Books) != 1 {
+		t.Fatalf("expected 1 scanned book, got %d", len(report.Books))
+	}
+	if report.Books[0].Description != "Ged was the greatest sorcerer in all Earthsea." {
+		t.Fatalf("scanned description = %q", report.Books[0].Description)
+	}
+
+	results, err := cat.ReconcileScanReport(ctx, report)
+	if err != nil || len(results) != 1 {
+		t.Fatalf("ReconcileScanReport failed: %v", err)
+	}
+	var synopsis, publisher, isbn string
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(synopsis, '') FROM books WHERE id = ?`, results[0].Book.ID).Scan(&synopsis); err != nil {
+		t.Fatal(err)
+	}
+	if synopsis != "Ged was the greatest sorcerer in all Earthsea." {
+		t.Fatalf("persisted synopsis = %q, want EPUB description", synopsis)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(publisher, ''), COALESCE(isbn13, '') FROM book_editions WHERE book_id = ?`, results[0].Book.ID).Scan(&publisher, &isbn); err != nil {
+		t.Fatal(err)
+	}
+	if publisher != "Parnassus Press" || isbn != "9780547773742" {
+		t.Errorf("persisted edition metadata = (%q, %q)", publisher, isbn)
+	}
+}
+
+func TestIngestBookPreservesMatchedDescriptionAndBackfillsExistingBookID(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	cat := New(db)
+	root := t.TempDir()
+
+	// 1. Matched description takes precedence over raw EPUB description on new import.
+	src1 := filepath.Join(t.TempDir(), "matched.epub")
+	writeTestEPUB(t, src1, `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Hyperion</dc:title>
+    <dc:creator>Dan Simmons</dc:creator>
+    <dc:description>Embedded raw file blurb.</dc:description>
+  </metadata>
+</package>`)
+	res1, err := cat.IngestBook(ctx, root, BookDetails{
+		Title:       "Hyperion",
+		Author:      "Dan Simmons",
+		Year:        1989,
+		Description: "Matched provider synopsis for Hyperion.",
+	}, src1, nil)
+	if err != nil {
+		t.Fatalf("IngestBook matched failed: %v", err)
+	}
+	var syn1 string
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(synopsis, '') FROM books WHERE id = ?`, res1.Book.ID).Scan(&syn1); err != nil {
+		t.Fatal(err)
+	}
+	if syn1 != "Matched provider synopsis for Hyperion." {
+		t.Fatalf("matched synopsis overwritten: got %q", syn1)
+	}
+
+	// 2. Existing book referenced by BookID with empty synopsis gets backfilled from EPUB on import.
+	author, err := cat.GetOrCreateAuthor(ctx, "Octavia Butler")
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing, err := cat.GetOrCreateBook(ctx, &database.Book{
+		AuthorID: author.ID,
+		Title:    "Kindred",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src2 := filepath.Join(t.TempDir(), "kindred.epub")
+	writeTestEPUB(t, src2, `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Kindred</dc:title>
+    <dc:creator>Octavia Butler</dc:creator>
+    <dc:description>Dana is pulled back in time to antebellum Maryland.</dc:description>
+  </metadata>
+</package>`)
+	res2, err := cat.IngestBook(ctx, root, BookDetails{
+		BookID: existing.ID,
+		Title:  "Kindred",
+		Author: "Octavia Butler",
+		Year:   1979,
+	}, src2, nil)
+	if err != nil {
+		t.Fatalf("IngestBook existing BookID failed: %v", err)
+	}
+	if res2.Book.ID != existing.ID {
+		t.Fatalf("expected existing book ID %s, got %s", existing.ID, res2.Book.ID)
+	}
+	var syn2 string
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(synopsis, '') FROM books WHERE id = ?`, existing.ID).Scan(&syn2); err != nil {
+		t.Fatal(err)
+	}
+	if syn2 != "Dana is pulled back in time to antebellum Maryland." {
+		t.Fatalf("expected backfilled synopsis on existing BookID, got %q", syn2)
 	}
 }
 

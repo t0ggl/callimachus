@@ -731,3 +731,40 @@ func TestNormalizeTitleKey(t *testing.T) {
 	}
 }
 
+func TestCleanDescription(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "plain text preserved",
+			in:   "  A sweeping desert epic.  ",
+			want: "A sweeping desert epic.",
+		},
+		{
+			name: "html paragraphs and breaks cleaned",
+			in:   "<p>First paragraph with <i>italics</i> &amp; entities.</p><p>Second line.<br/>Third line.</p>",
+			want: "First paragraph with italics & entities.\nSecond line.\nThird line.",
+		},
+		{
+			name: "excessive blank lines collapsed",
+			in:   "Para one.\r\n\r\n\r\n\r\nPara two.\n\n",
+			want: "Para one.\n\nPara two.",
+		},
+		{
+			name: "whitespace only returns empty",
+			in:   "   \n\t  ",
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CleanDescription(tc.in); got != tc.want {
+				t.Errorf("CleanDescription(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+

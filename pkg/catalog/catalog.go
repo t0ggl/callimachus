@@ -185,6 +185,59 @@ func SeriesIndexLabel(index *float64) string {
 	return fmt.Sprintf("Book %v", *index)
 }
 
+// backfillBookFields fills missing or strictly more precise metadata on existing without overwriting curated values.
+func backfillBookFields(existing, incoming *database.Book) bool {
+	updated := false
+	if existing.SeriesID == nil && incoming.SeriesID != nil {
+		sID := *incoming.SeriesID
+		existing.SeriesID = &sID
+		updated = true
+	}
+	sameOrEmptySeries := incoming.SeriesID == nil || existing.SeriesID == nil || *existing.SeriesID == *incoming.SeriesID
+	if existing.SeriesIndex == nil && incoming.SeriesIndex != nil && sameOrEmptySeries {
+		idx := *incoming.SeriesIndex
+		existing.SeriesIndex = &idx
+		if incoming.SeriesIndexDisplay != nil && *incoming.SeriesIndexDisplay != "" {
+			d := *incoming.SeriesIndexDisplay
+			existing.SeriesIndexDisplay = &d
+		} else {
+			d := SeriesIndexLabel(existing.SeriesIndex)
+			existing.SeriesIndexDisplay = &d
+		}
+		updated = true
+	} else if existing.SeriesIndex != nil && (existing.SeriesIndexDisplay == nil || *existing.SeriesIndexDisplay == "") {
+		d := SeriesIndexLabel(existing.SeriesIndex)
+		existing.SeriesIndexDisplay = &d
+		updated = true
+	}
+	if incoming.ReleaseDate != nil {
+		if cand := metadata.NormalizeReleaseDate(*incoming.ReleaseDate, 0); cand != "" {
+			cur := ""
+			if existing.ReleaseDate != nil {
+				cur = *existing.ReleaseDate
+			}
+			normCur := metadata.NormalizeReleaseDate(cur, 0)
+			if normCur == "" || (len(cand) > len(normCur) && strings.HasPrefix(cand, normCur)) {
+				existing.ReleaseDate = &cand
+				updated = true
+			}
+		}
+	}
+	if (existing.Subtitle == nil || strings.TrimSpace(*existing.Subtitle) == "") && incoming.Subtitle != nil {
+		if sub := strings.TrimSpace(*incoming.Subtitle); sub != "" {
+			existing.Subtitle = &sub
+			updated = true
+		}
+	}
+	if (existing.Synopsis == nil || strings.TrimSpace(*existing.Synopsis) == "") && incoming.Synopsis != nil {
+		if syn := metadata.CleanDescription(*incoming.Synopsis); syn != "" {
+			existing.Synopsis = &syn
+			updated = true
+		}
+	}
+	return updated
+}
+
 // GetOrCreateBook finds an existing book by author and title, or inserts a new one.
 func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*database.Book, error) {
 	cleanTitle := metadata.SanitizeTitle(book.Title)
@@ -198,51 +251,7 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 	existing, err := c.GetBookByAuthorAndTitle(ctx, book.AuthorID, cleanTitle)
 	if err == nil {
 		// Backfill missing or strictly more precise metadata without overwriting existing fields or monitoring state.
-		updated := false
-		if existing.SeriesID == nil && book.SeriesID != nil {
-			sID := *book.SeriesID
-			existing.SeriesID = &sID
-			updated = true
-		}
-		sameOrEmptySeries := book.SeriesID == nil || existing.SeriesID == nil || *existing.SeriesID == *book.SeriesID
-		if existing.SeriesIndex == nil && book.SeriesIndex != nil && sameOrEmptySeries {
-			idx := *book.SeriesIndex
-			existing.SeriesIndex = &idx
-			if book.SeriesIndexDisplay != nil && *book.SeriesIndexDisplay != "" {
-				d := *book.SeriesIndexDisplay
-				existing.SeriesIndexDisplay = &d
-			} else {
-				d := SeriesIndexLabel(existing.SeriesIndex)
-				existing.SeriesIndexDisplay = &d
-			}
-			updated = true
-		} else if existing.SeriesIndex != nil && (existing.SeriesIndexDisplay == nil || *existing.SeriesIndexDisplay == "") {
-			d := SeriesIndexLabel(existing.SeriesIndex)
-			existing.SeriesIndexDisplay = &d
-			updated = true
-		}
-		if book.ReleaseDate != nil {
-			if cand := metadata.NormalizeReleaseDate(*book.ReleaseDate, 0); cand != "" {
-				cur := ""
-				if existing.ReleaseDate != nil {
-					cur = *existing.ReleaseDate
-				}
-				normCur := metadata.NormalizeReleaseDate(cur, 0)
-				if normCur == "" || (len(cand) > len(normCur) && strings.HasPrefix(cand, normCur)) {
-					existing.ReleaseDate = &cand
-					updated = true
-				}
-			}
-		}
-		if (existing.Subtitle == nil || *existing.Subtitle == "") && book.Subtitle != nil && *book.Subtitle != "" {
-			existing.Subtitle = book.Subtitle
-			updated = true
-		}
-		if (existing.Synopsis == nil || *existing.Synopsis == "") && book.Synopsis != nil && *book.Synopsis != "" {
-			existing.Synopsis = book.Synopsis
-			updated = true
-		}
-		if updated {
+		if backfillBookFields(existing, book) {
 			if err := c.UpsertBook(ctx, existing); err != nil {
 				return nil, err
 			}
@@ -257,6 +266,20 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 		book.ID = uuid.NewString()
 	}
 	book.Title = cleanTitle
+	if book.Subtitle != nil {
+		if sub := strings.TrimSpace(*book.Subtitle); sub != "" {
+			book.Subtitle = &sub
+		} else {
+			book.Subtitle = nil
+		}
+	}
+	if book.Synopsis != nil {
+		if syn := metadata.CleanDescription(*book.Synopsis); syn != "" {
+			book.Synopsis = &syn
+		} else {
+			book.Synopsis = nil
+		}
+	}
 	if book.SeriesIndex != nil && (book.SeriesIndexDisplay == nil || *book.SeriesIndexDisplay == "") {
 		d := SeriesIndexLabel(book.SeriesIndex)
 		book.SeriesIndexDisplay = &d
@@ -506,20 +529,25 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 	if strings.EqualFold(filepath.Ext(mediaSrcPath), ".epub") {
 		if ep, err := epub.OpenNative(mediaSrcPath); err == nil {
 			meta := ep.Metadata()
-			if meta.Publisher != "" {
+			if book.Publisher == "" && meta.Publisher != "" {
 				book.Publisher = meta.Publisher
 			}
-			if meta.ISBN13 != "" {
+			if book.ISBN13 == "" && meta.ISBN13 != "" {
 				book.ISBN13 = meta.ISBN13
 			}
-			if meta.Language != "" {
+			if book.Language == "" && meta.Language != "" {
 				book.Language = meta.Language
 			}
-			if meta.Description != "" {
-				book.Description = meta.Description
+			if strings.TrimSpace(book.Subtitle) == "" && strings.TrimSpace(meta.Subtitle) != "" {
+				book.Subtitle = strings.TrimSpace(meta.Subtitle)
+			}
+			if strings.TrimSpace(book.Description) == "" && strings.TrimSpace(meta.Description) != "" {
+				book.Description = metadata.CleanDescription(meta.Description)
 			}
 		}
 	}
+	book.Subtitle = strings.TrimSpace(book.Subtitle)
+	book.Description = metadata.CleanDescription(book.Description)
 	// Capture previous inventory before publishing the replacement.
 	var previous []database.MediaAsset
 	if book.BookID != "" {
@@ -579,24 +607,43 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 		d := SeriesIndexLabel(book.SeriesIndex)
 		indexDisplay = &d
 	}
+	var subtitle *string
+	if book.Subtitle != "" {
+		sub := book.Subtitle
+		subtitle = &sub
+	}
+	var synopsis *string
+	if book.Description != "" {
+		syn := book.Description
+		synopsis = &syn
+	}
 
-	dbBook, err := c.GetOrCreateBook(ctx, &database.Book{
+	incomingBook := &database.Book{
 		AuthorID:           author.ID,
 		SeriesID:           seriesID,
 		SeriesIndex:        book.SeriesIndex,
 		SeriesIndexDisplay: indexDisplay,
 		Title:              book.Title,
+		Subtitle:           subtitle,
 		ReleaseDate:        releaseDate,
-		Synopsis:           &book.Description,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("persist book: %w", err)
+		Synopsis:           synopsis,
 	}
 
+	var dbBook *database.Book
 	if book.BookID != "" {
 		dbBook, err = c.GetBookByID(ctx, book.BookID)
 		if err != nil {
 			return nil, err
+		}
+		if backfillBookFields(dbBook, incomingBook) {
+			if err := c.UpsertBook(ctx, dbBook); err != nil {
+				return nil, fmt.Errorf("persist book: %w", err)
+			}
+		}
+	} else {
+		dbBook, err = c.GetOrCreateBook(ctx, incomingBook)
+		if err != nil {
+			return nil, fmt.Errorf("persist book: %w", err)
 		}
 	}
 	if err := c.SaveIdealMetadata(ctx, dbBook.ID, book.Title, book.Series, book.SeriesIndex, IdealSourceImport); err != nil {
@@ -759,6 +806,22 @@ func (c *Catalog) ReconcileScannedBook(ctx context.Context, sb *ScannedBook) (*I
 		d := SeriesIndexLabel(sb.SeriesIndex)
 		indexDisplay = &d
 	}
+	subStr := strings.TrimSpace(sb.Subtitle)
+	if subStr == "" && sb.OPFMetadata != nil {
+		subStr = strings.TrimSpace(sb.OPFMetadata.Subtitle)
+	}
+	var subtitle *string
+	if subStr != "" {
+		subtitle = &subStr
+	}
+	descStr := metadata.CleanDescription(sb.Description)
+	if descStr == "" && sb.OPFMetadata != nil {
+		descStr = metadata.CleanDescription(sb.OPFMetadata.Description)
+	}
+	var synopsis *string
+	if descStr != "" {
+		synopsis = &descStr
+	}
 
 	dbBook, err := c.GetOrCreateBook(ctx, &database.Book{
 		AuthorID:           author.ID,
@@ -766,22 +829,68 @@ func (c *Catalog) ReconcileScannedBook(ctx context.Context, sb *ScannedBook) (*I
 		SeriesIndex:        sb.SeriesIndex,
 		SeriesIndexDisplay: indexDisplay,
 		Title:              sb.Title,
+		Subtitle:           subtitle,
 		ReleaseDate:        releaseDate,
+		Synopsis:           synopsis,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("reconcile book: %w", err)
+	}
+
+	pubStr := strings.TrimSpace(sb.Publisher)
+	if pubStr == "" && sb.OPFMetadata != nil {
+		pubStr = strings.TrimSpace(sb.OPFMetadata.Publisher)
+	}
+	isbnStr := strings.TrimSpace(sb.ISBN13)
+	if isbnStr == "" && sb.OPFMetadata != nil {
+		isbnStr = strings.TrimSpace(sb.OPFMetadata.ISBN13)
+	}
+	langStr := strings.TrimSpace(sb.Language)
+	if langStr == "" && sb.OPFMetadata != nil {
+		langStr = strings.TrimSpace(sb.OPFMetadata.Language)
 	}
 
 	var assets []database.MediaAsset
 	var primaryEdition *database.BookEdition
 
 	for _, m := range sb.MediaFiles {
+		var pubPtr, isbnPtr *string
+		if pubStr != "" {
+			p := pubStr
+			pubPtr = &p
+		}
+		if isbnStr != "" {
+			i := isbnStr
+			isbnPtr = &i
+		}
 		ed, err := c.GetOrCreateEdition(ctx, &database.BookEdition{
-			BookID: dbBook.ID,
-			Format: m.Format,
+			BookID:          dbBook.ID,
+			Format:          m.Format,
+			ISBN13:          isbnPtr,
+			Publisher:       pubPtr,
+			PublicationDate: releaseDate,
+			Language:        langStr,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("reconcile edition: %w", err)
+		}
+		edUpdated := false
+		if (ed.Publisher == nil || *ed.Publisher == "") && pubPtr != nil {
+			ed.Publisher = pubPtr
+			edUpdated = true
+		}
+		if (ed.ISBN13 == nil || *ed.ISBN13 == "") && isbnPtr != nil {
+			ed.ISBN13 = isbnPtr
+			edUpdated = true
+		}
+		if (ed.PublicationDate == nil || *ed.PublicationDate == "") && releaseDate != nil {
+			ed.PublicationDate = releaseDate
+			edUpdated = true
+		}
+		if edUpdated {
+			if err := c.UpsertEdition(ctx, ed); err != nil {
+				return nil, fmt.Errorf("reconcile edition metadata: %w", err)
+			}
 		}
 		if primaryEdition == nil {
 			primaryEdition = ed
@@ -934,7 +1043,7 @@ func audioFormat(format string) bool {
 func (c *Catalog) IngestConvertedAudio(ctx context.Context, editionID, source, target string, cover []byte) error {
 	var b BookDetails
 	var date string
-	err := c.db.QueryRowContext(ctx, `SELECT b.id,b.title,a.name,COALESCE(s.title,''),b.series_index,COALESCE(b.release_date,''),COALESCE(b.synopsis,'') FROM book_editions e JOIN books b ON b.id=e.book_id JOIN authors a ON a.id=b.author_id LEFT JOIN series s ON s.id=b.series_id WHERE e.id=?`, editionID).Scan(&b.BookID, &b.Title, &b.Author, &b.Series, &b.SeriesIndex, &date, &b.Description)
+	err := c.db.QueryRowContext(ctx, `SELECT b.id,b.title,COALESCE(b.subtitle,''),a.name,COALESCE(s.title,''),b.series_index,COALESCE(b.release_date,''),COALESCE(b.synopsis,'') FROM book_editions e JOIN books b ON b.id=e.book_id JOIN authors a ON a.id=b.author_id LEFT JOIN series s ON s.id=b.series_id WHERE e.id=?`, editionID).Scan(&b.BookID, &b.Title, &b.Subtitle, &b.Author, &b.Series, &b.SeriesIndex, &date, &b.Description)
 	if err != nil {
 		return err
 	}

@@ -599,7 +599,7 @@ func (b hardcoverBookNode) isSeriesDerivative() bool {
 func (p *HardcoverProvider) AuthorBooks(ctx context.Context, name string) ([]BookMetadata, error) {
 	const query = `query AuthorBooks($name: String!, $offset: Int!) {
  books(where: {contributions: {author: {name: {_eq: $name}}}}, limit: 100, offset: $offset, order_by: {id: asc}) {
- id title release_date release_year
+ id title subtitle description release_date release_year
  contributions { author { name } contribution }
  ` + hardcoverMembershipFields + `
  }

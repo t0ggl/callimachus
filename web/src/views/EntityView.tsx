@@ -359,7 +359,17 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
             ...prev,
             books: prev.books.map((item, idx) =>
               (detailIndex !== null ? idx === detailIndex : item.id === updated.id)
-                ? { ...item, id: updated.id, monitored: updated.monitored, coverUrl: updated.coverUrl ?? item.coverUrl }
+                ? {
+                    ...item,
+                    id: updated.id,
+                    title: updated.title,
+                    subtitle: updated.subtitle,
+                    releaseDate: updated.releaseDate,
+                    synopsis: updated.synopsis,
+                    seriesIndex: updated.seriesIndex,
+                    monitored: updated.monitored,
+                    coverUrl: updated.coverUrl ?? item.coverUrl,
+                  }
                 : item
             ),
           } : prev);

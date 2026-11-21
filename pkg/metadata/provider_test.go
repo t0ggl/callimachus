@@ -647,3 +647,31 @@ func TestSharesAuthorCoAuthors(t *testing.T) {
 		t.Fatal("unrelated authors must not match")
 	}
 }
+
+func TestOpenLibraryLookupByWorkID(t *testing.T) {
+	t.Parallel()
+	mt := testutil.NewMockTransportForTest(t)
+	mt.RegisterString("https://openlibrary.org/works/OL999W.json", http.StatusOK, `{
+		"key": "/works/OL999W",
+		"title": "Earthsea",
+		"subtitle": "A Cycle",
+		"description": {"type": "/type/text", "value": "A young mage travels the archipelago."},
+		"subjects": ["Fantasy", "Magic"]
+	}`, nil)
+	mt.RegisterString("https://openlibrary.org/works/OL404W.json", http.StatusNotFound, `{"error":"notfound"}`, nil)
+
+	p := metadata.NewOpenLibraryProvider(metadata.WithOpenLibraryClient(mt.Client()))
+	meta, err := p.LookupByWorkID(context.Background(), "/works/OL999W")
+	if err != nil {
+		t.Fatalf("LookupByWorkID failed: %v", err)
+	}
+	if meta.Description != "A young mage travels the archipelago." || meta.Subtitle != "A Cycle" || meta.OpenLibraryID != "OL999W" {
+		t.Fatalf("unexpected work metadata: %+v", meta)
+	}
+	if _, err := p.LookupByWorkID(context.Background(), "OL404W"); !errors.Is(err, metadata.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+	if _, err := p.LookupByWorkID(context.Background(), "../bad"); !errors.Is(err, metadata.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for invalid work id, got %v", err)
+	}
+}
