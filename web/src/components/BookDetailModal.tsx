@@ -76,6 +76,7 @@ interface BookDetailModalProps {
   book: Book | null;
   onClose: () => void;
   activity?: React.ReactNode;
+  initialPanel?: 'repair';
   isAdmin?: boolean;
   canManage?: boolean;
   canRequest?: boolean;
@@ -106,6 +107,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   book,
   onClose,
   activity,
+  initialPanel,
   isAdmin,
   canManage,
   canRequest,
@@ -121,7 +123,9 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   const coverInputRef = React.useRef<HTMLInputElement>(null);
   const [prevBook, setPrevBook] = useState<Book | null>(book);
   const [activeBook, setActiveBook] = useState<Book | null>(book);
-  const [repairBookID, setRepairBookID] = useState<string>();
+  const [repairBookID, setRepairBookID] = useState<string | undefined>(() =>
+    initialPanel === 'repair' && book?.id ? book.id : undefined
+  );
   const [findingCoverBookID, setFindingCoverBookID] = useState<string>();
   const [showDownloadOptions, setShowDownloadOptions] = useState(false);
   const [monitored, setMonitored] = useState(Boolean(book?.monitored));
@@ -151,7 +155,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     setDeleteError('');
     if (!sameResolvingBook) {
       setShowDownloadOptions(false);
-      setRepairBookID(undefined);
+      setRepairBookID(initialPanel === 'repair' && book?.id ? book.id : undefined);
       setConfirmDelete(false);
       setDeleteFiles(false);
     }

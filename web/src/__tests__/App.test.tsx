@@ -838,4 +838,62 @@ describe('App Integration', () => {
     });
     expect(writeCalls).toEqual([]);
   });
+
+  it('allows admins to navigate to Metadata Mismatches under Activity and blocks non-admins', async () => {
+    const user = userEvent.setup({ delay: null });
+    const fetchMock = vi.mocked(global.fetch);
+    const originalFetch = fetchMock.getMockImplementation()!;
+
+    fetchMock.mockImplementation((url, options) => {
+      if (String(url) === '/api/activity/metadata-mismatches') {
+        return Promise.resolve(
+          Response.json({
+            scannedBooks: 3,
+            items: [
+              {
+                bookId: 'book-96',
+                title: 'The Final Empire',
+                authorName: 'Brandon Sanderson',
+                ideal: { title: 'The Final Empire', series: 'Mistborn', seriesIndex: 1 },
+                idealSource: 'match',
+                mismatchedFields: ['title'],
+                files: [
+                  {
+                    assetId: 'asset-96',
+                    filename: 'final-empire.epub',
+                    current: { title: 'Wrong Title' },
+                    mismatches: [{ field: 'title', current: 'Wrong Title', ideal: 'The Final Empire' }],
+                  },
+                ],
+              },
+            ],
+          }),
+        );
+      }
+      return originalFetch(url, options);
+    });
+
+    const { unmount } = render(<App />);
+    const navBtn = await screen.findByTestId('nav-activity-mismatches');
+    await user.click(navBtn);
+
+    expect(await screen.findByRole('heading', { name: 'EPUB Metadata Mismatches' })).toBeInTheDocument();
+    expect(await screen.findByText('Wrong Title')).toBeInTheDocument();
+    unmount();
+
+    // Non-admin user visiting #/activity/metadata-mismatches directly gets Access Denied and no sidebar entry.
+    window.location.hash = '#/activity/metadata-mismatches';
+    fetchMock.mockImplementation((url, options) => {
+      if (String(url).includes('/api/auth/me')) {
+        return Promise.resolve(
+          Response.json({ id: 'u-cur', username: 'curator', role: 'curator', email: 'curator@example.com' }),
+        );
+      }
+      return originalFetch(url, options);
+    });
+
+    render(<App />);
+    expect(await screen.findByTestId('mismatches-access-denied')).toBeInTheDocument();
+    expect(screen.queryByTestId('nav-activity-mismatches')).not.toBeInTheDocument();
+  });
 });

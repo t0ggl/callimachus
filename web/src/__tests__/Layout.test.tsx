@@ -62,27 +62,35 @@ it('removes logo subtitle, mode badge and legacy labels', () => {
   expect(screen.queryByText(/Audiobooks & eBooks|OPERATE MODE|Library & Catalog|Activity & Queues|Transcode Queue/)).not.toBeInTheDocument();
 });
 
-describe('Layout Settings nav visibility', () => {
-  it('puts all three admin destinations in one mobile row and keeps desktop navigation stacked', () => {
+describe('Layout Settings and admin Activity nav visibility', () => {
+  it('shows the admin-only Metadata Mismatches entry under Activity and stacks desktop navigation', async () => {
+    const user = userEvent.setup({ delay: null });
+    const onNavigate = vi.fn();
     render(
       <Layout
         {...props}
+        onNavigate={onNavigate}
         user={{ id: '1', username: 'admin', role: 'admin', email: 'admin@example.com' }}
         activeDownloadsCount={0}
         convertingJobsCount={0}
+        metadataMismatchesCount={4}
       />
     );
     const nav = within(screen.getByRole('navigation'));
-    expect(screen.getByRole('navigation')).toHaveClass('flex', 'flex-nowrap', 'md:block');
+    expect(screen.getByRole('navigation')).toHaveClass('flex', 'flex-wrap', 'md:block');
     expect(nav.getAllByRole('button')).toEqual([
       nav.getByTestId('nav-catalog'),
       nav.getByTestId('nav-activity'),
+      nav.getByTestId('nav-activity-mismatches'),
       nav.getByTestId('nav-settings'),
     ]);
+    const mismatchBtn = nav.getByRole('button', { name: /Metadata Mismatches.*4/ });
+    await user.click(mismatchBtn);
+    expect(onNavigate).toHaveBeenCalledExactlyOnceWith('activity-mismatches');
   });
 
   it.each(['curator', 'requester', 'guest'] as const)(
-    'hides Settings nav link for non-admin role %s',
+    'hides Settings and Metadata Mismatches nav links for non-admin role %s',
     (role) => {
       render(
         <Layout
@@ -90,16 +98,19 @@ describe('Layout Settings nav visibility', () => {
           user={{ id: '2', username: `${role}_user`, role, email: `${role}@example.com` }}
           activeDownloadsCount={0}
           convertingJobsCount={0}
+          metadataMismatchesCount={3}
         />
       );
       expect(screen.getByTestId('nav-catalog')).toBeInTheDocument();
       expect(screen.getByTestId('nav-activity')).toBeInTheDocument();
+      expect(screen.queryByTestId('nav-activity-mismatches')).not.toBeInTheDocument();
       expect(screen.queryByTestId('nav-settings')).not.toBeInTheDocument();
     }
   );
 
-  it('hides Settings nav link when user is null', () => {
+  it('hides Settings and Metadata Mismatches nav links when user is null', () => {
     render(<Layout {...props} user={null} activeDownloadsCount={0} convertingJobsCount={0} />);
+    expect(screen.queryByTestId('nav-activity-mismatches')).not.toBeInTheDocument();
     expect(screen.queryByTestId('nav-settings')).not.toBeInTheDocument();
     expect(screen.getByTestId('auth-verifying')).toHaveClass('sr-only', 'md:not-sr-only');
     expect(screen.queryByTestId('logout-button')).not.toBeInTheDocument();

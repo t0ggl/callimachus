@@ -247,6 +247,13 @@ func (m *Monitor) persist(ctx context.Context, kind, id, name string, monitored 
 		if err != nil {
 			return err
 		}
+		idealSeries := b.Series
+		if kind == "series" {
+			idealSeries = name
+		}
+		if err = c.SaveIdealMetadata(ctx, saved.ID, b.Title, idealSeries, b.SeriesIndex, IdealSourceMatch); err != nil {
+			return err
+		}
 		// Announcement dates can move. Preserve monitoring while updating a known date without dropping precision for the same period.
 		if book.ReleaseDate != nil {
 			existing := ""

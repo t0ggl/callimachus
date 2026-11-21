@@ -546,6 +546,10 @@ func (s *Server) publishMetadataRepair(ctx context.Context, root *os.Root, bookI
 		if err := updateCandidateMetadata(ctx, tx, bookID, book, files, candidate); err != nil {
 			return err
 		}
+	} else {
+		if err := catalog.SaveIdealMetadataExec(ctx, tx, bookID, book.Title, book.Series, book.SeriesIndex, catalog.IdealSourceManualRepair); err != nil {
+			return err
+		}
 	}
 	for _, file := range staged {
 		if file.assetID != "" {
@@ -645,6 +649,9 @@ func updateCandidateMetadata(ctx context.Context, tx *sql.Tx, bookID string, boo
 			return err
 		}
 		editions[file.editionID] = true
+	}
+	if err := catalog.SaveIdealMetadataExec(ctx, tx, bookID, target.Title, target.Series, target.SeriesIndex, catalog.IdealSourceManualRepair); err != nil {
+		return err
 	}
 	return nil
 }

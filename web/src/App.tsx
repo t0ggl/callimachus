@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Layout, NavView } from './components/Layout';
 import { CatalogView } from './views/CatalogView';
 import { ActivityView } from './views/ActivityView';
+import { EpubMetadataMismatchesView } from './views/EpubMetadataMismatchesView';
 import { SettingsView } from './views/SettingsView';
 import { CommandPalette } from './components/CommandPalette';
 import { BookDetailModal } from './components/BookDetailModal';
@@ -35,6 +36,12 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
     if (window.location.hash === '#/settings' || window.location.pathname === '/settings') {
       return 'settings';
     }
+    if (
+      window.location.hash === '#/activity/metadata-mismatches' ||
+      window.location.pathname === '/activity/metadata-mismatches'
+    ) {
+      return 'activity-mismatches';
+    }
     return initialView;
   });
   useEffect(() => {
@@ -42,6 +49,8 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
       setEntityHash(window.location.hash);
       if (window.location.hash === '#/settings') {
         setCurrentView('settings');
+      } else if (window.location.hash === '#/activity/metadata-mismatches') {
+        setCurrentView('activity-mismatches');
       }
       setSelectedBook(null);
       setSelectedSeries(null);
@@ -193,6 +202,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
 
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState('');
+  const [metadataMismatchesCount, setMetadataMismatchesCount] = useState(0);
 
   const fetchActivity = useCallback(async () => {
     setActivityLoading(true);
@@ -302,8 +312,8 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
 
   const navigateTo = useCallback((v: NavView) => {
     window.location.hash = '';
-    if (v === 'settings' && !isAdmin) {
-      setCurrentView('catalog');
+    if ((v === 'settings' || v === 'activity-mismatches') && !isAdmin) {
+      setCurrentView(v === 'activity-mismatches' ? 'activity' : 'catalog');
       return;
     }
     setCurrentView(v);
@@ -416,6 +426,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
         user={currentUser}
         activeDownloadsCount={activeDownloadsCount}
         convertingJobsCount={convertingJobsCount}
+        metadataMismatchesCount={metadataMismatchesCount}
         onLogout={handleLogout}
       >
         {match && entityName ? (
@@ -463,6 +474,35 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
             error={activityError}
             onRetry={() => void fetchActivity()}
           />
+        )}
+
+        {!match && currentView === 'activity-mismatches' && (
+          isAdmin ? (
+            <EpubMetadataMismatchesView
+              canManage={canManage}
+              canRequest={canRequest}
+              onCatalogChanged={fetchCatalog}
+              onCountChanged={setMetadataMismatchesCount}
+            />
+          ) : currentUser ? (
+            <div data-testid="mismatches-access-denied" role="alert" className="py-16 text-center space-y-3">
+              <h1 className="text-xl font-bold text-white">Access Denied</h1>
+              <p className="text-sm text-zinc-400">
+                Administrator privileges are required to review EPUB metadata mismatches.
+              </p>
+              <button
+                type="button"
+                onClick={() => navigateTo('activity')}
+                className="px-4 py-2 rounded-md bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-100"
+              >
+                Return to Activity
+              </button>
+            </div>
+          ) : (
+            <div data-testid="mismatches-verifying" role="status" className="py-16 text-center text-sm text-zinc-400">
+              Verifying permissions…
+            </div>
+          )
         )}
 
         {!match && currentView === 'settings' && (

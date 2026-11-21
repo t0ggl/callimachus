@@ -673,6 +673,10 @@ func (s *Server) handleResolveBook(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Unable to save book", http.StatusInternalServerError)
 			return
 		}
+		if err := c.SaveIdealMetadata(r.Context(), saved.ID, title, seriesTitle, req.SeriesIndex, catalog.IdealSourceMatch); err != nil {
+			http.Error(w, "Unable to save ideal metadata", http.StatusInternalServerError)
+			return
+		}
 		bookID = saved.ID
 	}
 

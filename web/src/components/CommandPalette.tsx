@@ -115,6 +115,17 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       ...(canAccessSettings
         ? [
             {
+              id: 'nav_activity_mismatches',
+              type: 'navigation' as const,
+              title: 'EPUB Metadata Mismatches',
+              subtitle: 'Review books whose EPUB title or series differs from matched metadata',
+              badge: 'Admin',
+              action: () => {
+                onNavigate('activity-mismatches');
+                closePalette();
+              },
+            },
+            {
               id: 'nav_settings',
               type: 'navigation' as const,
               title: 'Settings',

@@ -119,6 +119,44 @@ export interface MetadataPreview {
   }[];
 }
 
+export type EPUBMismatchField = 'title' | 'series' | 'seriesIndex';
+
+export interface EPUBMetadataSnapshot {
+  title: string;
+  subtitle?: string;
+  series?: string;
+  seriesIndex?: number;
+}
+
+export interface EPUBFieldMismatch {
+  field: EPUBMismatchField;
+  current: string;
+  ideal: string;
+}
+
+export interface EPUBMetadataMismatchFile {
+  assetId: string;
+  filename: string;
+  current: EPUBMetadataSnapshot;
+  mismatches: EPUBFieldMismatch[];
+}
+
+export interface EPUBMetadataMismatchItem {
+  bookId: string;
+  title: string;
+  authorName: string;
+  coverUrl?: string;
+  ideal: EPUBMetadataSnapshot;
+  idealSource?: string;
+  files: EPUBMetadataMismatchFile[];
+  mismatchedFields: EPUBMismatchField[];
+}
+
+export interface EPUBMetadataMismatchesResponse {
+  items: EPUBMetadataMismatchItem[];
+  scannedBooks: number;
+}
+
 export interface CoverCandidate {
   url: string;
   thumbnailUrl: string;

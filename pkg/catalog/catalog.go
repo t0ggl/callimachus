@@ -599,6 +599,9 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 			return nil, err
 		}
 	}
+	if err := c.SaveIdealMetadata(ctx, dbBook.ID, book.Title, book.Series, book.SeriesIndex, IdealSourceImport); err != nil {
+		return nil, fmt.Errorf("persist ideal metadata: %w", err)
+	}
 	// 4. Edition
 	format := strings.ToLower(strings.TrimPrefix(filepath.Ext(org.MediaPath), "."))
 	var isbn *string
@@ -799,6 +802,9 @@ func (c *Catalog) ReconcileScannedBook(ctx context.Context, sb *ScannedBook) (*I
 
 	if len(assets) > 0 {
 		dbBook.Monitored = false
+	}
+	if err := c.SaveIdealMetadata(ctx, dbBook.ID, sb.Title, sb.Series, sb.SeriesIndex, IdealSourceScan); err != nil {
+		return nil, fmt.Errorf("reconcile ideal metadata: %w", err)
 	}
 
 	return &IngestResult{

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Library,
   Activity,
+  FileWarning,
   Settings,
   Search,
   LogOut,
@@ -11,7 +12,7 @@ import {
 } from 'lucide-react';
 import { UserProfile } from '../types';
 
-export type NavView = 'catalog' | 'activity' | 'settings';
+export type NavView = 'catalog' | 'activity' | 'activity-mismatches' | 'settings';
 
 interface LayoutProps {
   currentView: NavView;
@@ -20,6 +21,7 @@ interface LayoutProps {
   user: UserProfile | null;
   activeDownloadsCount: number;
   convertingJobsCount: number;
+  metadataMismatchesCount?: number;
   onLogout: () => void;
   children: React.ReactNode;
 }
@@ -31,6 +33,7 @@ export const Layout: React.FC<LayoutProps> = ({
   user,
   activeDownloadsCount,
   convertingJobsCount,
+  metadataMismatchesCount = 0,
   onLogout,
   children,
 }) => {
@@ -114,32 +117,63 @@ export const Layout: React.FC<LayoutProps> = ({
           </div>
 
           {/* Navigation Links */}
-          <nav className="flex flex-nowrap gap-1 px-2 pb-2 md:block md:p-3 md:space-y-1">
+          <nav className="flex flex-wrap gap-1 px-2 pb-2 md:block md:p-3 md:space-y-1">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = currentView === item.id;
+              const isMismatchesActive = currentView === 'activity-mismatches';
               return (
-                <button
-                  key={item.id}
-                  onClick={() => onNavigate(item.id)}
-                  data-testid={`nav-${item.id}`}
-                  className={`flex flex-1 items-center justify-center gap-1 min-h-11 px-1 md:w-full md:min-h-0 md:justify-between md:px-3 md:py-2 rounded-md text-xs font-medium transition-colors duration-150 ${
-                    isActive
-                      ? 'bg-blue-600/15 text-blue-400 border border-blue-600/30'
-                      : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60 border border-transparent'
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <Icon className={`hidden md:block w-4 h-4 ${isActive ? 'text-blue-400' : 'text-zinc-400'}`} />
-                    <span>{item.label}</span>
-                  </div>
+                <React.Fragment key={item.id}>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate(item.id)}
+                    data-testid={`nav-${item.id}`}
+                    aria-current={isActive ? 'page' : undefined}
+                    className={`flex flex-1 items-center justify-center gap-1 min-h-11 px-1 md:w-full md:min-h-0 md:justify-between md:px-3 md:py-2 rounded-md text-xs font-medium transition-colors duration-150 ${
+                      isActive
+                        ? 'bg-blue-600/15 text-blue-400 border border-blue-600/30'
+                        : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60 border border-transparent'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Icon className={`hidden md:block w-4 h-4 ${isActive ? 'text-blue-400' : 'text-zinc-400'}`} />
+                      <span>{item.label}</span>
+                    </div>
 
-                  {item.badge && (
-                    <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
-                      {item.badge}
-                    </span>
+                    {item.badge && (
+                      <span className="text-[10px] font-mono font-semibold tabular-nums px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                        {item.badge}
+                      </span>
+                    )}
+                  </button>
+
+                  {item.id === 'activity' && isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('activity-mismatches')}
+                      data-testid="nav-activity-mismatches"
+                      aria-current={isMismatchesActive ? 'page' : undefined}
+                      className={`order-last basis-full md:order-none md:w-full flex items-center justify-center md:justify-between gap-2 min-h-10 md:min-h-0 px-3 py-1.5 md:pl-8 md:pr-3 rounded-md text-xs font-medium transition-colors duration-150 ${
+                        isMismatchesActive
+                          ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                          : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60 border border-transparent'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <FileWarning
+                          className={`w-3.5 h-3.5 shrink-0 ${isMismatchesActive ? 'text-amber-300' : 'text-zinc-400'}`}
+                          aria-hidden="true"
+                        />
+                        <span className="truncate">Metadata Mismatches</span>
+                      </div>
+                      {metadataMismatchesCount > 0 && (
+                        <span className="text-[10px] font-mono font-semibold tabular-nums px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          {metadataMismatchesCount}
+                        </span>
+                      )}
+                    </button>
                   )}
-                </button>
+                </React.Fragment>
               );
             })}
           </nav>

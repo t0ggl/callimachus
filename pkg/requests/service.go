@@ -218,6 +218,9 @@ func (s *RequestService) insertRequests(ctx context.Context, input CreateRequest
 		if err != nil {
 			return nil, err
 		}
+		if err := c.SaveIdealMetadata(ctx, book.ID, input.Title, input.Series, input.SeriesIndex, catalog.IdealSourceMatch); err != nil {
+			return nil, err
+		}
 		input.BookID = &book.ID
 		needed, err = s.missingActiveFormats(ctx, *input.BookID, input.Title, input.Author, formats)
 		if err != nil {
