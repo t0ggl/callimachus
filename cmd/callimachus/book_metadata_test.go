@@ -66,9 +66,13 @@ func TestMetadataCandidateISBNPreference(t *testing.T) {
 			if res.Code != http.StatusOK {
 				t.Fatalf("status = %d, body = %s", res.Code, res.Body)
 			}
-			var candidates []epub.Metadata
-			if err := json.Unmarshal(res.Body.Bytes(), &candidates); err != nil {
+			var resp metadataCandidatesResponse
+			if err := json.Unmarshal(res.Body.Bytes(), &resp); err != nil {
 				t.Fatal(err)
+			}
+			candidates := resp.Candidates
+			if resp.DefaultLanguage != "en" || resp.Language != "en" {
+				t.Fatalf("unexpected response languages: default=%q active=%q", resp.DefaultLanguage, resp.Language)
 			}
 			if len(candidates) != 4 || candidates[0].Title != test.firstTitle || candidates[0].ISBN13 != test.firstISBN {
 				t.Fatalf("unexpected candidate ranking: %+v", candidates)
@@ -252,20 +256,26 @@ func TestBookMetadataRepair(t *testing.T) {
 		t.Fatalf("unexpected EPUB metadata: %+v", meta)
 	}
 
-	var matches []epub.Metadata
-	if err := json.Unmarshal(request("GET", base+"metadata-candidates", nil, admin, 200), &matches); err != nil {
+	var matchesResp metadataCandidatesResponse
+	if err := json.Unmarshal(request("GET", base+"metadata-candidates", nil, admin, 200), &matchesResp); err != nil {
 		t.Fatal(err)
 	}
+	matches := matchesResp.Candidates
 	if len(matches) != 5 || matches[0].ISBN13 != "9781234567897" || matches[1].ISBN13 != "9780000000002" {
 		t.Fatalf("unexpected suggested matches: %+v", matches)
 	}
-	if got := strings.TrimSpace(string(request("GET", base+"metadata-candidates?q=Empty", nil, admin, 200))); got != "[]" {
-		t.Fatalf("unexpected empty response: %s", got)
-	}
-	request("GET", base+"metadata-candidates?q=Error", nil, admin, http.StatusBadGateway)
-	if err := json.Unmarshal(request("GET", base+"metadata-candidates?q=Other+Name", nil, admin, 200), &matches); err != nil {
+	var emptyResp metadataCandidatesResponse
+	if err := json.Unmarshal(request("GET", base+"metadata-candidates?q=Empty", nil, admin, 200), &emptyResp); err != nil {
 		t.Fatal(err)
 	}
+	if len(emptyResp.Candidates) != 0 || emptyResp.DefaultLanguage != "en" || emptyResp.Language != "en" {
+		t.Fatalf("unexpected empty response: %+v", emptyResp)
+	}
+	request("GET", base+"metadata-candidates?q=Error", nil, admin, http.StatusBadGateway)
+	if err := json.Unmarshal(request("GET", base+"metadata-candidates?q=Other+Name", nil, admin, 200), &matchesResp); err != nil {
+		t.Fatal(err)
+	}
+	matches = matchesResp.Candidates
 	if len(matches) != 1 || matches[0].Title != "Other Name" {
 		t.Fatalf("unexpected custom matches: %+v", matches)
 	}
@@ -544,4 +554,178 @@ func TestBookMetadataRepair_DeflatedDirectoriesAndErrorLogs(t *testing.T) {
 			t.Errorf("log error %q missing %q", errMsg, want)
 		}
 	}
+}
+
+func TestMetadataCandidatesLanguageFiltering(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	if _, err := db.Exec(`
+		INSERT INTO authors (id, name, sort_name) VALUES ('a', 'Frank Herbert', 'Herbert, Frank');
+		INSERT INTO books (id, title, author_id, release_date) VALUES ('b', 'Dune', 'a', '1965');
+		INSERT INTO book_editions (id, book_id, format, language) VALUES ('e', 'b', 'epub', 'en');
+		INSERT INTO media_assets (id, edition_id, file_path, file_size) VALUES ('asset', 'e', 'dune.epub', 0);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CALLIMACHUS_OPENLIBRARY_ENABLED", "true")
+	t.Setenv("CALLIMACHUS_HARDCOVER_API_KEY", "test-hc-key")
+	t.Setenv("CALLIMACHUS_GOOGLE_BOOKS_API_KEY", "test-gb-key")
+
+	transport := testutil.NewMockTransportForTest(t)
+	// OpenLibrary returns mixed-language results: German, French, multi-language work (ger+eng), Spanish, and untagged.
+	transport.RegisterRegexResponse(regexp.MustCompile(`^https://openlibrary\.org/search\.json\?`), 200, []byte(`{"docs":[
+		{"title":"Dune","author_name":["Frank Herbert"],"first_publish_year":1965,"publisher":["Heyne"],"language":["ger"]},
+		{"title":"Dune","author_name":["Frank Herbert"],"first_publish_year":1965,"publisher":["Robert Laffont"],"language":["fre"]},
+		{"title":"Dune","author_name":["Frank Herbert"],"first_publish_year":1965,"publisher":["Debolsillo"],"language":["spa"]},
+		{"title":"Dune","author_name":["Frank Herbert"],"first_publish_year":1965,"publisher":["Ace Multilingual"],"language":["ger","eng"]},
+		{"title":"Dune (Untagged)","author_name":["Frank Herbert"],"first_publish_year":1965,"publisher":["Mystery Press"]}
+	]}`), nil)
+	// Hardcover returns an English edition (code3: eng) and a German edition (code2: de).
+	transport.RegisterHandler("https://api.hardcover.app/v1/graphql", func(r *http.Request) (*http.Response, error) {
+		var input struct{ Query string }
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		body := `{"data":{"search":{"ids":[10,11]}}}`
+		if strings.Contains(input.Query, "SearchDetails") {
+			body = `{"data":{"books":[
+				{"id":10,"title":"Dune","release_year":1965,"contributions":[{"author":{"name":"Frank Herbert"}}],
+				 "default_cover_edition":{"language":{"code3":"eng"},"publisher":{"name":"Chilton"}}},
+				{"id":11,"title":"Der Wüstenplanet","release_year":1965,"contributions":[{"author":{"name":"Frank Herbert"}}],
+				 "default_cover_edition":{"language":{"code2":"de"},"publisher":{"name":"Heyne HC"}}}
+			]}}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	// Google Books returns en-US, fr-CA, and an undetermined "und" result (treated as untagged).
+	transport.RegisterRegexResponse(regexp.MustCompile(`^https://www\.googleapis\.com/books/v1/volumes\?`), 200, []byte(`{"items":[
+		{"volumeInfo":{"title":"Dune","authors":["Frank Herbert"],"publishedDate":"1965","publisher":"Chilton","language":"en-US"}},
+		{"volumeInfo":{"title":"Dune Edition Quebec","authors":["Frank Herbert"],"publishedDate":"1965","publisher":"Laffont QC","language":"fr-CA"}},
+		{"volumeInfo":{"title":"Dune Undetermined","authors":["Frank Herbert"],"publishedDate":"1965","publisher":"Unknown","language":"und"}}
+	]}`), nil)
+
+	s := &Server{db: db, prowlarrHTTPClient: transport.Client()}
+	fetchCandidates := func(t *testing.T, query string, wantStatus int) metadataCandidatesResponse {
+		t.Helper()
+		req := httptest.NewRequest("GET", "/api/books/b/metadata-candidates"+query, nil)
+		req.SetPathValue("id", "b")
+		res := httptest.NewRecorder()
+		s.handleMetadataCandidates(res, req)
+		if res.Code != wantStatus {
+			t.Fatalf("GET metadata-candidates%s: status %d, want %d; body=%s", query, res.Code, wantStatus, res.Body.String())
+		}
+		var out metadataCandidatesResponse
+		if wantStatus == http.StatusOK {
+			if err := json.Unmarshal(res.Body.Bytes(), &out); err != nil {
+				t.Fatalf("unmarshal response: %v", err)
+			}
+		}
+		return out
+	}
+
+	// 1. Default quality profile language ("en"): keeps normalized English matches (Hardcover eng,
+	// Google Books en-US deduplicated with Hardcover Chilton, OpenLibrary multi-lang ger+eng -> resolved as "en")
+	// plus untagged results (OpenLibrary untagged, Google Books "und" -> ""), while excluding de/fr/es.
+	t.Run("default english profile filters foreign results and includes untagged", func(t *testing.T) {
+		resp := fetchCandidates(t, "", http.StatusOK)
+		if resp.DefaultLanguage != "en" || resp.Language != "en" {
+			t.Fatalf("languages = default:%q active:%q, want en/en", resp.DefaultLanguage, resp.Language)
+		}
+		wantAvailable := []string{"de", "en", "es", "fr"}
+		if strings.Join(resp.AvailableLanguages, ",") != strings.Join(wantAvailable, ",") {
+			t.Errorf("availableLanguages = %v, want %v", resp.AvailableLanguages, wantAvailable)
+		}
+		// Chilton (HC eng + GB en-US deduped to 1), Ace Multilingual (OL ger+eng -> en),
+		// Dune (Untagged), Dune Undetermined ("und" -> "") => 4 unique candidates.
+		if len(resp.Candidates) != 4 {
+			t.Fatalf("got %d candidates, want 4: %+v", len(resp.Candidates), resp.Candidates)
+		}
+		for _, c := range resp.Candidates {
+			if c.Language != "" && c.Language != "en" {
+				t.Errorf("unexpected non-en language in default response: %+v", c)
+			}
+		}
+		// Explicit English matches rank ahead of equal-priority untagged results, and
+		// Hardcover "eng" + Google Books "en-US" deduplicated cleanly to one "Chilton" entry.
+		chiltonCount := 0
+		for _, c := range resp.Candidates {
+			if c.Publisher == "Chilton" {
+				chiltonCount++
+				if c.Language != "en" {
+					t.Errorf("Chilton candidate language = %q, want en", c.Language)
+				}
+			}
+			if c.Publisher == "Ace Multilingual" && c.Language != "en" {
+				t.Errorf("multi-language candidate language = %q, want en", c.Language)
+			}
+		}
+		if chiltonCount != 1 {
+			t.Errorf("expected Hardcover eng and Google Books en-US to deduplicate into 1 Chilton candidate, got %d", chiltonCount)
+		}
+	})
+
+	// 2. Switching language via equivalent code (French / fr-CA / fre) returns French + untagged.
+	t.Run("explicit language query normalizes equivalent codes", func(t *testing.T) {
+		for _, param := range []string{"?language=French", "?language=fr-CA", "?language=fre"} {
+			resp := fetchCandidates(t, param, http.StatusOK)
+			if resp.DefaultLanguage != "en" || resp.Language != "fr" {
+				t.Fatalf("%s: default=%q active=%q, want en/fr", param, resp.DefaultLanguage, resp.Language)
+			}
+			if len(resp.Candidates) != 4 {
+				t.Fatalf("%s: got %d candidates, want 4 (2 French + 2 untagged): %+v", param, len(resp.Candidates), resp.Candidates)
+			}
+			for _, c := range resp.Candidates {
+				if c.Language != "" && c.Language != "fr" {
+					t.Errorf("%s: unexpected language %q in %+v", param, c.Language, c)
+				}
+			}
+		}
+	})
+
+	// 3. Selecting "all" returns mixed-language results with normalized codes (capped at 5).
+	t.Run("all languages includes mixed results", func(t *testing.T) {
+		resp := fetchCandidates(t, "?language=all", http.StatusOK)
+		if resp.Language != "all" {
+			t.Fatalf("language = %q, want all", resp.Language)
+		}
+		if len(resp.Candidates) != 5 {
+			t.Fatalf("got %d candidates, want 5: %+v", len(resp.Candidates), resp.Candidates)
+		}
+		seenLangs := map[string]bool{}
+		for _, c := range resp.Candidates {
+			if c.Language != "" {
+				seenLangs[c.Language] = true
+			}
+		}
+		if len(seenLangs) < 2 {
+			t.Errorf("expected multiple languages in all-languages response, got %v", seenLangs)
+		}
+	})
+
+	// 4. Quality profile default language override via environment variable (CALLIMACHUS_ALLOWED_LANGUAGES).
+	t.Run("initializes from quality profile allowed languages", func(t *testing.T) {
+		t.Setenv("CALLIMACHUS_ALLOWED_LANGUAGES", "de-DE,en")
+		resp := fetchCandidates(t, "", http.StatusOK)
+		if resp.DefaultLanguage != "de" || resp.Language != "de" {
+			t.Fatalf("default=%q active=%q, want de/de", resp.DefaultLanguage, resp.Language)
+		}
+		for _, c := range resp.Candidates {
+			if c.Language != "" && c.Language != "de" {
+				t.Errorf("unexpected language %q for German profile: %+v", c.Language, c)
+			}
+		}
+		foundGermanMulti := false
+		for _, c := range resp.Candidates {
+			if c.Publisher == "Ace Multilingual" && c.Language == "de" {
+				foundGermanMulti = true
+			}
+		}
+		if !foundGermanMulti {
+			t.Errorf("expected multi-language OpenLibrary work to resolve as de under German profile: %+v", resp.Candidates)
+		}
+	})
+
+	// 5. Invalid language filter returns 400.
+	t.Run("invalid language filter rejected", func(t *testing.T) {
+		fetchCandidates(t, "?language=not-a-valid-language-tag", http.StatusBadRequest)
+	})
 }

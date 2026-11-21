@@ -201,7 +201,14 @@ func (p *OpenLibraryProvider) LookupByISBN(ctx context.Context, isbn string) (*B
 	}
 
 	if len(book.Languages) > 0 {
-		meta.Language = strings.TrimPrefix(book.Languages[0].Key, "/languages/")
+		for _, lang := range book.Languages {
+			if cleaned := strings.TrimSpace(strings.TrimPrefix(lang.Key, "/languages/")); cleaned != "" {
+				if meta.Language == "" {
+					meta.Language = cleaned
+				}
+				meta.Languages = append(meta.Languages, cleaned)
+			}
+		}
 	}
 
 	return &meta, nil
@@ -272,7 +279,14 @@ func (p *OpenLibraryProvider) Search(ctx context.Context, query string) ([]BookM
 			meta.CoverURL = fmt.Sprintf("https://covers.openlibrary.org/b/id/%d-L.jpg", doc.CoverI)
 		}
 		if len(doc.Language) > 0 {
-			meta.Language = doc.Language[0]
+			for _, lang := range doc.Language {
+				if cleaned := strings.TrimSpace(lang); cleaned != "" {
+					if meta.Language == "" {
+						meta.Language = cleaned
+					}
+					meta.Languages = append(meta.Languages, cleaned)
+				}
+			}
 		}
 		results = append(results, meta)
 	}

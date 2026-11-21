@@ -585,6 +585,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
       {selectedBook && (
         <BookDetailModal
           book={selectedBook}
+          defaultLanguage={qualityProfile.allowedLanguages[0]}
           isAdmin={isAdmin}
           canManage={canManage}
           canRequest={canRequest}

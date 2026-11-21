@@ -120,6 +120,21 @@ type hardcoverPublisher struct {
 	Name string `json:"name"`
 }
 
+type hardcoverLanguage struct {
+	Code2 string `json:"code2"`
+	Code3 string `json:"code3"`
+}
+
+func (l *hardcoverLanguage) preferredCode() string {
+	if l == nil {
+		return ""
+	}
+	if code := NormalizeLanguage(l.Code2); code != "" {
+		return code
+	}
+	return NormalizeLanguage(l.Code3)
+}
+
 type hardcoverEdition struct {
 	ID          int                 `json:"id"`
 	Title       string              `json:"title"`
@@ -129,6 +144,7 @@ type hardcoverEdition struct {
 	Pages       int                 `json:"pages"`
 	ReleaseDate string              `json:"release_date"`
 	Publisher   *hardcoverPublisher `json:"publisher"`
+	Language    *hardcoverLanguage  `json:"language"`
 }
 
 type hardcoverImage struct {
@@ -146,10 +162,7 @@ type hardcoverBookNode struct {
 	DefaultCoverEdition *struct {
 		EditionFormat string              `json:"edition_format"`
 		Publisher     *hardcoverPublisher `json:"publisher"`
-		Language      *struct {
-			Code2 string `json:"code2"`
-			Code3 string `json:"code3"`
-		} `json:"language"`
+		Language      *hardcoverLanguage  `json:"language"`
 	} `json:"default_cover_edition"`
 	ID                 int                     `json:"id"`
 	Title              string                  `json:"title"`
@@ -266,6 +279,28 @@ func mapHardcoverBookNode(b *hardcoverBookNode) BookMetadata {
 		applyHardcoverMembership(&meta, *bs)
 	}
 
+	addLanguage := func(lang *hardcoverLanguage) {
+		code := lang.preferredCode()
+		if code == "" {
+			return
+		}
+		if meta.Language == "" {
+			meta.Language = code
+		}
+		for _, existing := range meta.Languages {
+			if existing == code {
+				return
+			}
+		}
+		meta.Languages = append(meta.Languages, code)
+	}
+	if b.DefaultCoverEdition != nil {
+		addLanguage(b.DefaultCoverEdition.Language)
+		if meta.Publisher == "" && b.DefaultCoverEdition.Publisher != nil && b.DefaultCoverEdition.Publisher.Name != "" {
+			meta.Publisher = b.DefaultCoverEdition.Publisher.Name
+		}
+	}
+
 	for _, ed := range b.Editions {
 		if meta.ISBN13 == "" && ed.ISBN13 != nil && *ed.ISBN13 != "" {
 			meta.ISBN13 = *ed.ISBN13
@@ -276,6 +311,7 @@ func mapHardcoverBookNode(b *hardcoverBookNode) BookMetadata {
 		if meta.Publisher == "" && ed.Publisher != nil && ed.Publisher.Name != "" {
 			meta.Publisher = ed.Publisher.Name
 		}
+		addLanguage(ed.Language)
 	}
 
 	return meta
@@ -371,7 +407,8 @@ func (p *HardcoverProvider) Search(ctx context.Context, query string) ([]BookMet
  id title subtitle description release_year release_date image: cached_image
  contributions { author { name } contribution }
  `+hardcoverMembershipFields+`
- editions(where: {isbn_13: {_is_null: false}}, order_by: {id: asc}, limit: 1) { isbn_13 }
+ default_cover_edition { language { code2 code3 } publisher { name } }
+ editions(where: {isbn_13: {_is_null: false}}, order_by: {id: asc}, limit: 1) { isbn_13 language { code2 code3 } }
  } }`+hardcoverMembershipFragment, map[string]interface{}{"ids": search.Data.Search.IDs}, &res); err != nil {
 		return nil, err
 	}

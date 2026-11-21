@@ -106,6 +106,13 @@ func (s *Server) repairBook(ctx context.Context, id string) (epub.Metadata, []re
 	return book, files, rows.Err()
 }
 
+type metadataCandidatesResponse struct {
+	Candidates         []epub.Metadata `json:"candidates"`
+	DefaultLanguage    string          `json:"defaultLanguage"`
+	Language           string          `json:"language"`
+	AvailableLanguages []string        `json:"availableLanguages"`
+}
+
 func (s *Server) handleMetadataCandidates(w http.ResponseWriter, r *http.Request) {
 	book, files, err := s.repairBook(r.Context(), r.PathValue("id"))
 	if !checkRepairBook(w, err, len(files)) {
@@ -116,8 +123,28 @@ func (s *Server) handleMetadataCandidates(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Enter a search term of 500 characters or fewer.", http.StatusBadRequest)
 		return
 	}
+	rawLanguage := strings.TrimSpace(cmp.Or(r.URL.Query().Get("language"), r.URL.Query().Get("lang")))
+	if len(rawLanguage) > 64 {
+		http.Error(w, "Invalid language filter.", http.StatusBadRequest)
+		return
+	}
+	cfg, err := config.Load(r.Context(), s.db, s.baseOverrides)
+	if err != nil {
+		http.Error(w, "Unable to load library settings.", http.StatusInternalServerError)
+		return
+	}
+	defaultLanguage := metadata.DefaultProfileLanguage(cfg.Settings.AllowedLanguages)
+	selectedLanguage := defaultLanguage
+	if rawLanguage != "" {
+		selectedLanguage = metadata.NormalizeLanguageFilter(rawLanguage)
+		if selectedLanguage == "" {
+			http.Error(w, "Invalid language filter.", http.StatusBadRequest)
+			return
+		}
+	}
+
 	query := cmp.Or(custom, book.Title+" "+strings.Join(book.Authors, " "))
-	books, status := s.searchMetadata(r.Context(), query)
+	books, status := s.searchMetadataWithSettings(r.Context(), cfg.Settings, query)
 	if status != 0 {
 		http.Error(w, "Metadata sources are unavailable. Try again shortly.", status)
 		return
@@ -138,11 +165,24 @@ func (s *Server) handleMetadataCandidates(w http.ResponseWriter, r *http.Request
 	}
 
 	type rankedCandidate struct {
-		book     metadata.BookMetadata
-		priority float64
+		book             metadata.BookMetadata
+		priority         float64
+		explicitLanguage bool
 	}
+	availableSet := make(map[string]bool)
 	ranked := make([]rankedCandidate, 0, len(books))
 	for _, b := range books {
+		if strings.TrimSpace(b.Title) == "" {
+			continue
+		}
+		for _, lang := range metadata.BookLanguages(b) {
+			availableSet[lang] = true
+		}
+		matched, resolvedLang, explicitMatch := metadata.MatchLanguageFilter(b, selectedLanguage)
+		if !matched {
+			continue
+		}
+		b.Language = resolvedLang
 		b.ISBN13 = metadata.NormalizeISBN13(b.ISBN13)
 		if len(isbns) > 0 && !isbns[b.ISBN13] {
 			for _, alternate := range b.ISBNs {
@@ -156,10 +196,23 @@ func (s *Server) handleMetadataCandidates(w http.ResponseWriter, r *http.Request
 		if isbns[b.ISBN13] {
 			priority += 2 // Text scores range from 0 to 1.
 		}
-		ranked = append(ranked, rankedCandidate{b, priority})
+		ranked = append(ranked, rankedCandidate{
+			book:             b,
+			priority:         priority,
+			explicitLanguage: explicitMatch,
+		})
 	}
 	slices.SortStableFunc(ranked, func(a, b rankedCandidate) int {
-		return cmp.Compare(b.priority, a.priority)
+		if order := cmp.Compare(b.priority, a.priority); order != 0 {
+			return order
+		}
+		if selectedLanguage != metadata.LanguageAll && a.explicitLanguage != b.explicitLanguage {
+			if a.explicitLanguage {
+				return -1
+			}
+			return 1
+		}
+		return 0
 	})
 	candidates := make([]epub.Metadata, 0, 5)
 	for _, result := range ranked {
@@ -192,7 +245,17 @@ func (s *Server) handleMetadataCandidates(w http.ResponseWriter, r *http.Request
 			break
 		}
 	}
-	writeMetadataJSON(w, candidates)
+	availableLanguages := make([]string, 0, len(availableSet))
+	for lang := range availableSet {
+		availableLanguages = append(availableLanguages, lang)
+	}
+	slices.Sort(availableLanguages)
+	writeMetadataJSON(w, metadataCandidatesResponse{
+		Candidates:         candidates,
+		DefaultLanguage:    defaultLanguage,
+		Language:           selectedLanguage,
+		AvailableLanguages: availableLanguages,
+	})
 }
 
 func checkRepairBook(w http.ResponseWriter, err error, fileCount int) bool {
@@ -388,7 +451,8 @@ func repairTarget(library epub.Metadata, candidate *epub.Metadata) epub.Metadata
 	}
 	library.PublishDate = cmp.Or(strings.TrimSpace(candidate.PublishDate), library.PublishDate)
 	library.Publisher = cmp.Or(strings.TrimSpace(candidate.Publisher), library.Publisher)
-	library.Language = cmp.Or(strings.TrimSpace(candidate.Language), library.Language)
+	candidateLang := cmp.Or(metadata.NormalizeLanguage(candidate.Language), strings.TrimSpace(candidate.Language))
+	library.Language = cmp.Or(candidateLang, library.Language)
 	library.ISBN13 = cmp.Or(discoveryISBN13(candidate.ISBN13), library.ISBN13)
 	library.Description = cmp.Or(strings.TrimSpace(candidate.Description), library.Description)
 	return library
@@ -635,6 +699,7 @@ func updateCandidateMetadata(ctx context.Context, tx *sql.Tx, bookID string, boo
 		target.SeriesIndex, target.PublishDate, target.Description, bookID); err != nil {
 		return err
 	}
+	candidateLang := cmp.Or(metadata.NormalizeLanguage(candidate.Language), strings.TrimSpace(candidate.Language))
 	editions := make(map[string]bool)
 	for _, file := range files {
 		if editions[file.editionID] {
@@ -644,7 +709,7 @@ func updateCandidateMetadata(ctx context.Context, tx *sql.Tx, bookID string, boo
 			UPDATE book_editions SET publisher = COALESCE(NULLIF(?, ''), publisher),
 				language = COALESCE(NULLIF(?, ''), language), isbn13 = COALESCE(NULLIF(?, ''), isbn13),
 				publication_date = COALESCE(NULLIF(?, ''), publication_date), updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-			strings.TrimSpace(candidate.Publisher), strings.TrimSpace(candidate.Language), discoveryISBN13(candidate.ISBN13),
+			strings.TrimSpace(candidate.Publisher), candidateLang, discoveryISBN13(candidate.ISBN13),
 			strings.TrimSpace(candidate.PublishDate), file.editionID); err != nil {
 			return err
 		}

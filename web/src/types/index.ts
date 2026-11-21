@@ -101,6 +101,13 @@ export interface MetadataCandidate {
   description?: string;
 }
 
+export interface MetadataCandidatesResponse {
+  candidates: MetadataCandidate[];
+  defaultLanguage: string;
+  language: string;
+  availableLanguages: string[];
+}
+
 export interface MetadataDiff {
   field: string;
   fileValue: string;

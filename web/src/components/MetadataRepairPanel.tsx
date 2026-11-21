@@ -1,5 +1,13 @@
-import { useEffect, useId, useRef, useState } from 'react';
-import type { MetadataCandidate, MetadataDiff, MetadataPreview } from '../types';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import type { MetadataCandidate, MetadataCandidatesResponse, MetadataDiff, MetadataPreview } from '../types';
+import {
+  ALL_LANGUAGES,
+  buildLanguageOptions,
+  filterCandidatesByLanguage,
+  formatLanguageName,
+  normalizeLanguageCode,
+  normalizeLanguageFilter,
+} from '../utils/language';
 
 const fields: Record<string, string> = {
   title: 'Title', subtitle: 'Subtitle', authors: 'Authors', series: 'Series',
@@ -45,15 +53,58 @@ function Differences({ rows, before, after }: { rows: MetadataDiff[]; before: st
 
 interface Props {
   bookID: string;
+  defaultLanguage?: string;
   onBack: () => void;
   onApplied?: () => void;
 }
 
-export function MetadataRepairPanel({ bookID, onBack, onApplied }: Props) {
+function parseCandidatesPayload(
+  payload: MetadataCandidatesResponse | MetadataCandidate[],
+): {
+  candidates: MetadataCandidate[];
+  defaultLanguage?: string;
+  language?: string;
+  availableLanguages: string[];
+} {
+  if (Array.isArray(payload)) {
+    const discovered = new Set<string>();
+    for (const item of payload) {
+      const code = normalizeLanguageCode(item.language);
+      if (code) discovered.add(code);
+    }
+    return {
+      candidates: payload,
+      availableLanguages: Array.from(discovered).sort(),
+    };
+  }
+  const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+  const discovered = new Set<string>();
+  for (const lang of payload.availableLanguages ?? []) {
+    const code = normalizeLanguageCode(lang);
+    if (code) discovered.add(code);
+  }
+  for (const item of candidates) {
+    const code = normalizeLanguageCode(item.language);
+    if (code) discovered.add(code);
+  }
+  return {
+    candidates,
+    defaultLanguage: payload.defaultLanguage,
+    language: payload.language,
+    availableLanguages: Array.from(discovered).sort(),
+  };
+}
+
+export function MetadataRepairPanel({ bookID, defaultLanguage, onBack, onApplied }: Props) {
   const heading = useRef<HTMLHeadingElement>(null);
   const id = useId();
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState({ term: '', attempt: 0 });
+  const [defaultLang, setDefaultLang] = useState(
+    () => normalizeLanguageFilter(defaultLanguage) || 'en',
+  );
+  const [selectedLanguage, setSelectedLanguage] = useState<string | null>(null);
+  const [availableLanguages, setAvailableLanguages] = useState<string[]>([]);
   const [choices, setChoices] = useState<MetadataCandidate[]>();
   const [searchError, setSearchError] = useState('');
   const [candidate, setCandidate] = useState<MetadataCandidate>();
@@ -64,17 +115,55 @@ export function MetadataRepairPanel({ bookID, onBack, onApplied }: Props) {
   const [applying, setApplying] = useState(false);
   const [completed, setCompleted] = useState(false);
   const base = `/api/books/${encodeURIComponent(bookID)}`;
+  const effectiveLanguage = selectedLanguage ?? defaultLang;
+  const languageOptions = useMemo(
+    () => buildLanguageOptions(defaultLang, availableLanguages, effectiveLanguage),
+    [defaultLang, availableLanguages, effectiveLanguage],
+  );
+  const otherAvailableLanguages = useMemo(
+    () => availableLanguages.filter((lang) => lang !== effectiveLanguage),
+    [availableLanguages, effectiveLanguage],
+  );
 
   useEffect(() => { heading.current?.focus(); }, []);
 
   useEffect(() => {
     const controller = new AbortController();
-    const suffix = search.term ? `?q=${encodeURIComponent(search.term)}` : '';
-    void metadataRequest<MetadataCandidate[]>(base + '/metadata-candidates' + suffix, { signal: controller.signal })
-      .then((results) => { if (!controller.signal.aborted) setChoices(results); })
-      .catch((error: Error) => { if (!controller.signal.aborted) setSearchError(error.message); });
+    const queryParts: string[] = [];
+    if (search.term) queryParts.push(`q=${encodeURIComponent(search.term)}`);
+    if (selectedLanguage !== null) queryParts.push(`language=${encodeURIComponent(selectedLanguage)}`);
+    const suffix = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
+    void metadataRequest<MetadataCandidatesResponse | MetadataCandidate[]>(
+      base + '/metadata-candidates' + suffix,
+      { signal: controller.signal },
+    )
+      .then((payload) => {
+        if (controller.signal.aborted) return;
+        const parsed = parseCandidatesPayload(payload);
+        const resolvedDefault = normalizeLanguageFilter(parsed.defaultLanguage);
+        if (resolvedDefault) {
+          setDefaultLang(resolvedDefault);
+        }
+        const activeFilter =
+          selectedLanguage ??
+          normalizeLanguageFilter(parsed.language) ??
+          (resolvedDefault || defaultLang);
+        setAvailableLanguages(parsed.availableLanguages);
+        setChoices(filterCandidatesByLanguage(parsed.candidates, activeFilter));
+      })
+      .catch((error: Error) => {
+        if (!controller.signal.aborted) setSearchError(error.message);
+      });
     return () => controller.abort();
-  }, [base, search]);
+  }, [base, search, selectedLanguage]);
+
+  function handleLanguageChange(nextLanguage: string) {
+    const normalized = normalizeLanguageFilter(nextLanguage) || ALL_LANGUAGES;
+    setSearchError('');
+    setChoices(undefined);
+    select(undefined);
+    setSelectedLanguage(normalized);
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -129,19 +218,39 @@ export function MetadataRepairPanel({ bookID, onBack, onApplied }: Props) {
       {completed ? (
         <p role="status" className="text-sm text-emerald-300">Metadata applied to {candidate ? 'the library and EPUB files.' : 'the EPUB files.'}</p>
       ) : <>
-        <form className="space-y-2" onSubmit={(event) => {
+        <form className="space-y-3" onSubmit={(event) => {
           event.preventDefault();
           setSearchError('');
           setChoices(undefined);
           select(undefined);
           setSearch({ term: query.trim(), attempt: search.attempt + 1 });
         }}>
-          <label htmlFor={id + '-query'} className="text-sm font-medium">Search metadata by title</label>
-          <div className="flex flex-wrap gap-2">
-            <input id={id + '-query'} type="search" value={query} maxLength={500} disabled={applying}
-              onChange={(event) => setQuery(event.target.value)}
-              className={`min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm ${focus}`} />
-            <button type="submit" className={secondary} disabled={applying}>Search</button>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+            <div className="space-y-1.5">
+              <label htmlFor={id + '-query'} className="block text-sm font-medium text-zinc-200">Search metadata by title</label>
+              <div className="flex gap-2">
+                <input id={id + '-query'} type="search" value={query} maxLength={500} disabled={applying}
+                  onChange={(event) => setQuery(event.target.value)}
+                  className={`min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 ${focus}`} />
+                <button type="submit" className={secondary} disabled={applying}>Search</button>
+              </div>
+            </div>
+            <div className="space-y-1.5 sm:min-w-[11rem]">
+              <label htmlFor={id + '-language'} className="block text-sm font-medium text-zinc-200">Language</label>
+              <select
+                id={id + '-language'}
+                value={effectiveLanguage}
+                disabled={applying}
+                onChange={(event) => handleLanguageChange(event.target.value)}
+                className={`w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 ${focus}`}
+              >
+                {languageOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </form>
         <fieldset disabled={applying} className="min-w-0 space-y-1">
@@ -152,8 +261,9 @@ export function MetadataRepairPanel({ bookID, onBack, onApplied }: Props) {
             <span>Use current library metadata</span>
           </label>
           {choices?.map((choice, index) => {
+            const normalizedLang = normalizeLanguageCode(choice.language);
             const edition = [
-              choice.authors?.join(', '), choice.publish_date, choice.publisher, choice.language,
+              choice.authors?.join(', '), choice.publish_date, choice.publisher, normalizedLang || choice.language,
               choice.isbn13 && `ISBN ${choice.isbn13}`,
             ].filter(Boolean).join(' · ');
             return (
@@ -169,7 +279,13 @@ export function MetadataRepairPanel({ bookID, onBack, onApplied }: Props) {
           })}
           {searchError && <p role="alert" className="text-sm text-red-300">{searchError}</p>}
           {!choices && !searchError && <p role="status" className="text-sm text-zinc-300">Searching for matches…</p>}
-          {choices?.length === 0 && <p role="status" className="text-sm text-zinc-300">No matches found. Try another title.</p>}
+          {choices?.length === 0 && (
+            <p role="status" className="text-sm text-zinc-300">
+              {effectiveLanguage !== ALL_LANGUAGES && otherAvailableLanguages.length > 0
+                ? `No matches found for ${formatLanguageName(effectiveLanguage)}. Try another title or switch languages.`
+                : 'No matches found. Try another title.'}
+            </p>
+          )}
         </fieldset>
         <div className="space-y-3 border-t border-zinc-800 pt-4">
           <h4 className="text-sm font-semibold">Preview changes</h4>

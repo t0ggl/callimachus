@@ -77,6 +77,7 @@ interface BookDetailModalProps {
   onClose: () => void;
   activity?: React.ReactNode;
   initialPanel?: 'repair';
+  defaultLanguage?: string;
   isAdmin?: boolean;
   canManage?: boolean;
   canRequest?: boolean;
@@ -108,6 +109,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   onClose,
   activity,
   initialPanel,
+  defaultLanguage,
   isAdmin,
   canManage,
   canRequest,
@@ -711,7 +713,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
 
         {/* Content body */}
         {repairing ? (
-          <MetadataRepairPanel key={currentBook.id} bookID={currentBook.id} onApplied={onMetadataApplied}
+          <MetadataRepairPanel key={currentBook.id} bookID={currentBook.id} defaultLanguage={defaultLanguage} onApplied={onMetadataApplied}
             onBack={() => {
               setRepairBookID(undefined);
               requestAnimationFrame(() => actionsMenuTriggerRef.current?.focus());

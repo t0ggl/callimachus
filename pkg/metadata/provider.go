@@ -40,6 +40,7 @@ type BookMetadata struct {
 	CoverURL      string            `json:"cover_url"`
 	Genres        []string          `json:"genres"`
 	Language      string            `json:"language"`
+	Languages     []string          `json:"languages,omitempty"`
 	Chapters      []ChapterMetadata `json:"chapters"`
 	DurationSec   float64           `json:"duration_sec"`
 

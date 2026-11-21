@@ -202,16 +202,20 @@ func (s *Server) searchMetadata(ctx context.Context, query string) ([]metadata.B
 	if err != nil {
 		return nil, http.StatusInternalServerError
 	}
+	return s.searchMetadataWithSettings(ctx, cfg.Settings, query)
+}
+
+func (s *Server) searchMetadataWithSettings(ctx context.Context, settings config.Settings, query string) ([]metadata.BookMetadata, int) {
 	client := s.prowlarrHTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
 	}
 	var providers []metadata.Provider
-	if cfg.Settings.OpenLibraryEnabled {
+	if settings.OpenLibraryEnabled {
 		providers = append(providers, metadata.NewOpenLibraryProvider(metadata.WithOpenLibraryClient(client)))
 	}
-	if cfg.Settings.HardcoverAPIKey != "" {
-		providers = append(providers, metadata.NewHardcoverProvider(cfg.Settings.HardcoverAPIKey, metadata.WithHardcoverClient(client)))
+	if settings.HardcoverAPIKey != "" {
+		providers = append(providers, metadata.NewHardcoverProvider(settings.HardcoverAPIKey, metadata.WithHardcoverClient(client)))
 	}
 	var books []metadata.BookMetadata
 	success := false
@@ -223,8 +227,8 @@ func (s *Server) searchMetadata(ctx context.Context, query string) ([]metadata.B
 			books = append(found, books...)
 		}
 	}
-	if cfg.Settings.GoogleBooksAPIKey != "" {
-		found, err := searchGoogleBooks(ctx, client, query, cfg.Settings.GoogleBooksAPIKey)
+	if settings.GoogleBooksAPIKey != "" {
+		found, err := searchGoogleBooks(ctx, client, query, settings.GoogleBooksAPIKey)
 		logMetadataResponse(ctx, "Google Books", len(found), err)
 		if err == nil {
 			success = true
@@ -434,6 +438,11 @@ func mergeDiscoveryBook(dst *metadata.BookMetadata, src metadata.BookMetadata) {
 	dst.PublishDate = cmp.Or(dst.PublishDate, src.PublishDate)
 	dst.Publisher = cmp.Or(dst.Publisher, src.Publisher)
 	dst.Language = cmp.Or(dst.Language, src.Language)
+	for _, lang := range metadata.BookLanguages(src) {
+		if !slices.Contains(dst.Languages, lang) {
+			dst.Languages = append(dst.Languages, lang)
+		}
+	}
 	dst.ASIN = cmp.Or(dst.ASIN, src.ASIN)
 	dst.HardcoverID = cmp.Or(dst.HardcoverID, src.HardcoverID)
 	dst.OpenLibraryID = cmp.Or(dst.OpenLibraryID, src.OpenLibraryID)

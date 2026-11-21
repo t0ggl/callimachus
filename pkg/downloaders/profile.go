@@ -143,8 +143,13 @@ func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string)
 	allowedLangSet := make(map[string]bool, len(allowedLangs))
 	for _, l := range allowedLangs {
 		clean := strings.ToLower(strings.TrimSpace(l))
+		if clean == "" {
+			continue
+		}
 		allowedLangSet[clean] = true
-		if code, ok := languageCodeMap[clean]; ok {
+		if code := metadata.NormalizeLanguage(clean); code != "" {
+			allowedLangSet[code] = true
+		} else if code, ok := languageCodeMap[clean]; ok {
 			allowedLangSet[code] = true
 		}
 	}
@@ -152,7 +157,9 @@ func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string)
 	detectedLang := ""
 	if release.Language != "" {
 		clean := strings.ToLower(strings.TrimSpace(release.Language))
-		if code, ok := languageCodeMap[clean]; ok {
+		if code := metadata.NormalizeLanguage(clean); code != "" {
+			detectedLang = code
+		} else if code, ok := languageCodeMap[clean]; ok {
 			detectedLang = code
 		} else {
 			detectedLang = clean
