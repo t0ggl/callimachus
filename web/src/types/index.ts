@@ -30,6 +30,38 @@ export interface Series {
   description?: string;
   totalBooks?: number;
   status?: string;
+  monitored?: boolean;
+}
+
+export type BulkItemKind = 'book' | 'series';
+export type BulkActionType = 'monitor' | 'unmonitor' | 'discover' | 'refresh' | 'delete';
+
+export interface BulkSelectionItem {
+  kind: BulkItemKind;
+  id: string;
+  title: string;
+  subtitle?: string;
+  bookCount?: number;
+  monitored?: boolean;
+}
+
+export interface BulkActionItemResult {
+  kind: BulkItemKind;
+  id: string;
+  title?: string;
+  ok: boolean;
+  error?: string;
+  monitored?: boolean;
+  affectedBookCount?: number;
+  deletedFiles?: number;
+}
+
+export interface BulkActionReport {
+  action: BulkActionType;
+  total: number;
+  succeeded: number;
+  failed: number;
+  results: BulkActionItemResult[];
 }
 
 export interface MediaAsset {

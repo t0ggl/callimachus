@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -74,17 +75,33 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	deletedFiles, status, errMsg := s.deleteBook(r.Context(), id, deleteFiles)
+	if errMsg != "" {
+		http.Error(w, errMsg, status)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(deleteBookResponse{
+		Deleted:      true,
+		DeletedFiles: deletedFiles,
+	})
+}
+
+func (s *Server) deleteBook(ctx context.Context, id string, deleteFiles bool) (int, int, string) {
+	if s.db == nil {
+		return 0, http.StatusInternalServerError, "Database unavailable"
+	}
+
 	s.metadataRepairMu.Lock()
 	defer s.metadataRepairMu.Unlock()
 	libraryScanMu.Lock()
 	defer libraryScanMu.Unlock()
 
-	ctx := r.Context()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		slog.ErrorContext(ctx, "delete book failed", "book", id, "error", err)
-		http.Error(w, "Unable to delete book.", http.StatusInternalServerError)
-		return
+		return 0, http.StatusInternalServerError, "Unable to delete book."
 	}
 	defer tx.Rollback()
 
@@ -92,13 +109,11 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 	var seriesID sql.NullString
 	err = tx.QueryRowContext(ctx, `SELECT author_id, series_id FROM books WHERE id = ?`, id).Scan(&authorID, &seriesID)
 	if errors.Is(err, sql.ErrNoRows) {
-		http.Error(w, "Book not found", http.StatusNotFound)
-		return
+		return 0, http.StatusNotFound, "Book not found"
 	}
 	if err != nil {
 		slog.ErrorContext(ctx, "delete book lookup failed", "book", id, "error", err)
-		http.Error(w, "Unable to delete book.", http.StatusInternalServerError)
-		return
+		return 0, http.StatusInternalServerError, "Unable to delete book."
 	}
 
 	var activeImport bool
@@ -112,12 +127,10 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 		)`, id, id).Scan(&activeImport)
 	if err != nil {
 		slog.ErrorContext(ctx, "delete book import check failed", "book", id, "error", err)
-		http.Error(w, "Unable to delete book.", http.StatusInternalServerError)
-		return
+		return 0, http.StatusInternalServerError, "Unable to delete book."
 	}
 	if activeImport {
-		http.Error(w, "Cannot delete book while an import or conversion is finishing.", http.StatusConflict)
-		return
+		return 0, http.StatusConflict, "Cannot delete book while an import or conversion is finishing."
 	}
 
 	var assetPaths []string
@@ -130,40 +143,35 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 			ORDER BY m.file_path, m.id`, id)
 		if err != nil {
 			slog.ErrorContext(ctx, "delete book asset query failed", "book", id, "error", err)
-			http.Error(w, "Unable to delete book.", http.StatusInternalServerError)
-			return
+			return 0, http.StatusInternalServerError, "Unable to delete book."
 		}
 		for rows.Next() {
 			var p string
 			if err := rows.Scan(&p); err != nil {
 				rows.Close()
 				slog.ErrorContext(ctx, "delete book asset scan failed", "book", id, "error", err)
-				http.Error(w, "Unable to delete book.", http.StatusInternalServerError)
-				return
+				return 0, http.StatusInternalServerError, "Unable to delete book."
 			}
 			assetPaths = append(assetPaths, p)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
 			slog.ErrorContext(ctx, "delete book asset rows failed", "book", id, "error", err)
-			http.Error(w, "Unable to delete book.", http.StatusInternalServerError)
-			return
+			return 0, http.StatusInternalServerError, "Unable to delete book."
 		}
 		rows.Close()
 	}
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM books WHERE id = ?`, id); err != nil {
 		slog.ErrorContext(ctx, "delete book query failed", "book", id, "error", err)
-		http.Error(w, "Unable to delete book.", http.StatusInternalServerError)
-		return
+		return 0, http.StatusInternalServerError, "Unable to delete book."
 	}
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM authors WHERE id = ? AND monitored = 0 AND discovery_checked_at IS NULL
 		AND NOT EXISTS (SELECT 1 FROM books WHERE author_id = authors.id)
 		AND NOT EXISTS (SELECT 1 FROM catalog_actions WHERE kind = 'authors' AND entity_id = authors.id)`, authorID); err != nil {
 		slog.ErrorContext(ctx, "delete book author cleanup failed", "book", id, "error", err)
-		http.Error(w, "Unable to delete book.", http.StatusInternalServerError)
-		return
+		return 0, http.StatusInternalServerError, "Unable to delete book."
 	}
 	if seriesID.Valid {
 		if _, err := tx.ExecContext(ctx, `
@@ -171,8 +179,7 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 			AND NOT EXISTS (SELECT 1 FROM books WHERE series_id = series.id)
 			AND NOT EXISTS (SELECT 1 FROM catalog_actions WHERE kind = 'series' AND entity_id = series.id)`, seriesID.String); err != nil {
 			slog.ErrorContext(ctx, "delete book series cleanup failed", "book", id, "error", err)
-			http.Error(w, "Unable to delete book.", http.StatusInternalServerError)
-			return
+			return 0, http.StatusInternalServerError, "Unable to delete book."
 		}
 	}
 
@@ -184,8 +191,7 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 		cfg, err := config.Load(ctx, s.db, s.baseOverrides)
 		if err != nil {
 			slog.ErrorContext(ctx, "delete book config load failed", "book", id, "error", err)
-			http.Error(w, "Unable to delete book.", http.StatusInternalServerError)
-			return
+			return 0, http.StatusInternalServerError, "Unable to delete book."
 		}
 		if cfg.Settings.LibraryRoot != "" {
 			if absRoot, err := filepath.Abs(cfg.Settings.LibraryRoot); err == nil {
@@ -195,8 +201,7 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 					defer root.Close()
 				} else if !errors.Is(err, os.ErrNotExist) {
 					slog.ErrorContext(ctx, "delete book open root failed", "book", id, "error", err)
-					http.Error(w, "Unable to delete book files.", http.StatusInternalServerError)
-					return
+					return 0, http.StatusInternalServerError, "Unable to delete book files."
 				}
 			}
 		}
@@ -213,8 +218,7 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 						SELECT EXISTS(SELECT 1 FROM media_assets WHERE substr(file_path, 1, length(?)) = ?)`,
 						dirAbs, dirAbs).Scan(&shared); err != nil {
 						slog.ErrorContext(ctx, "delete book shared dir check failed", "book", id, "error", err)
-						http.Error(w, "Unable to delete book.", http.StatusInternalServerError)
-						return
+						return 0, http.StatusInternalServerError, "Unable to delete book."
 					}
 					sharedDirs[dirAbs] = shared
 				}
@@ -226,8 +230,7 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 						SELECT EXISTS(SELECT 1 FROM media_assets WHERE substr(file_path, 1, length(?)) = ?)`,
 						stemPrefix, stemPrefix).Scan(&shared); err != nil {
 						slog.ErrorContext(ctx, "delete book shared stem check failed", "book", id, "error", err)
-						http.Error(w, "Unable to delete book.", http.StatusInternalServerError)
-						return
+						return 0, http.StatusInternalServerError, "Unable to delete book."
 					}
 					sharedStems[stemPrefix] = shared
 				}
@@ -237,8 +240,7 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 
 	if err := tx.Commit(); err != nil {
 		slog.ErrorContext(ctx, "delete book commit failed", "book", id, "error", err)
-		http.Error(w, "Unable to delete book.", http.StatusInternalServerError)
-		return
+		return 0, http.StatusInternalServerError, "Unable to delete book."
 	}
 
 	deletedFiles := 0
@@ -247,16 +249,11 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 		deletedFiles, fileErr = deleteLibraryBookFiles(root, rootPath, assetPaths, sharedDirs, sharedStems)
 		if fileErr != nil {
 			slog.ErrorContext(ctx, "delete book files failed", "book", id, "error", fileErr)
-			http.Error(w, "Book removed from library, but some files could not be deleted.", http.StatusInternalServerError)
-			return
+			return deletedFiles, http.StatusInternalServerError, "Book removed from library, but some files could not be deleted."
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(deleteBookResponse{
-		Deleted:      true,
-		DeletedFiles: deletedFiles,
-	})
+	return deletedFiles, http.StatusOK, ""
 }
 
 func deleteLibraryBookFiles(root *os.Root, rootPath string, assetPaths []string, sharedDirs, sharedStems map[string]bool) (int, error) {

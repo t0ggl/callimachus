@@ -58,9 +58,10 @@ type Config struct {
 
 // Server coordinates the database, background workers, and HTTP services.
 type Server struct {
-	catalogMonitor     *catalog.Monitor
-	monitorDone        chan struct{}
-	monitorWake        chan struct{}
+	catalogMonitor      *catalog.Monitor
+	monitorDone         chan struct{}
+	monitorWake         chan struct{}
+	refreshBookMetadata func(context.Context, string) error
 	acquisition        *requests.Acquisition
 	acquisitionCancel  context.CancelFunc
 	acquisitionDone    chan struct{}

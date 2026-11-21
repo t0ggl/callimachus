@@ -218,6 +218,7 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/books/{id}/cover", s.handleBookCover)
 	mux.Handle("GET /api/books/{id}/files/{assetId}", auth.RequireAuth()(http.HandlerFunc(s.handleBookFile)))
 	mux.Handle("POST /api/library/scan", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleScanLibrary)))
+	mux.Handle("POST /api/library/bulk", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleLibraryBulk)))
 	mux.Handle("POST /api/acquisition/failure", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleAcquisitionFailure)))
 	mux.HandleFunc("GET /api/books", s.handleGetBooks)
 	mux.HandleFunc("GET /api/books/", s.handleGetBooks)
