@@ -344,7 +344,8 @@ describe('App Integration', () => {
 
     await user.click(await screen.findByTestId('book-card-book_1'));
     const dialog = await screen.findByRole('dialog', { name: /Details for The Obsidian Path/i });
-    await user.click(within(dialog).getByRole('button', { name: 'Delete Book' }));
+    await user.click(within(dialog).getByRole('button', { name: 'More actions' }));
+    await user.click(within(dialog).getByRole('menuitem', { name: 'Delete Book' }));
     await user.click(within(dialog).getByRole('button', { name: 'Confirm Delete' }));
 
     await waitFor(() => {

@@ -40,11 +40,13 @@ it('shows Refresh Metadata only to curators/admins on persisted books and update
   const { rerender } = render(
     <BookDetailModal book={baseBook} canManage={false} canRequest={true} isAdmin={false} onClose={vi.fn()} />
   );
-  expect(screen.queryByRole('button', { name: 'Refresh Metadata' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('menuitem', { name: 'Refresh Metadata' })).not.toBeInTheDocument();
 
   // Hidden on unpersisted books (id === '')
   rerender(<BookDetailModal book={{ ...baseBook, id: '' }} canManage={true} isAdmin={true} onClose={vi.fn()} />);
-  expect(screen.queryByRole('button', { name: 'Refresh Metadata' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('menuitem', { name: 'Refresh Metadata' })).not.toBeInTheDocument();
 
   let resolveFetch!: (value: Response) => void;
   const fetchMock = vi.fn(
@@ -68,12 +70,18 @@ it('shows Refresh Metadata only to curators/admins on persisted books and update
     />
   );
 
-  const refreshButton = screen.getByRole('button', { name: 'Refresh Metadata' });
-  expect(refreshButton).toBeEnabled();
-  await user.click(refreshButton);
+  await user.click(screen.getByRole('button', { name: 'More actions' }));
+  const refreshItem = screen.getByRole('menuitem', { name: 'Refresh Metadata' });
+  expect(refreshItem).toBeEnabled();
+  await user.click(refreshItem);
 
   expect(fetchMock).toHaveBeenCalledWith('/api/books/book-refresh-1/refresh', { method: 'POST' });
-  expect(screen.getByRole('button', { name: 'Refreshing…' })).toBeDisabled();
+  expect(screen.getByRole('status')).toHaveTextContent('Refreshing metadata…');
+
+  // Reopening the menu while in-flight shows Refreshing… disabled.
+  await user.click(screen.getByRole('button', { name: 'More actions' }));
+  expect(screen.getByRole('menuitem', { name: 'Refreshing…' })).toBeDisabled();
+  await user.keyboard('{Escape}');
 
   const refreshedBook: Book = {
     ...baseBook,
@@ -105,10 +113,12 @@ it('shows an accessible alert if Refresh Metadata fails', async () => {
   vi.stubGlobal('fetch', fetchMock);
 
   render(<BookDetailModal book={baseBook} canManage={true} onClose={vi.fn()} />);
-  await user.click(screen.getByRole('button', { name: 'Refresh Metadata' }));
+  await user.click(screen.getByRole('button', { name: 'More actions' }));
+  await user.click(screen.getByRole('menuitem', { name: 'Refresh Metadata' }));
 
   expect(await screen.findByRole('alert')).toHaveTextContent('No matching metadata found for this book.');
-  expect(screen.getByRole('button', { name: 'Refresh Metadata' })).toBeEnabled();
+  await user.click(screen.getByRole('button', { name: 'More actions' }));
+  expect(screen.getByRole('menuitem', { name: 'Refresh Metadata' })).toBeEnabled();
 });
 
 it('wires bulk metadata refresh in App library multi-select and displays refreshed descriptions in book view', async () => {

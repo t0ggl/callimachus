@@ -23,13 +23,20 @@ const book: Book = {
 
 afterEach(() => vi.unstubAllGlobals());
 
-it('offers metadata repair only to admins with an EPUB asset', () => {
+it('offers metadata repair only to admins with an EPUB asset', async () => {
+  const user = userEvent.setup({ delay: null });
   const { rerender } = render(<BookDetailModal book={book} onClose={vi.fn()} />);
+  expect(screen.queryByRole('button', { name: 'More actions' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Fix Metadata' })).toBeNull();
+
   rerender(<BookDetailModal book={{ ...book, editions: [book.editions[1]] }} onClose={vi.fn()} isAdmin />);
-  expect(screen.queryByRole('button', { name: 'Fix Metadata' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'More actions' }));
+  expect(screen.queryByRole('menuitem', { name: 'Fix Metadata' })).toBeNull();
+  await user.keyboard('{Escape}');
+
   rerender(<BookDetailModal book={book} onClose={vi.fn()} isAdmin />);
-  expect(screen.getByRole('button', { name: 'Fix Metadata' })).toBeVisible();
+  await user.click(screen.getByRole('button', { name: 'More actions' }));
+  expect(screen.getByRole('menuitem', { name: 'Fix Metadata' })).toBeVisible();
 });
 
 it('searches, previews the selected candidate and applies only on confirmation', async () => {
@@ -70,7 +77,8 @@ it('searches, previews the selected candidate and applies only on confirmation',
   const applied = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
   render(<BookDetailModal book={book} onClose={vi.fn()} isAdmin onMetadataApplied={applied} />);
-  await user.click(screen.getByRole('button', { name: 'Fix Metadata' }));
+  await user.click(screen.getByRole('button', { name: 'More actions' }));
+  await user.click(screen.getByRole('menuitem', { name: 'Fix Metadata' }));
   expect(await screen.findByText('Old EPUB title')).toBeVisible();
   expect(screen.getByText('Library title')).toBeVisible();
   expect(await screen.findByRole('radio', { name: /Suggested title/ })).toBeVisible();
@@ -334,29 +342,32 @@ it('allows only admins to delete a persisted book with file deletion defaulting 
   vi.stubGlobal('fetch', fetchMock);
 
   const { rerender } = render(<BookDetailModal book={book} onClose={vi.fn()} onBookDeleted={onBookDeleted} />);
-  expect(screen.queryByRole('button', { name: 'Delete Book' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('menuitem', { name: 'Delete Book' })).not.toBeInTheDocument();
 
   rerender(<BookDetailModal book={{ ...book, id: '' }} isAdmin onClose={vi.fn()} onBookDeleted={onBookDeleted} />);
-  expect(screen.queryByRole('button', { name: 'Delete Book' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('menuitem', { name: 'Delete Book' })).not.toBeInTheDocument();
 
   rerender(<BookDetailModal book={book} isAdmin onClose={vi.fn()} onBookDeleted={onBookDeleted} />);
-  const deleteTrigger = screen.getByRole('button', { name: 'Delete Book' });
-  await user.click(deleteTrigger);
+  await user.click(screen.getByRole('button', { name: 'More actions' }));
+  await user.click(screen.getByRole('menuitem', { name: 'Delete Book' }));
 
   const region = screen.getByRole('region', { name: 'Confirm book deletion' });
   const checkbox = within(region).getByRole('checkbox', { name: /Also delete files from disk/i });
   expect(checkbox).not.toBeChecked();
 
-  // Check, then cancel: checkbox resets to unchecked and focus returns to trigger.
+  // Check, then cancel: checkbox resets to unchecked and focus returns to overflow menu trigger.
   await user.click(checkbox);
   expect(checkbox).toBeChecked();
   await user.click(within(region).getByRole('button', { name: 'Cancel' }));
   expect(screen.queryByRole('region', { name: 'Confirm book deletion' })).not.toBeInTheDocument();
-  const restoredTrigger = screen.getByRole('button', { name: 'Delete Book' });
+  const restoredTrigger = screen.getByRole('button', { name: 'More actions' });
   await waitFor(() => expect(restoredTrigger).toHaveFocus());
 
   // Reopen and confirm with default (off) file deletion.
   await user.click(restoredTrigger);
+  await user.click(screen.getByRole('menuitem', { name: 'Delete Book' }));
   const reopened = screen.getByRole('region', { name: 'Confirm book deletion' });
   expect(within(reopened).getByRole('checkbox', { name: /Also delete files from disk/i })).not.toBeChecked();
   await user.click(within(reopened).getByRole('button', { name: 'Confirm Delete' }));
@@ -367,7 +378,8 @@ it('allows only admins to delete a persisted book with file deletion defaulting 
   // Open again, opt in to file deletion, and confirm.
   onBookDeleted.mockClear();
   rerender(<BookDetailModal book={{ ...book }} isAdmin onClose={vi.fn()} onBookDeleted={onBookDeleted} />);
-  await user.click(screen.getByRole('button', { name: 'Delete Book' }));
+  await user.click(screen.getByRole('button', { name: 'More actions' }));
+  await user.click(screen.getByRole('menuitem', { name: 'Delete Book' }));
   const secondConfirm = screen.getByRole('region', { name: 'Confirm book deletion' });
   await user.click(within(secondConfirm).getByRole('checkbox', { name: /Also delete files from disk/i }));
   await user.click(within(secondConfirm).getByRole('button', { name: 'Confirm Delete' }));
@@ -390,7 +402,8 @@ it('shows an error alert when deleting a book fails', async () => {
   );
   render(<BookDetailModal book={book} isAdmin onClose={vi.fn()} onBookDeleted={onBookDeleted} />);
 
-  await user.click(screen.getByRole('button', { name: 'Delete Book' }));
+  await user.click(screen.getByRole('button', { name: 'More actions' }));
+  await user.click(screen.getByRole('menuitem', { name: 'Delete Book' }));
   await user.click(screen.getByRole('button', { name: 'Confirm Delete' }));
 
   expect(await screen.findByRole('alert')).toHaveTextContent(

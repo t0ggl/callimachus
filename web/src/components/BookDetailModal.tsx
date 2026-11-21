@@ -1,6 +1,6 @@
 import { EntityLink } from './EntityLink';
-import React, { useEffect, useState } from 'react';
-import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download, Bell, Trash2, Upload, Search, Loader2, RefreshCw } from 'lucide-react';
+import React, { useEffect, useId, useState } from 'react';
+import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download, Bell, Trash2, Upload, Search, Loader2, RefreshCw, MoreHorizontal, Wrench } from 'lucide-react';
 import { ManualSearch } from './ManualSearch';
 import { MetadataRepairPanel } from './MetadataRepairPanel';
 import { CoverFinderPanel } from './CoverFinderPanel';
@@ -116,13 +116,17 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   onBookDeleted,
 }) => {
   const dialog = React.useRef<HTMLDialogElement>(null);
-  const fixButton = React.useRef<HTMLButtonElement>(null);
+  const actionsMenuContainerRef = React.useRef<HTMLDivElement>(null);
+  const actionsMenuTriggerRef = React.useRef<HTMLButtonElement>(null);
+  const actionsMenuRef = React.useRef<HTMLDivElement>(null);
+  const pendingMenuFocusRef = React.useRef<'first' | 'last' | null>(null);
+  const actionsMenuId = useId();
   const findCoverButton = React.useRef<HTMLButtonElement>(null);
-  const deleteTrigger = React.useRef<HTMLButtonElement>(null);
   const cancelDeleteButton = React.useRef<HTMLButtonElement>(null);
   const coverInputRef = React.useRef<HTMLInputElement>(null);
   const [prevBook, setPrevBook] = useState<Book | null>(book);
   const [activeBook, setActiveBook] = useState<Book | null>(book);
+  const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   const [repairBookID, setRepairBookID] = useState<string | undefined>(() =>
     initialPanel === 'repair' && book?.id ? book.id : undefined
   );
@@ -156,6 +160,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     setActionError('');
     setDeleteError('');
     if (!sameResolvingBook) {
+      setActionsMenuOpen(false);
       setShowDownloadOptions(false);
       setRepairBookID(initialPanel === 'repair' && book?.id ? book.id : undefined);
       setConfirmDelete(false);
@@ -171,6 +176,38 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     }
   }
 
+  const currentBook = activeBook ?? book;
+  const hasAssets = Boolean(currentBook?.editions.some((edition) => edition.assets.length > 0));
+  const canDelete = Boolean(isAdmin && currentBook?.id);
+  const canRefreshMetadata = Boolean((canManage || isAdmin) && currentBook?.id);
+  const canUploadCover = Boolean((canManage || isAdmin) && currentBook?.id && hasAssets);
+  const findingCover = canUploadCover && findingCoverBookID === currentBook?.id;
+  const canRepair = Boolean(
+    isAdmin &&
+      currentBook?.id &&
+      currentBook.editions.some((edition) =>
+        edition.assets.some((asset) => asset.filename?.toLowerCase().endsWith('.epub'))
+      )
+  );
+  const repairing = canRepair && repairBookID === currentBook?.id;
+  const subpanelOpen = repairing || findingCover;
+  const isOwned = Boolean(
+    currentBook &&
+      (currentBook.state === 'In library' ||
+        (currentBook.state === undefined && (hasAssets || currentBook.formats.length > 0)))
+  );
+  const allowRequest = Boolean(canRequest ?? canManage);
+  const showMonitorControl = !isOwned && Boolean(canManage);
+  const showInlineDownloadOptions = Boolean(!activity && !subpanelOpen && allowRequest && !hasAssets);
+  const showOverflowRefresh = Boolean(!activity && canRefreshMetadata);
+  const showOverflowRepair = canRepair;
+  const showOverflowDownloadOptions = Boolean(!activity && allowRequest && hasAssets);
+  const hasNonDestructiveOverflowActions =
+    showOverflowRefresh || showOverflowRepair || showOverflowDownloadOptions;
+  const hasOverflowActions = hasNonDestructiveOverflowActions || canDelete;
+  const showOverflowMenu = Boolean(currentBook && !subpanelOpen && hasOverflowActions);
+  const isMenuOpen = showOverflowMenu && actionsMenuOpen;
+
   useEffect(() => {
     const element = dialog.current;
     element?.showModal();
@@ -183,27 +220,101 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     }
   }, [confirmDelete]);
 
-  const currentBook = activeBook ?? book;
+  useEffect(() => {
+    if (!isMenuOpen) return;
+    const menuEl = actionsMenuRef.current;
+    if (menuEl) {
+      const enabledItems = Array.from(
+        menuEl.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
+      );
+      if (enabledItems.length > 0) {
+        const target =
+          pendingMenuFocusRef.current === 'last'
+            ? enabledItems[enabledItems.length - 1]
+            : enabledItems[0];
+        target.focus();
+      } else {
+        menuEl.focus();
+      }
+    }
+    pendingMenuFocusRef.current = null;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (
+        actionsMenuContainerRef.current &&
+        event.target instanceof Node &&
+        !actionsMenuContainerRef.current.contains(event.target)
+      ) {
+        setActionsMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [isMenuOpen]);
+
   if (!currentBook) return null;
-  const hasAssets = currentBook.editions.some((edition) => edition.assets.length > 0);
-  const canDelete = Boolean(isAdmin && currentBook.id);
-  const canRefreshMetadata = Boolean((canManage || isAdmin) && currentBook.id);
-  const canUploadCover = Boolean((canManage || isAdmin) && currentBook.id && hasAssets);
-  const findingCover = canUploadCover && findingCoverBookID === currentBook.id;
-  const canRepair = Boolean(
-    isAdmin &&
-      currentBook.id &&
-      currentBook.editions.some((edition) =>
-        edition.assets.some((asset) => asset.filename?.toLowerCase().endsWith('.epub'))
-      )
-  );
-  const repairing = canRepair && repairBookID === currentBook.id;
-  const subpanelOpen = repairing || findingCover;
-  const isOwned =
-    currentBook.state === 'In library' ||
-    (currentBook.state === undefined && (hasAssets || currentBook.formats.length > 0));
-  const allowRequest = Boolean(canRequest ?? canManage);
-  const showMonitorControl = !isOwned && Boolean(canManage);
+
+  const handleMenuTriggerKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      pendingMenuFocusRef.current = 'first';
+      setActionsMenuOpen(true);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      pendingMenuFocusRef.current = 'last';
+      setActionsMenuOpen(true);
+    } else if (event.key === 'Escape' && isMenuOpen) {
+      event.preventDefault();
+      event.stopPropagation();
+      setActionsMenuOpen(false);
+    }
+  };
+
+  const handleMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const menuEl = actionsMenuRef.current;
+    if (!menuEl) return;
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      setActionsMenuOpen(false);
+      actionsMenuTriggerRef.current?.focus();
+      return;
+    }
+
+    if (event.key === 'Tab') {
+      setActionsMenuOpen(false);
+      return;
+    }
+
+    const enabledItems = Array.from(
+      menuEl.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
+    );
+    if (enabledItems.length === 0) return;
+
+    const currentIndex = enabledItems.indexOf(document.activeElement as HTMLButtonElement);
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % enabledItems.length : 0;
+      enabledItems[nextIndex].focus();
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      const prevIndex =
+        currentIndex >= 0
+          ? (currentIndex - 1 + enabledItems.length) % enabledItems.length
+          : enabledItems.length - 1;
+      enabledItems[prevIndex].focus();
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      enabledItems[0].focus();
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      enabledItems[enabledItems.length - 1].focus();
+    }
+  };
 
   const ensurePersistedBook = async (): Promise<Book> => {
     if (currentBook.id) return currentBook;
@@ -408,60 +519,24 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     <dialog
       ref={dialog}
       aria-label={`Details for ${currentBook.title}`}
-      className="m-auto w-[calc(100%-2rem)] max-w-3xl max-h-[90dvh] bg-zinc-900 text-zinc-100 border border-zinc-700 rounded-xl overflow-hidden backdrop:bg-black/75"
-      onCancel={onClose}
+      className={`m-auto w-[calc(100%-2rem)] max-w-3xl max-h-[90dvh] bg-zinc-900 text-zinc-100 border border-zinc-700 rounded-xl backdrop:bg-black/75 ${
+        subpanelOpen ? 'overflow-hidden' : 'overflow-visible'
+      }`}
+      onCancel={(event) => {
+        if (isMenuOpen) {
+          event.preventDefault();
+          setActionsMenuOpen(false);
+          actionsMenuTriggerRef.current?.focus();
+          return;
+        }
+        onClose();
+      }}
       onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       <div className="max-h-[90dvh] flex flex-col">
-        {!activity && !subpanelOpen && (allowRequest || showMonitorControl || canRefreshMetadata) && <div className="px-6 pt-4 flex flex-wrap items-center gap-3">
-          {allowRequest && (
-            <button type="button" disabled={actionBusy || refreshing} onClick={() => void handleShowDownloadOptions()}
-              className="inline-flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50">
-              <Download size={16} aria-hidden="true" />
-              Show Download Options
-            </button>
-          )}
-          {showMonitorControl && (
-            <button
-              type="button"
-              disabled={actionBusy || refreshing}
-              aria-pressed={monitored}
-              onClick={() => void handleToggleMonitor()}
-              className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50 ${
-                monitored
-                  ? 'border-blue-700/80 bg-blue-950/70 text-blue-200 hover:bg-blue-900/70'
-                  : 'border-zinc-700 bg-zinc-800 text-zinc-100 hover:bg-zinc-700'
-              }`}
-            >
-              <Bell size={16} aria-hidden="true" />
-              {monitored ? 'Monitoring Book' : 'Monitor Book'}
-            </button>
-          )}
-          {canRefreshMetadata && (
-            <button
-              type="button"
-              disabled={actionBusy || refreshing}
-              onClick={() => void handleRefreshMetadata()}
-              className="inline-flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
-            >
-              <RefreshCw
-                size={16}
-                className={refreshing ? 'motion-safe:animate-spin' : undefined}
-                aria-hidden="true"
-              />
-              {refreshing ? 'Refreshing…' : 'Refresh Metadata'}
-            </button>
-          )}
-          {actionError && (
-            <p role="alert" className="text-xs text-red-300">{actionError}</p>
-          )}
-          {refreshStatus && !actionError && (
-            <p role="status" className="text-xs text-emerald-300">{refreshStatus}</p>
-          )}
-        </div>}
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-950/40">
-          <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center justify-between gap-3 px-6 py-4 border-b border-zinc-800 bg-zinc-950/40 rounded-t-xl">
+          <div className="flex flex-wrap items-center gap-3 min-w-0">
             <h2 className="text-lg font-semibold text-zinc-100">{currentBook.title}</h2>
             <div className="flex gap-1.5">
               {currentBook.state && currentBook.state !== 'In library' && (
@@ -483,24 +558,163 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
               ))}
             </div>
           </div>
-          <button
-            onClick={onClose}
-            data-testid="close-book-detail"
-            aria-label="Close details"
-            autoFocus
-            className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-lg transition-colors"
-            title="Close modal (Esc)"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            {showOverflowMenu && (
+              <div ref={actionsMenuContainerRef} className="relative">
+                <button
+                  ref={actionsMenuTriggerRef}
+                  type="button"
+                  data-testid="book-actions-menu-trigger"
+                  aria-label="More actions"
+                  aria-haspopup="menu"
+                  aria-expanded={isMenuOpen}
+                  aria-controls={isMenuOpen ? actionsMenuId : undefined}
+                  title="More actions"
+                  onClick={() => {
+                    if (isMenuOpen) {
+                      setActionsMenuOpen(false);
+                    } else {
+                      pendingMenuFocusRef.current = 'first';
+                      setActionsMenuOpen(true);
+                    }
+                  }}
+                  onKeyDown={handleMenuTriggerKeyDown}
+                  className={`p-1.5 rounded-lg transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 ${
+                    isMenuOpen
+                      ? 'bg-zinc-800 text-zinc-100'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+                  }`}
+                >
+                  <MoreHorizontal className="w-5 h-5" aria-hidden="true" />
+                </button>
+                {isMenuOpen && (
+                  <div
+                    ref={actionsMenuRef}
+                    id={actionsMenuId}
+                    role="menu"
+                    aria-label="Book actions"
+                    tabIndex={-1}
+                    onKeyDown={handleMenuKeyDown}
+                    className="absolute right-0 top-full mt-1.5 z-30 min-w-52 rounded-lg border border-zinc-700 bg-zinc-900 py-1 shadow-xl shadow-black/50 focus:outline-none"
+                  >
+                    {showOverflowRefresh && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        tabIndex={-1}
+                        disabled={actionBusy || refreshing}
+                        onClick={() => {
+                          setActionsMenuOpen(false);
+                          actionsMenuTriggerRef.current?.focus();
+                          void handleRefreshMetadata();
+                        }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-zinc-100 transition-colors hover:bg-zinc-800 focus-visible:bg-zinc-800 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <RefreshCw
+                          className={`w-4 h-4 shrink-0 ${
+                            refreshing ? 'motion-safe:animate-spin text-blue-300' : 'text-zinc-400'
+                          }`}
+                          aria-hidden="true"
+                        />
+                        <span>{refreshing ? 'Refreshing…' : 'Refresh Metadata'}</span>
+                      </button>
+                    )}
+                    {showOverflowRepair && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        tabIndex={-1}
+                        disabled={actionBusy || refreshing}
+                        onClick={() => {
+                          setActionsMenuOpen(false);
+                          setRepairBookID(currentBook.id);
+                        }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-zinc-100 transition-colors hover:bg-zinc-800 focus-visible:bg-zinc-800 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Wrench className="w-4 h-4 shrink-0 text-zinc-400" aria-hidden="true" />
+                        <span>Fix Metadata</span>
+                      </button>
+                    )}
+                    {showOverflowDownloadOptions && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        tabIndex={-1}
+                        disabled={actionBusy || refreshing}
+                        onClick={() => {
+                          setActionsMenuOpen(false);
+                          void handleShowDownloadOptions();
+                        }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-zinc-100 transition-colors hover:bg-zinc-800 focus-visible:bg-zinc-800 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Download className="w-4 h-4 shrink-0 text-zinc-400" aria-hidden="true" />
+                        <span>Show Download Options</span>
+                      </button>
+                    )}
+                    {canDelete && hasNonDestructiveOverflowActions && (
+                      <div role="separator" className="my-1 border-t border-zinc-800" />
+                    )}
+                    {canDelete && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        tabIndex={-1}
+                        disabled={deleting}
+                        onClick={() => {
+                          setActionsMenuOpen(false);
+                          setDeleteFiles(false);
+                          setDeleteError('');
+                          setConfirmDelete(true);
+                        }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-red-300 transition-colors hover:bg-red-950/60 hover:text-red-200 focus-visible:bg-red-950/60 focus-visible:text-red-200 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Trash2 className="w-4 h-4 shrink-0 text-red-400" aria-hidden="true" />
+                        <span>Delete Book</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              data-testid="close-book-detail"
+              aria-label="Close details"
+              autoFocus
+              className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-lg transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300"
+              title="Close modal (Esc)"
+            >
+              <X className="w-5 h-5" aria-hidden="true" />
+            </button>
+          </div>
         </div>
+
+        {/* Inline action status / error feedback */}
+        {!subpanelOpen && (refreshing || actionError || refreshStatus) && (
+          <div className="border-b border-zinc-800 bg-zinc-950/50 px-6 py-2.5">
+            {refreshing ? (
+              <p role="status" className="flex items-center gap-2 text-xs text-zinc-300">
+                <RefreshCw
+                  className="w-3.5 h-3.5 motion-safe:animate-spin text-blue-300 shrink-0"
+                  aria-hidden="true"
+                />
+                Refreshing metadata…
+              </p>
+            ) : actionError ? (
+              <p role="alert" className="text-xs text-red-300">{actionError}</p>
+            ) : (
+              <p role="status" className="text-xs text-emerald-300">{refreshStatus}</p>
+            )}
+          </div>
+        )}
 
         {/* Content body */}
         {repairing ? (
           <MetadataRepairPanel key={currentBook.id} bookID={currentBook.id} onApplied={onMetadataApplied}
             onBack={() => {
               setRepairBookID(undefined);
-              requestAnimationFrame(() => fixButton.current?.focus());
+              requestAnimationFrame(() => actionsMenuTriggerRef.current?.focus());
             }} />
         ) : findingCover ? (
           <CoverFinderPanel
@@ -666,14 +880,39 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
           <div className="space-y-4 border-t border-zinc-800 pt-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h4 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
-                <HardDrive className="w-4 h-4 text-zinc-400" />
+                <HardDrive className="w-4 h-4 text-zinc-400" aria-hidden="true" />
                 Available files
               </h4>
-              {canRepair && (
-                <button ref={fixButton} type="button" onClick={() => setRepairBookID(currentBook.id)}
-                  className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300">
-                  Fix Metadata
-                </button>
+              {!activity && (showMonitorControl || showInlineDownloadOptions) && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {showMonitorControl && (
+                    <button
+                      type="button"
+                      disabled={actionBusy || refreshing}
+                      aria-pressed={monitored}
+                      onClick={() => void handleToggleMonitor()}
+                      className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50 ${
+                        monitored
+                          ? 'border-blue-700/80 bg-blue-950/70 text-blue-200 hover:bg-blue-900/70'
+                          : 'border-zinc-700 bg-zinc-800 text-zinc-100 hover:bg-zinc-700'
+                      }`}
+                    >
+                      <Bell className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                      {monitored ? 'Monitoring Book' : 'Monitor Book'}
+                    </button>
+                  )}
+                  {showInlineDownloadOptions && (
+                    <button
+                      type="button"
+                      disabled={actionBusy || refreshing}
+                      onClick={() => void handleShowDownloadOptions()}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
+                    >
+                      <Download className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                      Show Download Options
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 
@@ -760,7 +999,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
           <div
             role="region"
             aria-label="Confirm book deletion"
-            className="border-t border-zinc-800 bg-zinc-950/80 px-6 py-4 space-y-3"
+            className="border-t border-zinc-800 bg-zinc-950/80 px-6 py-4 space-y-3 rounded-b-xl"
           >
             <p className="text-sm font-medium text-zinc-100">
               Delete <span className="font-semibold">{currentBook.title}</span> from the library?
@@ -794,7 +1033,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                   setConfirmDelete(false);
                   setDeleteFiles(false);
                   setDeleteError('');
-                  requestAnimationFrame(() => deleteTrigger.current?.focus());
+                  requestAnimationFrame(() => actionsMenuTriggerRef.current?.focus());
                 }}
                 className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-700 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
               >
@@ -813,24 +1052,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
           </div>
         )}
         {!subpanelOpen && !confirmDelete && (
-          <div className="px-6 py-3 border-t border-zinc-800 bg-zinc-950/60 flex flex-wrap items-center justify-between gap-3">
-            {canDelete ? (
-              <button
-                ref={deleteTrigger}
-                type="button"
-                onClick={() => {
-                  setDeleteFiles(false);
-                  setDeleteError('');
-                  setConfirmDelete(true);
-                }}
-                className="inline-flex items-center gap-1.5 rounded-md border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-xs font-medium text-red-300 transition-colors hover:bg-red-950/60 hover:text-red-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300"
-              >
-                <Trash2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                Delete Book
-              </button>
-            ) : (
-              <span />
-            )}
+          <div className="px-6 py-3 border-t border-zinc-800 bg-zinc-950/60 flex items-center justify-end gap-3 rounded-b-xl">
             <button
               type="button"
               onClick={onClose}
