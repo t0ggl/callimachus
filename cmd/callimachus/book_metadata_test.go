@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/t0ggl/callimachus/internal/logging"
 	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/epub"
@@ -374,4 +376,172 @@ func readArchivedFile(archive *zip.Reader, name string) ([]byte, error) {
 	}
 	defer f.Close()
 	return io.ReadAll(f)
+}
+
+func makeSyntheticDirEPUB(t *testing.T, metaInfPayload []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	mw, err := zw.CreateHeader(&zip.FileHeader{Name: "mimetype", Method: zip.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(mw, "application/epub+zip"); err != nil {
+		t.Fatal(err)
+	}
+	writeDir := func(placeholder string, data []byte) {
+		if len(data) == 0 {
+			w, err := zw.CreateRaw(&zip.FileHeader{
+				Name: placeholder, Method: zip.Deflate, CompressedSize64: 2,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := w.Write([]byte{0x03, 0x00}); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		w, err := zw.CreateHeader(&zip.FileHeader{Name: placeholder, Method: zip.Deflate})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeEntry := func(name string, data []byte) {
+		w, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Deflate})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeDir("META-INF_", metaInfPayload)
+	writeEntry("META-INF/container.xml", []byte(`<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>`))
+	writeEntry("content.opf", []byte(`<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">urn:uuid:repair-dir</dc:identifier>
+    <dc:title>Stale Title</dc:title>
+    <dc:creator>Stale Author</dc:creator>
+    <dc:language>en</dc:language>
+  </metadata>
+  <manifest><item id="ch1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="ch1"/></spine>
+</package>`))
+	writeDir("images_", nil)
+	writeDir("text_", nil)
+	writeEntry("text/ch1.xhtml", []byte("<html><body>Hello</body></html>"))
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw := buf.Bytes()
+	for _, pair := range [][2]string{{"META-INF_", "META-INF/"}, {"images_", "images/"}, {"text_", "text/"}} {
+		raw = bytes.ReplaceAll(raw, []byte(pair[0]), []byte(pair[1]))
+	}
+	return raw
+}
+
+func TestBookMetadataRepair_DeflatedDirectoriesAndErrorLogs(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	root := t.TempDir()
+	bookDir := filepath.Join(root, "Author", "Book")
+	if err := os.MkdirAll(bookDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	goodPath := filepath.Join(bookDir, "Deflated Dirs (2024) - Author.epub")
+	badPath := filepath.Join(bookDir, "Malformed Dir (2024) - Author.epub")
+	goodBytes := makeSyntheticDirEPUB(t, nil)
+	badBytes := makeSyntheticDirEPUB(t, []byte("non-empty"))
+	if err := os.WriteFile(goodPath, goodBytes, 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(badPath, badBytes, 0640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'Library Author', 'Library Author');
+		INSERT INTO books (id, title, author_id) VALUES ('b-good', 'Repaired Book', 'a1'), ('b-bad', 'Broken Book', 'a1');
+		INSERT INTO book_editions (id, book_id, format, language) VALUES ('e-good', 'b-good', 'epub', 'en'), ('e-bad', 'b-bad', 'epub', 'en');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO media_assets (id, edition_id, file_path, file_size) VALUES (?, ?, ?, ?), (?, ?, ?, ?)`,
+		"asset-good", "e-good", goodPath, len(goodBytes),
+		"asset-bad", "e-bad", badPath, len(badBytes)); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{db: db, baseOverrides: config.Overrides{LibraryRoot: root},
+		sessionMgr: auth.NewSessionManager(time.Hour, auth.DefaultCookieConfig())}
+	mux := http.NewServeMux()
+	s.registerAPIRoutes(mux)
+	handler := auth.Authenticate(s.sessionMgr, db)(s.withAuthGate(mux))
+	admin := createTestSessionCookie(t, s, "admin", "admin", auth.RoleAdmin)
+
+	// 1. Repairing an EPUB with deflated empty directory entries succeeds.
+	req := httptest.NewRequest("POST", "/api/books/b-good/fix-metadata", nil)
+	req.AddCookie(admin)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("fix-metadata status = %d, want 200; body = %s", res.Code, res.Body)
+	}
+	assertMetadataRepairArchive(t, goodPath, goodBytes)
+	repaired, err := epub.OpenNative(goodPath)
+	if err != nil {
+		t.Fatalf("OpenNative after repair: %v", err)
+	}
+	if repaired.Metadata().Title != "Repaired Book" {
+		t.Fatalf("repaired title = %q, want Repaired Book", repaired.Metadata().Title)
+	}
+
+	// 2. Failing EPUB logs filename, relative path, asset ID, entry name, and error,
+	// and does not corrupt the original file.
+	var logBuf bytes.Buffer
+	prevLogger, prevLevel := slog.Default(), logging.Level.Level()
+	slog.SetDefault(logging.New(&logBuf))
+	logging.Level.Set(slog.LevelWarn)
+	defer func() {
+		slog.SetDefault(prevLogger)
+		logging.Level.Set(prevLevel)
+	}()
+
+	req = httptest.NewRequest("POST", "/api/books/b-bad/fix-metadata", nil)
+	req.AddCookie(admin)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("broken fix-metadata status = %d, want 500; body = %s", res.Code, res.Body)
+	}
+	if strings.Contains(res.Body.String(), root) {
+		t.Fatal("HTTP error response leaked library root path")
+	}
+	assertMetadataRepairBytes(t, badPath, badBytes)
+
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logBuf.Bytes()), &entry); err != nil {
+		t.Fatalf("parse warning log %q: %v", logBuf.String(), err)
+	}
+	if entry["asset"] != "asset-bad" {
+		t.Errorf("log asset = %v, want asset-bad", entry["asset"])
+	}
+	if entry["file"] != "Malformed Dir (2024) - Author.epub" {
+		t.Errorf("log file = %v, want Malformed Dir (2024) - Author.epub", entry["file"])
+	}
+	if entry["path"] != filepath.Join("Author", "Book", "Malformed Dir (2024) - Author.epub") {
+		t.Errorf("log path = %v", entry["path"])
+	}
+	errMsg, _ := entry["error"].(string)
+	for _, want := range []string{"Malformed Dir (2024) - Author.epub", "META-INF/", zip.ErrFormat.Error()} {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("log error %q missing %q", errMsg, want)
+		}
+	}
 }

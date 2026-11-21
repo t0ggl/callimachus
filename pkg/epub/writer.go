@@ -21,20 +21,21 @@ var maxEPUBEntryBytes int64 = 256 * 1024 * 1024 // 256 MiB
 // 3. The updated OPF content is written in place of the original OPF file.
 // 4. Writes are atomic via a temporary file and rename to avoid corrupting the source file.
 func repackEPUB(sourcePath string, targetPath string, opfZipPath string, newOPFData []byte) error {
+	sourceName := filepath.Base(sourcePath)
 	zr, err := zip.OpenReader(sourcePath)
 	if err != nil {
-		return fmt.Errorf("%w: failed to open source EPUB: %v", ErrNotAZip, err)
+		return fmt.Errorf("%w: failed to open source EPUB %s: %v", ErrNotAZip, sourceName, err)
 	}
 	defer zr.Close()
 
 	targetDir := filepath.Dir(targetPath)
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		return fmt.Errorf("failed to create target directory %s: %w", targetDir, err)
+		return fmt.Errorf("failed to create target directory %s for %s: %w", targetDir, sourceName, err)
 	}
 
 	tmpFile, err := os.CreateTemp(targetDir, ".callimachus-epub-*.tmp")
 	if err != nil {
-		return fmt.Errorf("failed to create temporary EPUB file: %w", err)
+		return fmt.Errorf("failed to create temporary EPUB file for %s: %w", sourceName, err)
 	}
 	tmpPath := tmpFile.Name()
 	defer func() {
@@ -46,10 +47,10 @@ func repackEPUB(sourcePath string, targetPath string, opfZipPath string, newOPFD
 
 	if err := writeArchive(&zr.Reader, tmpFile, opfZipPath, newOPFData); err != nil {
 		_ = tmpFile.Close()
-		return err
+		return fmt.Errorf("failed to write EPUB %s: %w", sourceName, err)
 	}
 	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("failed to close temporary file: %w", err)
+		return fmt.Errorf("failed to close temporary file for %s: %w", sourceName, err)
 	}
 	_ = zr.Close()
 	if err := os.Rename(tmpPath, targetPath); err != nil {
@@ -100,10 +101,10 @@ func writeArchive(zr *zip.Reader, target io.Writer, opfZipPath string, newOPFDat
 			}
 			w, err := zw.CreateHeader(header)
 			if err != nil {
-				return fmt.Errorf("failed to create header for OPF: %w", err)
+				return fmt.Errorf("failed to create header for OPF %s: %w", f.Name, err)
 			}
 			if _, err := w.Write(newOPFData); err != nil {
-				return fmt.Errorf("failed to write updated OPF: %w", err)
+				return fmt.Errorf("failed to write updated OPF %s: %w", f.Name, err)
 			}
 			continue
 		}
@@ -119,6 +120,25 @@ func writeArchive(zr *zip.Reader, target io.Writer, opfZipPath string, newOPFDat
 		}
 		if n > maxEPUBEntryBytes {
 			return fmt.Errorf("entry %s exceeds maximum allowed size of %d bytes", f.Name, maxEPUBEntryBytes)
+		}
+		if strings.HasSuffix(f.Name, "/") {
+			// zip.Writer.Copy fails on deflated directory entries because CreateRaw returns
+			// a dirWriter that rejects the 2-byte empty deflate stream. Rewrite empty directory
+			// entries via CreateHeader, which stores them with zero-length payload.
+			header := &zip.FileHeader{
+				Name:           f.Name,
+				Comment:        f.Comment,
+				NonUTF8:        f.NonUTF8,
+				CreatorVersion: f.CreatorVersion,
+				Modified:       f.Modified,
+				ModifiedTime:   f.ModifiedTime,
+				ModifiedDate:   f.ModifiedDate,
+				ExternalAttrs:  f.ExternalAttrs,
+			}
+			if _, err := zw.CreateHeader(header); err != nil {
+				return fmt.Errorf("failed to copy directory entry %s: %w", f.Name, err)
+			}
+			continue
 		}
 		if err := zw.Copy(f); err != nil {
 			return fmt.Errorf("failed to copy entry %s: %w", f.Name, err)

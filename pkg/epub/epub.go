@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"path/filepath"
 )
 
 // EngineType specifies the backend engine used for EPUB manipulation.
@@ -57,14 +58,15 @@ type nativeEPUB struct {
 
 // OpenNative opens an EPUB file and parses its metadata using the pure Go engine.
 func OpenNative(filePath string) (EPUB, error) {
+	fileName := filepath.Base(filePath)
 	zr, err := zip.OpenReader(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrNotAZip, err)
+		return nil, fmt.Errorf("%w: %s: %v", ErrNotAZip, fileName, err)
 	}
 	defer zr.Close()
 	ep, err := parseNativeArchive(&zr.Reader)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse EPUB %s: %w", fileName, err)
 	}
 	ep.path = filePath
 	ep.archive = nil

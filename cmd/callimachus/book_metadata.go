@@ -317,20 +317,21 @@ func (s *Server) handleMetadataRepair(w http.ResponseWriter, r *http.Request, ap
 		file.target = repairTarget(file.library, req.Candidate)
 		rel, err := repairRelativePath(root, rootPath, file.path)
 		if err != nil {
+			slog.WarnContext(ctx, "metadata repair could not access an EPUB", "book", id, "asset", file.id, "file", filepath.Base(file.path), "error", err)
 			http.Error(w, "An EPUB file is missing or outside the library.", http.StatusNotFound)
 			return
 		}
 		diff, pending, status, err := prepareMetadataFile(root, rel, *file, apply)
 		staged = append(staged, pending...)
 		if err != nil {
-			slog.WarnContext(ctx, "metadata repair could not prepare an EPUB", "asset", file.id, "error", err)
+			slog.WarnContext(ctx, "metadata repair could not prepare an EPUB", "book", id, "asset", file.id, "file", filepath.Base(rel), "path", rel, "error", err)
 			http.Error(w, "Unable to process "+filepath.Base(rel)+" or its OPF sidecar.", status)
 			return
 		}
 		if apply {
 			sidecar, status, err := s.prepareMetadataSidecar(ctx, root, rootPath, rel, id, file.target, sidecars)
 			if err != nil {
-				slog.WarnContext(ctx, "metadata repair could not prepare an OPF", "asset", file.id, "error", err)
+				slog.WarnContext(ctx, "metadata repair could not prepare an OPF", "book", id, "asset", file.id, "file", filepath.Base(rel), "path", rel, "error", err)
 				http.Error(w, "Unable to update the companion OPF for "+filepath.Base(rel)+".", status)
 				return
 			}
@@ -421,19 +422,19 @@ func prepareMetadataFile(root *os.Root, path string, file repairFile, stage bool
 	diff := fileMetadataDiff{ID: file.id, Filename: filepath.Base(path)}
 	info, err := root.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() {
-		return diff, nil, http.StatusNotFound, os.ErrInvalid
+		return diff, nil, http.StatusNotFound, fmt.Errorf("stat EPUB %s: %w", diff.Filename, cmp.Or(err, os.ErrInvalid))
 	}
 	source, err := root.Open(path)
 	if err != nil {
-		return diff, nil, http.StatusNotFound, err
+		return diff, nil, http.StatusNotFound, fmt.Errorf("open EPUB %s: %w", diff.Filename, err)
 	}
 	defer source.Close()
 	if opened, err := source.Stat(); err != nil || !os.SameFile(info, opened) {
-		return diff, nil, http.StatusNotFound, os.ErrInvalid
+		return diff, nil, http.StatusNotFound, fmt.Errorf("verify EPUB %s: %w", diff.Filename, cmp.Or(err, os.ErrInvalid))
 	}
 	archive, err := epub.OpenNativeReader(source, info.Size())
 	if err != nil {
-		return diff, nil, http.StatusBadRequest, err
+		return diff, nil, http.StatusBadRequest, fmt.Errorf("read EPUB %s: %w", diff.Filename, err)
 	}
 	diff.Diffs = compareMetadata(archive.Metadata(), file.target)
 	if !stage {
@@ -444,7 +445,7 @@ func prepareMetadataFile(root *os.Root, path string, file repairFile, stage bool
 			return archive.WriteArchive(output, file.target)
 		})
 		if err != nil {
-			return diff, nil, http.StatusInternalServerError, err
+			return diff, nil, http.StatusInternalServerError, fmt.Errorf("write EPUB %s: %w", diff.Filename, err)
 		}
 		pending.assetID = file.id
 		return diff, []stagedMetadataFile{pending}, 0, nil
@@ -481,34 +482,34 @@ func (s *Server) prepareMetadataSidecar(ctx context.Context, root *os.Root, root
 		return empty, 0, nil
 	}
 	if err != nil || !sidecarInfo.Mode().IsRegular() {
-		return empty, http.StatusBadRequest, os.ErrInvalid
+		return empty, http.StatusBadRequest, fmt.Errorf("stat sidecar %s: %w", filepath.Base(sidecar), cmp.Or(err, os.ErrInvalid))
 	}
 	source, err := root.Open(sidecar)
 	if err != nil {
-		return empty, http.StatusBadRequest, err
+		return empty, http.StatusBadRequest, fmt.Errorf("open sidecar %s: %w", filepath.Base(sidecar), err)
 	}
 	defer source.Close()
 	if opened, err := source.Stat(); err != nil || !os.SameFile(sidecarInfo, opened) {
-		return empty, http.StatusBadRequest, os.ErrInvalid
+		return empty, http.StatusBadRequest, fmt.Errorf("verify sidecar %s: %w", filepath.Base(sidecar), cmp.Or(err, os.ErrInvalid))
 	}
 	const maxSidecarBytes = 16 << 20
 	data, err := io.ReadAll(io.LimitReader(source, maxSidecarBytes+1))
 	if err != nil {
-		return empty, http.StatusBadRequest, err
+		return empty, http.StatusBadRequest, fmt.Errorf("read sidecar %s: %w", filepath.Base(sidecar), err)
 	}
 	if len(data) > maxSidecarBytes {
-		return empty, http.StatusBadRequest, errors.New("sidecar exceeds maximum size")
+		return empty, http.StatusBadRequest, fmt.Errorf("sidecar %s exceeds maximum size", filepath.Base(sidecar))
 	}
 	rewritten, err := epub.ReplaceSidecarMetadata(data, target)
 	if err != nil {
-		return empty, http.StatusBadRequest, err
+		return empty, http.StatusBadRequest, fmt.Errorf("rewrite sidecar %s: %w", filepath.Base(sidecar), err)
 	}
 	pending, err := stageMetadataFile(root, sidecar, sidecarInfo, func(output io.Writer) error {
 		_, err := output.Write(rewritten)
 		return err
 	})
 	if err != nil {
-		return empty, http.StatusInternalServerError, err
+		return empty, http.StatusInternalServerError, fmt.Errorf("stage sidecar %s: %w", filepath.Base(sidecar), err)
 	}
 	seen[sidecar] = true
 	return pending, 0, nil
@@ -574,11 +575,11 @@ func (s *Server) publishMetadataRepair(ctx context.Context, root *os.Root, bookI
 		}
 		backup := file.temp + ".original"
 		if err := root.Link(file.path, backup); err != nil {
-			return err
+			return fmt.Errorf("backup %s: %w", filepath.Base(file.path), err)
 		}
 		if err := root.Rename(file.temp, file.path); err != nil {
 			_ = root.Remove(backup)
-			return err
+			return fmt.Errorf("replace %s: %w", filepath.Base(file.path), err)
 		}
 		restore = append(restore, stagedMetadataFile{temp: backup, path: file.path})
 	}
