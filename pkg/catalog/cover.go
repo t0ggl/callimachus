@@ -53,6 +53,33 @@ type ValidatedCover struct {
 	Format string
 }
 
+// ValidateCoverDimensions checks whether pixel dimensions satisfy book cover
+// minimum/maximum bounds and aspect ratio limits.
+func ValidateCoverDimensions(width, height int) error {
+	if width < MinCoverDimension || height < MinCoverDimension {
+		return &CoverValidationError{
+			Message: fmt.Sprintf("Cover image is too small (%d×%d px). Minimum dimensions are %d×%d px.", width, height, MinCoverDimension, MinCoverDimension),
+		}
+	}
+	if width > MaxCoverDimension || height > MaxCoverDimension {
+		return &CoverValidationError{
+			Message: fmt.Sprintf("Cover image is too large (%d×%d px). Maximum dimensions are %d×%d px.", width, height, MaxCoverDimension, MaxCoverDimension),
+		}
+	}
+	ratio := float64(width) / float64(height)
+	if ratio < MinCoverAspectRatio || ratio > MaxCoverAspectRatio {
+		return &CoverValidationError{
+			Message: fmt.Sprintf("Cover aspect ratio (%.2f:1) is outside the supported book cover range (%.2f:1 to %.2f:1, portrait to square).", ratio, MinCoverAspectRatio, MaxCoverAspectRatio),
+		}
+	}
+	return nil
+}
+
+// IsValidCoverDimensions reports whether width and height satisfy book cover bounds.
+func IsValidCoverDimensions(width, height int) bool {
+	return ValidateCoverDimensions(width, height) == nil
+}
+
 // ValidateAndNormalizeCover validates raw cover image bytes (size, JPEG/PNG/WebP format,
 // pixel dimensions, and book-cover aspect ratio) and returns normalized JPEG bytes
 // suitable for companion cover art and EPUB embedding.
@@ -67,21 +94,8 @@ func ValidateAndNormalizeCover(data []byte) (*ValidatedCover, error) {
 	if err != nil || (format != "jpeg" && format != "png" && format != "webp") {
 		return nil, &CoverValidationError{Message: "Cover image must be a valid JPEG, PNG, or WebP file."}
 	}
-	if cfg.Width < MinCoverDimension || cfg.Height < MinCoverDimension {
-		return nil, &CoverValidationError{
-			Message: fmt.Sprintf("Cover image is too small (%d×%d px). Minimum dimensions are %d×%d px.", cfg.Width, cfg.Height, MinCoverDimension, MinCoverDimension),
-		}
-	}
-	if cfg.Width > MaxCoverDimension || cfg.Height > MaxCoverDimension {
-		return nil, &CoverValidationError{
-			Message: fmt.Sprintf("Cover image is too large (%d×%d px). Maximum dimensions are %d×%d px.", cfg.Width, cfg.Height, MaxCoverDimension, MaxCoverDimension),
-		}
-	}
-	ratio := float64(cfg.Width) / float64(cfg.Height)
-	if ratio < MinCoverAspectRatio || ratio > MaxCoverAspectRatio {
-		return nil, &CoverValidationError{
-			Message: fmt.Sprintf("Cover aspect ratio (%.2f:1) is outside the supported book cover range (%.2f:1 to %.2f:1, portrait to square).", ratio, MinCoverAspectRatio, MaxCoverAspectRatio),
-		}
+	if err := ValidateCoverDimensions(cfg.Width, cfg.Height); err != nil {
+		return nil, err
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {

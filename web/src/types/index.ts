@@ -119,6 +119,23 @@ export interface MetadataPreview {
   }[];
 }
 
+export interface CoverCandidate {
+  url: string;
+  thumbnailUrl: string;
+  width: number;
+  height: number;
+  source: string;
+  title?: string;
+}
+
+export interface CoverSearchResponse {
+  query: string;
+  page: number;
+  hasMore: boolean;
+  nextPage?: number;
+  candidates: CoverCandidate[];
+}
+
 export type BookState = 'In library' | 'Downloading' | 'Searching' | 'Requested' | 'Scheduled' | 'Not in library';
 
 export interface Book {

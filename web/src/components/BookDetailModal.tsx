@@ -1,8 +1,9 @@
 import { EntityLink } from './EntityLink';
 import React, { useEffect, useState } from 'react';
-import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download, Bell, Trash2, Upload, Loader2 } from 'lucide-react';
+import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download, Bell, Trash2, Upload, Search, Loader2 } from 'lucide-react';
 import { ManualSearch } from './ManualSearch';
 import { MetadataRepairPanel } from './MetadataRepairPanel';
+import { CoverFinderPanel } from './CoverFinderPanel';
 import { validateCoverFile } from '../utils/coverValidation';
 import { Book } from '../types';
 
@@ -114,12 +115,14 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
 }) => {
   const dialog = React.useRef<HTMLDialogElement>(null);
   const fixButton = React.useRef<HTMLButtonElement>(null);
+  const findCoverButton = React.useRef<HTMLButtonElement>(null);
   const deleteTrigger = React.useRef<HTMLButtonElement>(null);
   const cancelDeleteButton = React.useRef<HTMLButtonElement>(null);
   const coverInputRef = React.useRef<HTMLInputElement>(null);
   const [prevBook, setPrevBook] = useState<Book | null>(book);
   const [activeBook, setActiveBook] = useState<Book | null>(book);
   const [repairBookID, setRepairBookID] = useState<string>();
+  const [findingCoverBookID, setFindingCoverBookID] = useState<string>();
   const [showDownloadOptions, setShowDownloadOptions] = useState(false);
   const [monitored, setMonitored] = useState(Boolean(book?.monitored));
   const [actionBusy, setActionBusy] = useState(false);
@@ -153,6 +156,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
       setDeleteFiles(false);
     }
     if (!sameResolvingBook && !sameBook) {
+      setFindingCoverBookID(undefined);
       setCoverUploading(false);
       setCoverError('');
       setCoverStatus('');
@@ -176,6 +180,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   const hasAssets = currentBook.editions.some((edition) => edition.assets.length > 0);
   const canDelete = Boolean(isAdmin && currentBook.id);
   const canUploadCover = Boolean((canManage || isAdmin) && currentBook.id && hasAssets);
+  const findingCover = canUploadCover && findingCoverBookID === currentBook.id;
   const canRepair = Boolean(
     isAdmin &&
       currentBook.id &&
@@ -184,6 +189,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
       )
   );
   const repairing = canRepair && repairBookID === currentBook.id;
+  const subpanelOpen = repairing || findingCover;
   const isOwned =
     currentBook.state === 'In library' ||
     (currentBook.state === undefined && (hasAssets || currentBook.formats.length > 0));
@@ -263,6 +269,19 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     }
   };
 
+  const applyCoverUpdate = (data: { coverUrl?: string; epubUpdated?: number }) => {
+    const nextCoverUrl = data.coverUrl || `/api/books/${encodeURIComponent(currentBook.id)}/cover?v=${Date.now()}`;
+    const updated: Book = { ...currentBook, coverUrl: nextCoverUrl };
+    setActiveBook(updated);
+    onBookUpdated?.(updated);
+    setCoverError('');
+    setCoverStatus(
+      data.epubUpdated && data.epubUpdated > 0
+        ? 'Cover updated and embedded in EPUB.'
+        : 'Cover updated.'
+    );
+  };
+
   const handleCoverFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = '';
@@ -297,15 +316,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
         throw new Error(message || 'Unable to update book cover. Check permissions and try again.');
       }
       const data = (await res.json()) as { coverUrl?: string; epubUpdated?: number };
-      const nextCoverUrl = data.coverUrl || `/api/books/${encodeURIComponent(currentBook.id)}/cover?v=${Date.now()}`;
-      const updated: Book = { ...currentBook, coverUrl: nextCoverUrl };
-      setActiveBook(updated);
-      onBookUpdated?.(updated);
-      setCoverStatus(
-        data.epubUpdated && data.epubUpdated > 0
-          ? 'Cover updated and embedded in EPUB.'
-          : 'Cover updated.'
-      );
+      applyCoverUpdate(data);
     } catch (e) {
       setCoverError(e instanceof Error ? e.message : 'Unable to update book cover.');
     } finally {
@@ -356,7 +367,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
       onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       <div className="max-h-[90dvh] flex flex-col">
-        {!activity && !repairing && (allowRequest || showMonitorControl) && <div className="px-6 pt-4 flex flex-wrap items-center gap-3">
+        {!activity && !subpanelOpen && (allowRequest || showMonitorControl) && <div className="px-6 pt-4 flex flex-wrap items-center gap-3">
           {allowRequest && (
             <button type="button" disabled={actionBusy} onClick={() => void handleShowDownloadOptions()}
               className="inline-flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50">
@@ -427,6 +438,30 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
               setRepairBookID(undefined);
               requestAnimationFrame(() => fixButton.current?.focus());
             }} />
+        ) : findingCover ? (
+          <CoverFinderPanel
+            key={currentBook.id}
+            bookID={currentBook.id}
+            defaultQuery={[
+              currentBook.title,
+              currentBook.authorName &&
+              currentBook.authorName.toLowerCase() !== 'unknown' &&
+              currentBook.authorName.toLowerCase() !== 'unknown author'
+                ? currentBook.authorName
+                : '',
+            ]
+              .filter(Boolean)
+              .join(' ')}
+            onBack={() => {
+              setFindingCoverBookID(undefined);
+              requestAnimationFrame(() => findCoverButton.current?.focus());
+            }}
+            onApplied={(result) => {
+              applyCoverUpdate(result);
+              setFindingCoverBookID(undefined);
+              requestAnimationFrame(() => findCoverButton.current?.focus());
+            }}
+          />
         ) : <div className="flex-1 overflow-y-auto p-6 space-y-6">
           <div className="flex flex-col sm:flex-row gap-6">
             {/* Cover art */}
@@ -458,7 +493,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                       className="sr-only"
                     />
                     <div
-                      className={`absolute inset-x-0 bottom-0 flex justify-center bg-gradient-to-t from-zinc-950/95 via-zinc-950/70 to-transparent p-2.5 pt-8 transition-opacity duration-150 ${
+                      className={`absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-center gap-1.5 bg-gradient-to-t from-zinc-950/95 via-zinc-950/75 to-transparent p-2 pt-8 transition-opacity duration-150 ${
                         coverUploading
                           ? 'opacity-100'
                           : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:opacity-100'
@@ -469,7 +504,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                         disabled={coverUploading}
                         onClick={() => coverInputRef.current?.click()}
                         aria-label={coverUploading ? 'Uploading cover' : 'Upload cover'}
-                        className="inline-flex items-center justify-center gap-1.5 rounded-md border border-zinc-600/80 bg-zinc-900/95 px-2.5 py-1.5 text-xs font-medium text-zinc-100 shadow-sm transition-colors hover:bg-zinc-800 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-70"
+                        className="inline-flex items-center justify-center gap-1 rounded-md border border-zinc-600/80 bg-zinc-900/95 px-2 py-1.5 text-xs font-medium text-zinc-100 shadow-sm transition-colors hover:bg-zinc-800 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-70"
                       >
                         {coverUploading ? (
                           <>
@@ -479,9 +514,24 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                         ) : (
                           <>
                             <Upload className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                            Upload Cover
+                            Upload
                           </>
                         )}
+                      </button>
+                      <button
+                        ref={findCoverButton}
+                        type="button"
+                        disabled={coverUploading}
+                        onClick={() => {
+                          setCoverError('');
+                          setCoverStatus('');
+                          setFindingCoverBookID(currentBook.id);
+                        }}
+                        aria-label="Find cover"
+                        className="inline-flex items-center justify-center gap-1 rounded-md border border-zinc-600/80 bg-zinc-900/95 px-2 py-1.5 text-xs font-medium text-zinc-100 shadow-sm transition-colors hover:bg-zinc-800 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-70"
+                      >
+                        <Search className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        Find cover
                       </button>
                     </div>
                   </>
@@ -642,7 +692,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
         </div>}
 
         {/* Footer */}
-        {!repairing && confirmDelete && canDelete && (
+        {!subpanelOpen && confirmDelete && canDelete && (
           <div
             role="region"
             aria-label="Confirm book deletion"
@@ -698,7 +748,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
             </div>
           </div>
         )}
-        {!repairing && !confirmDelete && (
+        {!subpanelOpen && !confirmDelete && (
           <div className="px-6 py-3 border-t border-zinc-800 bg-zinc-950/60 flex flex-wrap items-center justify-between gap-3">
             {canDelete ? (
               <button

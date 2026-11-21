@@ -10,6 +10,7 @@ import (
 	"image/draw"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,7 @@ import (
 	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/epub"
+	"github.com/t0ggl/callimachus/pkg/metadata"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
@@ -493,5 +495,286 @@ func TestBookCoverUploadAudiobookOnly(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(bookDir, "Audio (2025) - Author.jpg"))
 	if err != nil || !bytes.Equal(got, squareCover) {
 		t.Fatalf("audiobook companion cover mismatch: err=%v", err)
+	}
+}
+
+func TestBookCoverSearchAndSelectRBACValidationAndSSRF(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	root := t.TempDir()
+	bookDir := filepath.Join(root, "Frank Herbert", "Dune (1965)")
+	if err := os.MkdirAll(bookDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	epubPath := filepath.Join(bookDir, "Dune (1965) - Frank Herbert.epub")
+	fixture, err := os.ReadFile(filepath.Join(testutil.RepoRoot(), "testdata", "epubs", "epub3_valid.epub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(epubPath, fixture, 0640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'Frank Herbert', 'Herbert, Frank');
+		INSERT INTO books (id, title, author_id) VALUES ('b1', 'Dune', 'a1');
+		INSERT INTO book_editions (id, book_id, format) VALUES ('e1', 'b1', 'epub');
+		INSERT INTO media_assets (id, edition_id, file_path, file_size) VALUES ('m1', 'e1', ?, ?);
+	`, epubPath, len(fixture)); err != nil {
+		t.Fatal(err)
+	}
+
+	mt := testutil.NewMockTransportForTest(t)
+	validJPEG := encodeCoverJPEG(t, 400, 600, color.RGBA{40, 80, 140, 255})
+	tooSmallJPEG := encodeCoverJPEG(t, 100, 150, color.RGBA{10, 20, 30, 255})
+
+	mt.RegisterString("/search", http.StatusOK, `{"resultCount":0,"results":[]}`, http.Header{"Content-Type": {"application/json"}})
+	mt.RegisterHandler("/search.json", func(r *http.Request) (*http.Response, error) {
+		if gotQ := r.URL.Query().Get("q"); gotQ != "Dune Frank Herbert" && gotQ != "Dune Messiah" {
+			t.Errorf("unexpected search query %q", gotQ)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"num_found":20,"docs":[{"key":"/works/OL1W","title":"Dune","cover_i":555}]}`)),
+		}, nil
+	})
+	mt.RegisterResponse("https://covers.openlibrary.org/b/id/555-L.jpg?default=false", http.StatusOK, validJPEG, http.Header{"Content-Type": {"image/jpeg"}})
+	mt.RegisterResponse("https://images.example.test/too-small.jpg", http.StatusOK, tooSmallJPEG, http.Header{"Content-Type": {"image/jpeg"}})
+	mt.RegisterHandler("https://images.example.test/redirect-private.jpg", func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": {"http://127.0.0.1/secret.jpg"}},
+			Body:       http.NoBody,
+		}, nil
+	})
+	mt.RegisterHandler("https://images.example.test/oversized.jpg", func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			ContentLength: catalog.MaxUploadedCoverBytes + 128,
+			Body:          http.NoBody,
+		}, nil
+	})
+
+	s := &Server{
+		db:              db,
+		baseOverrides:   config.Overrides{LibraryRoot: root},
+		sessionMgr:      auth.NewSessionManager(time.Hour, auth.DefaultCookieConfig()),
+		coverHTTPClient: mt.Client(),
+	}
+	mux := http.NewServeMux()
+	s.registerAPIRoutes(mux)
+	handler := auth.Authenticate(s.sessionMgr, db)(s.withAuthGate(mux))
+
+	guest := createTestSessionCookie(t, s, "g1", "guest", auth.RoleGuest)
+	requester := createTestSessionCookie(t, s, "r1", "requester", auth.RoleRequester)
+	curator := createTestSessionCookie(t, s, "c1", "curator", auth.RoleCurator)
+
+	doSearch := func(path string, cookie *http.Cookie) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		return res
+	}
+
+	doSelect := func(bookID string, cookie *http.Cookie, body, secFetchSite string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/books/"+bookID+"/cover/select", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if secFetchSite != "" {
+			req.Header.Set("Sec-Fetch-Site", secFetchSite)
+		}
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		return res
+	}
+
+	// RBAC: search & select reject unauthenticated (401), guest & requester (403)
+	if res := doSearch("/api/books/b1/cover/search", nil); res.Code != http.StatusUnauthorized {
+		t.Fatalf("unauth search = %d, want 401", res.Code)
+	}
+	if res := doSelect("b1", nil, `{"url":"https://covers.openlibrary.org/b/id/555-L.jpg?default=false"}`, ""); res.Code != http.StatusUnauthorized {
+		t.Fatalf("unauth select = %d, want 401", res.Code)
+	}
+	for _, tc := range []struct {
+		name   string
+		cookie *http.Cookie
+	}{{"guest", guest}, {"requester", requester}} {
+		if res := doSearch("/api/books/b1/cover/search", tc.cookie); res.Code != http.StatusForbidden {
+			t.Fatalf("%s search = %d, want 403", tc.name, res.Code)
+		}
+		if res := doSelect("b1", tc.cookie, `{"url":"https://covers.openlibrary.org/b/id/555-L.jpg?default=false"}`, ""); res.Code != http.StatusForbidden {
+			t.Fatalf("%s select = %d, want 403", tc.name, res.Code)
+		}
+	}
+
+	// Cross-site CSRF guard on select -> 403
+	if res := doSelect("b1", curator, `{"url":"https://covers.openlibrary.org/b/id/555-L.jpg?default=false"}`, "cross-site"); res.Code != http.StatusForbidden {
+		t.Fatalf("cross-site select = %d, want 403", res.Code)
+	}
+
+	// Validation on search: unknown book -> 404, invalid page -> 400
+	if res := doSearch("/api/books/missing/cover/search", curator); res.Code != http.StatusNotFound {
+		t.Fatalf("missing book search = %d, want 404", res.Code)
+	}
+	for _, badPage := range []string{"0", "-1", "99", "abc"} {
+		if res := doSearch("/api/books/b1/cover/search?page="+badPage, curator); res.Code != http.StatusBadRequest {
+			t.Fatalf("page=%s search = %d, want 400", badPage, res.Code)
+		}
+	}
+
+	// Curator search succeeds with default query derived from book title + author
+	res := doSearch("/api/books/b1/cover/search", curator)
+	if res.Code != http.StatusOK {
+		t.Fatalf("curator search = %d: %s", res.Code, res.Body.String())
+	}
+	var searchRes metadata.CoverSearchResult
+	if err := json.Unmarshal(res.Body.Bytes(), &searchRes); err != nil {
+		t.Fatal(err)
+	}
+	if searchRes.Query != "Dune Frank Herbert" || searchRes.Page != 1 || !searchRes.HasMore || searchRes.NextPage != 2 || len(searchRes.Candidates) != 1 {
+		t.Fatalf("unexpected search response: %+v", searchRes)
+	}
+
+	// SSRF protection on select: private/loopback/metadata/file/credentialed URLs -> 400
+	for _, badURL := range []string{
+		"http://127.0.0.1/cover.jpg",
+		"http://localhost/cover.jpg",
+		"http://169.254.169.254/latest/meta-data/",
+		"http://10.0.0.1/cover.jpg",
+		"file:///etc/passwd",
+		"https://user:pass@example.com/cover.jpg",
+		"https://images.example.test/redirect-private.jpg",
+	} {
+		r := doSelect("b1", curator, `{"url":"`+badURL+`"}`, "")
+		if r.Code != http.StatusBadRequest {
+			t.Fatalf("SSRF url %q status = %d, want 400: %s", badURL, r.Code, r.Body.String())
+		}
+	}
+
+	// Oversized remote image -> 413
+	if r := doSelect("b1", curator, `{"url":"https://images.example.test/oversized.jpg"}`, ""); r.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized remote image status = %d, want 413", r.Code)
+	}
+
+	// Remote image failing cover dimension validation -> 400 (via shared applyBookCover)
+	if r := doSelect("b1", curator, `{"url":"https://images.example.test/too-small.jpg"}`, ""); r.Code != http.StatusBadRequest || !strings.Contains(r.Body.String(), "too small") {
+		t.Fatalf("too-small remote image status = %d body=%q", r.Code, r.Body.String())
+	}
+}
+
+func TestBookCoverSelectUpdatesCompanionAndEPUBConsistentlyWithUpload(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	root := t.TempDir()
+	bookDir := filepath.Join(root, "Author", "Chosen (2025)")
+	if err := os.MkdirAll(bookDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	fixture, err := os.ReadFile(filepath.Join(testutil.RepoRoot(), "testdata", "epubs", "epub_with_cover.epub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	epubPath := filepath.Join(bookDir, "Chosen (2025) - Author.epub")
+	companionPath := filepath.Join(bookDir, "Chosen (2025) - Author.jpg")
+	genericPath := filepath.Join(bookDir, "cover.jpg")
+	if err := os.WriteFile(epubPath, fixture, 0640); err != nil {
+		t.Fatal(err)
+	}
+	oldCover := encodeCoverJPEG(t, 240, 360, color.RGBA{12, 12, 12, 255})
+	if err := os.WriteFile(companionPath, oldCover, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(genericPath, oldCover, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'Author', 'Author');
+		INSERT INTO books (id, title, author_id) VALUES ('b1', 'Chosen', 'a1');
+		INSERT INTO book_editions (id, book_id, format) VALUES ('e1', 'b1', 'epub');
+		INSERT INTO media_assets (id, edition_id, file_path, file_size) VALUES ('m1', 'e1', ?, ?);
+	`, epubPath, len(fixture)); err != nil {
+		t.Fatal(err)
+	}
+
+	newCoverPNG := encodeCoverPNG(t, 360, 540, color.RGBA{20, 140, 90, 255})
+	mt := testutil.NewMockTransportForTest(t)
+	mt.RegisterResponse("https://covers.example.test/chosen.png", http.StatusOK, newCoverPNG, http.Header{"Content-Type": {"image/png"}})
+
+	s := &Server{
+		db:              db,
+		baseOverrides:   config.Overrides{LibraryRoot: root},
+		sessionMgr:      auth.NewSessionManager(time.Hour, auth.DefaultCookieConfig()),
+		coverHTTPClient: mt.Client(),
+	}
+	mux := http.NewServeMux()
+	s.registerAPIRoutes(mux)
+	handler := auth.Authenticate(s.sessionMgr, db)(s.withAuthGate(mux))
+	curator := createTestSessionCookie(t, s, "c1", "curator", auth.RoleCurator)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/books/b1/cover/select", strings.NewReader(`{"url":"https://covers.example.test/chosen.png"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(curator)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("select cover status = %d: %s", res.Code, res.Body.String())
+	}
+
+	var payload applyCoverResult
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(payload.CoverURL, "/api/books/b1/cover?v=") || payload.Width != 360 || payload.Height != 540 || payload.EPUBUpdated != 1 {
+		t.Fatalf("unexpected select response: %+v", payload)
+	}
+
+	// Companion cover & generic cover.jpg normalized to JPEG and updated identically to upload
+	companionBytes, err := os.ReadFile(companionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jpeg.Decode(bytes.NewReader(companionBytes)); err != nil {
+		t.Fatalf("companion cover is not valid JPEG: %v", err)
+	}
+	if bytes.Equal(companionBytes, oldCover) {
+		t.Fatal("companion cover was not replaced")
+	}
+	genericBytes, err := os.ReadFile(genericPath)
+	if err != nil || !bytes.Equal(genericBytes, companionBytes) {
+		t.Fatalf("generic cover.jpg not synced (err=%v)", err)
+	}
+
+	// EPUB remains valid, keeps uncompressed mimetype first, and extracts the exact normalized JPEG
+	if err := epub.Validate(epubPath); err != nil {
+		t.Fatalf("epub.Validate failed: %v", err)
+	}
+	ep, err := epub.OpenNative(epubPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outCover := filepath.Join(t.TempDir(), "extracted.jpg")
+	if err := ep.ExtractCover(outCover); err != nil {
+		t.Fatal(err)
+	}
+	extracted, err := os.ReadFile(outCover)
+	if err != nil || !bytes.Equal(extracted, companionBytes) {
+		t.Fatalf("embedded EPUB cover does not match companion JPEG (err=%v)", err)
+	}
+
+	// Verify DB file_size updated
+	info, err := os.Stat(epubPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dbSize int64
+	if err := db.QueryRow(`SELECT file_size FROM media_assets WHERE id = 'm1'`).Scan(&dbSize); err != nil {
+		t.Fatal(err)
+	}
+	if dbSize != info.Size() {
+		t.Fatalf("media_assets.file_size = %d, want %d", dbSize, info.Size())
 	}
 }

@@ -77,6 +77,7 @@ type Server struct {
 	fallbackAuth       *auth.FallbackAuthenticator
 	syncer             *indexers.Syncer
 	prowlarrHTTPClient *http.Client
+	coverHTTPClient    *http.Client
 	stagingMon         *downloaders.StagingMonitor
 	dispatcher         *notify.Dispatcher
 	httpServer         *http.Server

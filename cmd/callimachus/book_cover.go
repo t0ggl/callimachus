@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,11 +19,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/epub"
+	"github.com/t0ggl/callimachus/pkg/metadata"
 )
 
 type applyCoverResult struct {
@@ -46,6 +50,185 @@ type stagedCoverFile struct {
 }
 
 const maxCoverUploadBodyBytes = catalog.MaxUploadedCoverBytes + (1 << 20)
+
+func (s *Server) coverClient(timeout time.Duration) *http.Client {
+	injected := s.coverHTTPClient
+	if injected == nil {
+		injected = s.prowlarrHTTPClient
+	}
+	if injected != nil {
+		return &http.Client{
+			Timeout:       timeout,
+			Transport:     injected.Transport,
+			CheckRedirect: metadata.SafeImageCheckRedirect,
+		}
+	}
+	return metadata.NewSafeImageHTTPClient(timeout)
+}
+
+func (s *Server) handleSearchBookCovers(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		http.Error(w, "Database unavailable.", http.StatusInternalServerError)
+		return
+	}
+	bookID := strings.TrimSpace(r.PathValue("id"))
+	if bookID == "" {
+		http.Error(w, "Invalid book id.", http.StatusBadRequest)
+		return
+	}
+
+	var title, author string
+	err := s.db.QueryRowContext(r.Context(), `
+		SELECT b.title, COALESCE(a.name, '')
+		FROM books b
+		LEFT JOIN authors a ON a.id = b.author_id
+		WHERE b.id = ?`, bookID).Scan(&title, &author)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "Book not found.", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		slog.ErrorContext(r.Context(), "cover search book lookup failed", "book", bookID, "error", err)
+		http.Error(w, "Unable to load book details.", http.StatusInternalServerError)
+		return
+	}
+
+	preferSquare := false
+	if formatRows, fErr := s.db.QueryContext(r.Context(), `SELECT DISTINCT lower(format) FROM book_editions WHERE book_id = ?`, bookID); fErr == nil {
+		hasAudio, hasEbook := false, false
+		for formatRows.Next() {
+			var f string
+			if formatRows.Scan(&f) == nil {
+				if f == "m4b" || f == "mp3" {
+					hasAudio = true
+				} else if f != "" {
+					hasEbook = true
+				}
+			}
+		}
+		_ = formatRows.Close()
+		preferSquare = hasAudio && !hasEbook
+	}
+
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		parts := []string{}
+		if t := strings.TrimSpace(title); t != "" {
+			parts = append(parts, t)
+		}
+		if a := strings.TrimSpace(author); a != "" && !strings.EqualFold(a, "unknown") && !strings.EqualFold(a, "unknown author") {
+			parts = append(parts, a)
+		}
+		query = strings.Join(parts, " ")
+	}
+	if query == "" || len(query) > 500 {
+		http.Error(w, "Enter a search query up to 500 characters.", http.StatusBadRequest)
+		return
+	}
+
+	page := 1
+	if rawPage := strings.TrimSpace(r.URL.Query().Get("page")); rawPage != "" {
+		parsed, parseErr := strconv.Atoi(rawPage)
+		if parseErr != nil || parsed < 1 || parsed > metadata.MaxCoverSearchPage {
+			http.Error(w, "Invalid page number.", http.StatusBadRequest)
+			return
+		}
+		page = parsed
+	}
+
+	cfg, err := config.Load(r.Context(), s.db, s.baseOverrides)
+	if err != nil {
+		http.Error(w, "Unable to load library settings.", http.StatusInternalServerError)
+		return
+	}
+
+	searchCtx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	defer cancel()
+
+	result, err := metadata.SearchCovers(searchCtx, query, metadata.CoverSearchOptions{
+		Client:             s.coverClient(10 * time.Second),
+		OpenLibraryEnabled: cfg.Settings.OpenLibraryEnabled,
+		HardcoverAPIKey:    cfg.Settings.HardcoverAPIKey,
+		GoogleBooksAPIKey:  cfg.Settings.GoogleBooksAPIKey,
+		PreferSquare:       preferSquare,
+		Page:               page,
+		MinDimension:       catalog.MinCoverDimension,
+		MaxDimension:       catalog.MaxCoverDimension,
+		MinAspectRatio:     catalog.MinCoverAspectRatio,
+		MaxAspectRatio:     catalog.MaxCoverAspectRatio,
+		MaxBytes:           catalog.MaxUploadedCoverBytes,
+	})
+	if err != nil {
+		slog.WarnContext(r.Context(), "cover search failed", "book", bookID)
+		http.Error(w, "Unable to search cover sources right now. Try again later.", http.StatusBadGateway)
+		return
+	}
+	writeMetadataJSON(w, result)
+}
+
+func (s *Server) handleSelectBookCover(w http.ResponseWriter, r *http.Request) {
+	if slices.Contains([]string{"cross-site", "same-site"}, r.Header.Get("Sec-Fetch-Site")) {
+		http.Error(w, "Cross-origin request forbidden.", http.StatusForbidden)
+		return
+	}
+	if s.db == nil {
+		http.Error(w, "Database unavailable.", http.StatusInternalServerError)
+		return
+	}
+	bookID := strings.TrimSpace(r.PathValue("id"))
+	if bookID == "" {
+		http.Error(w, "Invalid book id.", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
+		http.Error(w, "Invalid cover selection request.", http.StatusBadRequest)
+		return
+	}
+	validatedURL, err := metadata.ValidateExternalImageURL(req.URL)
+	if err != nil {
+		http.Error(w, "Enter a valid public HTTP or HTTPS cover image URL.", http.StatusBadRequest)
+		return
+	}
+
+	var exists string
+	if err := s.db.QueryRowContext(r.Context(), `SELECT id FROM books WHERE id = ?`, bookID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "Book not found.", http.StatusNotFound)
+		return
+	} else if err != nil {
+		slog.ErrorContext(r.Context(), "cover select book lookup failed", "book", bookID, "error", err)
+		http.Error(w, "Unable to load book details.", http.StatusInternalServerError)
+		return
+	}
+
+	fetchCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	rawImage, err := metadata.DownloadExternalImage(fetchCtx, s.coverClient(15*time.Second), validatedURL.String(), catalog.MaxUploadedCoverBytes)
+	if err != nil {
+		if errors.Is(err, metadata.ErrDisallowedImageURL) {
+			http.Error(w, "Enter a valid public HTTP or HTTPS cover image URL.", http.StatusBadRequest)
+			return
+		}
+		if errors.Is(err, metadata.ErrImageTooLarge) {
+			http.Error(w, "Cover image must be 10 MB or smaller.", http.StatusRequestEntityTooLarge)
+			return
+		}
+		slog.WarnContext(r.Context(), "cover image download failed", "book", bookID)
+		http.Error(w, "Unable to download the selected cover image. Choose another cover or upload one directly.", http.StatusBadGateway)
+		return
+	}
+
+	result, status, errMsg := s.applyBookCover(r.Context(), bookID, rawImage)
+	if errMsg != "" {
+		http.Error(w, errMsg, status)
+		return
+	}
+	writeMetadataJSON(w, result)
+}
 
 func (s *Server) handleUploadBookCover(w http.ResponseWriter, r *http.Request) {
 	if slices.Contains([]string{"cross-site", "same-site"}, r.Header.Get("Sec-Fetch-Site")) {
