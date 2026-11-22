@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -439,7 +438,7 @@ func (p *HardcoverProvider) fetchSearchDetails(ctx context.Context, ids []int) (
 	}
 	var res hardcoverBookResponse
 	if err := p.doQuery(ctx, `query SearchDetails($ids: [Int!]!) { books(where: {id: {_in: $ids}}) {
- id title subtitle description release_year release_date image: cached_image
+ id title subtitle description release_year release_date image: cached_image compilation
  contributions { author { name } contribution }
  `+hardcoverMembershipFields+`
  default_cover_edition { language { code2 code3 } publisher { name } }
@@ -451,7 +450,9 @@ func (p *HardcoverProvider) fetchSearchDetails(ctx context.Context, ids []int) (
 	for _, id := range ids {
 		for _, b := range res.Data.Books {
 			if b.ID == id {
-				results = append(results, mapHardcoverBookNode(&b))
+				if !b.isCollection() {
+					results = append(results, mapHardcoverBookNode(&b))
+				}
 				break
 			}
 		}
@@ -633,21 +634,20 @@ query BookByASIN($asin: String!) {
 	return p.parseBookResponse(res)
 }
 
-const seriesExcerptKind = `(?:deleted\s+scene|bonus\s+(?:chapter|scene|excerpt|interlude)|promotional\s+(?:excerpt|snippet)|sample\s+chapter|sneak\s+peek)s?`
-
-var (
-	seriesAudioAdaptation = regexp.MustCompile(`(?i)\b(?:dramati[sz]ed\s+(?:adaptation|audio(?:book)?|edition)|audio\s+drama|graphic\s*audio)\b`)
-	seriesAudioPart       = regexp.MustCompile(`(?i)\bpart\s+\d+\b`)
-	seriesExcerptLabel    = regexp.MustCompile(`(?i)(?:^|[:(\[–—-]\s*)(?:an?\s+)?` + seriesExcerptKind + `(?:\s*$|\s*[])\].,:–—-]|\s+(?:from|of|for|in)\b)`)
-	seriesExcerptBlurb    = regexp.MustCompile(`(?i)\bis\s+an?\s+` + seriesExcerptKind + `\b`)
-)
-
-// IsSeriesDerivativeTitle reports explicit adaptation or excerpt labels in
-// series listings, including blurbs mistakenly stored as titles.
-func IsSeriesDerivativeTitle(title, subtitle string) bool {
-	for _, text := range []string{title, subtitle} {
-		text = strings.TrimSpace(text)
-		if seriesAudioAdaptation.MatchString(text) || seriesExcerptLabel.MatchString(text) || seriesExcerptBlurb.MatchString(text) {
+func (b hardcoverBookNode) isCollection() bool {
+	if b.Compilation || (b.FeaturedBookSeries != nil && b.FeaturedBookSeries.Compilation) ||
+		IsCollectionTitle(b.Title, b.Subtitle) {
+		return true
+	}
+	if len(b.BookSeries) > 0 {
+		allCompilations := true
+		for _, bs := range b.BookSeries {
+			if !bs.Compilation {
+				allCompilations = false
+				break
+			}
+		}
+		if allCompilations {
 			return true
 		}
 	}
@@ -672,6 +672,8 @@ func (p *HardcoverProvider) AuthorBooks(ctx context.Context, name string) ([]Boo
 	const query = `query AuthorBooks($name: String!, $offset: Int!) {
  books(where: {contributions: {author: {name: {_eq: $name}}}}, limit: 100, offset: $offset, order_by: {id: asc}) {
  id title subtitle description release_date release_year
+ compilation is_partial_book parent_book_id
+ default_cover_edition { edition_format publisher { name } }
  contributions { author { name } contribution }
  ` + hardcoverMembershipFields + `
  }
@@ -680,11 +682,12 @@ func (p *HardcoverProvider) AuthorBooks(ctx context.Context, name string) ([]Boo
 	if err != nil {
 		return nil, err
 	}
-	res := hardcoverBookResponse{}
-	res.Data.Books = raw
 
-	books := make([]BookMetadata, 0, len(res.Data.Books))
-	for _, b := range res.Data.Books {
+	books := make([]BookMetadata, 0, len(raw))
+	for _, b := range raw {
+		if b.isCollection() || b.isSeriesDerivative() {
+			continue
+		}
 		books = append(books, mapHardcoverBookNode(&b))
 	}
 	return books, nil

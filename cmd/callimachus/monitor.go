@@ -302,6 +302,9 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Unable to load books", 500)
 			return
 		}
+		if b.State == "" && metadata.IsNonSingleBookTitle(b.Title, b.Subtitle) {
+			continue
+		}
 		if err := json.Unmarshal([]byte(formats), &b.Formats); err != nil {
 			http.Error(w, "Unable to load books", 500)
 			return

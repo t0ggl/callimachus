@@ -223,6 +223,9 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		if metadata.IsCollectionTitle(result.Title, result.Subtitle) {
+			continue
+		}
 		if result.LibraryBookID != "" {
 			mergeActive(activeByBookID[result.LibraryBookID])
 		}
@@ -373,6 +376,9 @@ func searchGoogleBooksPage(ctx context.Context, client *http.Client, query, key 
 	books := make([]metadata.BookMetadata, 0, len(result.Items))
 	for _, item := range result.Items {
 		v := item.VolumeInfo
+		if metadata.IsCollectionTitle(v.Title, v.Subtitle) {
+			continue
+		}
 		year := 0
 		fmt.Sscanf(v.PublishedDate, "%d", &year)
 		book := metadata.BookMetadata{
