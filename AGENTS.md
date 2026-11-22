@@ -72,14 +72,11 @@ Welcome to the **Callimachus** project codebase. These guidelines govern all sub
 
 9. **Release Rules:**
    - Keep `main` history linear: rebase feature branches onto current `main` and fast-forward them; never create merge commits. When integrating via GitHub, use rebase merge. Resolve conflicts and repeat relevant checks after rebasing.
-   - Tag a new version on the resulting release commit after every merged PR.
-   - Increment the minor version for new features and the patch version for bug fixes.
-   - When pushing a new release commit to `main`, create its release tag locally before pushing. With `HEAD` at the release commit and `release_tag` set to the new version (for example, `v0.35.1`), push both refs in one transaction with `git push --atomic origin HEAD:refs/heads/main "refs/tags/$release_tag"`.
-   - If GitHub has already merged the PR into `main`, tag the resulting commit and push the tag. That merge has already triggered the `main` workflow.
-   - The release preceding issue #21 is `v0.6.0`; this feature releases as `v0.7.0`.
+   - Successful main builds publish the versioned image to GHCR, then tag the commit and create the GitHub release in the same workflow.
+   - Changes to application source bump the minor version. Other changes bump the patch version.
 
 10. **Home Cluster Deployment:**
-   - After completing a batch of changes and pushing its final `v*` release tag, wait for the `Build and Push to GHCR` GitHub Actions workflow (`.github/workflows/build-ghcr.yml`) for that tag to finish before deploying. Do not restart for each individual release in a batch.
+   - After completing a batch of changes, wait for the `Build and Push to GHCR` workflow (`.github/workflows/build-ghcr.yml`) on `main` to publish the release before deploying. Do not restart for each individual release in a batch.
    - Then cycle `deployment/callimachus` in namespace `downloads` on the `home-cluster` Kubernetes cluster (which pulls `ghcr.io/t0ggl/callimachus:latest` with `imagePullPolicy: Always`) by running inside the `home-cluster` project/environment (loading its `direnv`/Nix kubeconfig):
      - `kubectl rollout restart deployment/callimachus -n downloads`
      - `kubectl rollout status deployment/callimachus -n downloads --timeout=180s`
