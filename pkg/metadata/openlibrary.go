@@ -216,40 +216,61 @@ func (p *OpenLibraryProvider) LookupByISBN(ctx context.Context, isbn string) (*B
 
 // Search queries OpenLibrary search API by query text.
 func (p *OpenLibraryProvider) Search(ctx context.Context, query string) ([]BookMetadata, error) {
+	results, _, err := p.search(ctx, query, 0, 0)
+	return results, err
+}
+
+// SearchPage queries a single page of OpenLibrary search results and reports whether more pages remain.
+func (p *OpenLibraryProvider) SearchPage(ctx context.Context, query string, page, limit int) ([]BookMetadata, bool, error) {
+	if limit <= 0 {
+		results, err := p.Search(ctx, query)
+		return results, false, err
+	}
+	if page < 1 {
+		page = 1
+	}
+	return p.search(ctx, query, page, limit)
+}
+
+func (p *OpenLibraryProvider) search(ctx context.Context, query string, page, limit int) ([]BookMetadata, bool, error) {
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	params := url.Values{
 		"q":      {trimmed},
 		"fields": {"key,title,subtitle,author_name,first_publish_year,isbn,cover_i,publisher,subject,language"},
 	}
+	if limit > 0 {
+		params.Set("limit", strconv.Itoa(limit))
+		params.Set("page", strconv.Itoa(page))
+	}
 	reqURL := p.baseURL + "/search.json?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("openlibrary: create search request: %w", err)
+		return nil, false, fmt.Errorf("openlibrary: create search request: %w", err)
 	}
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("openlibrary: do search request: %w", err)
+		return nil, false, fmt.Errorf("openlibrary: do search request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openlibrary: search unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, false, fmt.Errorf("openlibrary: search unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("openlibrary: read search body: %w", err)
+		return nil, false, fmt.Errorf("openlibrary: read search body: %w", err)
 	}
 
 	var searchRes openlibrarySearchResponse
 	if err := json.Unmarshal(bodyBytes, &searchRes); err != nil {
-		return nil, fmt.Errorf("openlibrary: unmarshal search: %w", err)
+		return nil, false, fmt.Errorf("openlibrary: unmarshal search: %w", err)
 	}
 
 	var results []BookMetadata
@@ -291,7 +312,11 @@ func (p *OpenLibraryProvider) Search(ctx context.Context, query string) ([]BookM
 		results = append(results, meta)
 	}
 
-	return results, nil
+	hasMore := false
+	if limit > 0 {
+		hasMore = searchRes.NumFound > page*limit || (searchRes.NumFound == 0 && len(searchRes.Docs) >= limit)
+	}
+	return results, hasMore, nil
 }
 
 // LookupByWorkID retrieves work-level metadata (including description) from OpenLibrary.

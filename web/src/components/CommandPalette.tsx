@@ -35,6 +35,8 @@ interface PaletteItem {
   action: () => void;
 }
 
+const INITIAL_LIBRARY_LIMIT = 5;
+
 export const CommandPalette: React.FC<CommandPaletteProps> = ({
   defaultSearchFormat,
   onSubmitRequest,
@@ -54,8 +56,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   const [selectedSeries, setSelectedSeries] = useState<SeriesSelection | null>(null);
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [showAllLibrary, setShowAllLibrary] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
+  const firstRevealedLibraryItem = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
   const closePalette = () => {
     previousFocus.current?.focus({ preventScroll: true });
@@ -67,6 +71,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     if (isOpen) {
       setQuery('');
       setSelectedIndex(0);
+      setShowAllLibrary(false);
       previousFocus.current = document.activeElement as HTMLElement | null;
       inputRef.current?.focus();
     }
@@ -198,24 +203,43 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     );
   }, [books, authors, series, query, canAccessSettings, onNavigate, onSelectBook, onClose]);
 
+  const visibleItems = showAllLibrary ? items : items.slice(0, INITIAL_LIBRARY_LIMIT);
+  const hiddenLibraryCount = items.length - visibleItems.length;
+  const activeSelectedIndex =
+    visibleItems.length > 0 ? Math.min(selectedIndex, visibleItems.length - 1) : 0;
+
   useEffect(() => {
     setSelectedIndex(0);
+    setShowAllLibrary(false);
     if (resultsRef.current) resultsRef.current.scrollTop = 0;
   }, [query]);
+
+  useEffect(() => {
+    if (showAllLibrary && items.length > INITIAL_LIBRARY_LIMIT) {
+      setSelectedIndex(INITIAL_LIBRARY_LIMIT);
+      firstRevealedLibraryItem.current?.focus();
+    }
+  }, [showAllLibrary]);
 
   // Handle keyboard events inside command palette
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if ((e.target as HTMLElement).tagName !== 'INPUT') return;
     if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) {
       e.preventDefault();
-      setSelectedIndex((prev) => (items.length > 0 ? (prev + 1) % items.length : 0));
+      setSelectedIndex((prev) =>
+        visibleItems.length > 0 ? (Math.min(prev, visibleItems.length - 1) + 1) % visibleItems.length : 0
+      );
     } else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) {
       e.preventDefault();
-      setSelectedIndex((prev) => (items.length > 0 ? (prev - 1 + items.length) % items.length : 0));
+      setSelectedIndex((prev) =>
+        visibleItems.length > 0
+          ? (Math.min(prev, visibleItems.length - 1) - 1 + visibleItems.length) % visibleItems.length
+          : 0
+      );
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (items[selectedIndex]) {
-        items[selectedIndex].action();
+      if (visibleItems[activeSelectedIndex]) {
+        visibleItems[activeSelectedIndex].action();
       }
     } else if (e.key === 'Escape') {
       e.preventDefault();
@@ -316,8 +340,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             className="p-2 space-y-1"
           >
             {onSubmitRequest && query.trim() && (
-              <div className="px-3 pt-1 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
-                Library &amp; Commands
+              <div className="px-3 pt-1 pb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+                <span>Library &amp; Commands</span>
+                {items.length > 0 && (
+                  <span className="font-mono font-normal tabular-nums text-zinc-400">
+                    ({items.length})
+                  </span>
+                )}
               </div>
             )}
             {items.length === 0 ? (
@@ -325,60 +354,84 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                 No library items or commands match &ldquo;{query}&rdquo;.
               </div>
             ) : (
-              items.map((item, index) => {
-                const isSelected = index === selectedIndex;
-                return (
-                  <div
-                    key={item.id}
-                    data-testid={`palette-item-${item.id}`}
-                    onClick={() => item.action()}
-                    onMouseEnter={() => setSelectedIndex(index)}
-                    className={`flex items-center justify-between px-3 py-2.5 rounded-md cursor-pointer text-sm transition-colors duration-150 ${
-                      isSelected ? 'bg-blue-600/20 text-white' : 'text-zinc-300 hover:bg-zinc-800/50'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <span className="shrink-0 text-zinc-400">
-                        {item.type === 'book' && <BookIcon className="w-4 h-4 text-blue-400" />}
-                        {item.type === 'author' && <User className="w-4 h-4 text-emerald-400" />}
-                        {item.type === 'series' && <Layers className="w-4 h-4 text-purple-400" />}
-                        {item.type === 'navigation' && <ArrowRight className="w-4 h-4 text-zinc-400" />}
-                      </span>
-                      <div className="truncate">
-                        <div className="font-medium text-zinc-100 truncate">{item.title}</div>
-                        {item.book && (
-                          <SeriesBadge
-                            title={item.book.seriesTitle}
-                            id={item.book.seriesId}
-                            author={item.book.authorName}
-                            index={item.book.seriesIndex}
-                            total={series.find((s) => s.id === item.book?.seriesId)?.totalBooks}
-                            onSelect={setSelectedSeries}
-                          />
+              <>
+                {visibleItems.map((item, index) => {
+                  const isSelected = index === activeSelectedIndex;
+                  return (
+                    <div
+                      key={item.id}
+                      ref={index === INITIAL_LIBRARY_LIMIT ? firstRevealedLibraryItem : undefined}
+                      tabIndex={index === INITIAL_LIBRARY_LIMIT ? -1 : undefined}
+                      data-testid={`palette-item-${item.id}`}
+                      onClick={() => item.action()}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && e.target === e.currentTarget) {
+                          e.preventDefault();
+                          item.action();
+                        }
+                      }}
+                      onMouseEnter={() => setSelectedIndex(index)}
+                      className={`flex items-center justify-between px-3 py-2.5 rounded-md cursor-pointer text-sm transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 ${
+                        isSelected ? 'bg-blue-600/20 text-white' : 'text-zinc-300 hover:bg-zinc-800/50'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="shrink-0 text-zinc-400">
+                          {item.type === 'book' && <BookIcon className="w-4 h-4 text-blue-400" />}
+                          {item.type === 'author' && <User className="w-4 h-4 text-emerald-400" />}
+                          {item.type === 'series' && <Layers className="w-4 h-4 text-purple-400" />}
+                          {item.type === 'navigation' && <ArrowRight className="w-4 h-4 text-zinc-400" />}
+                        </span>
+                        <div className="truncate">
+                          <div className="font-medium text-zinc-100 truncate">{item.title}</div>
+                          {item.book && (
+                            <SeriesBadge
+                              title={item.book.seriesTitle}
+                              id={item.book.seriesId}
+                              author={item.book.authorName}
+                              index={item.book.seriesIndex}
+                              total={series.find((s) => s.id === item.book?.seriesId)?.totalBooks}
+                              onSelect={setSelectedSeries}
+                            />
+                          )}
+                          {item.subtitle && (
+                            <div className="text-xs text-zinc-400 truncate">
+                              {item.book ? (
+                                <EntityLink kind="authors" name={item.book.authorName} />
+                              ) : (
+                                item.subtitle
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0 ml-3">
+                        {item.badge && (
+                          <span className="text-[11px] font-mono px-2 py-0.5 rounded-sm bg-zinc-800 border border-zinc-700/80 text-zinc-300">
+                            {item.badge}
+                          </span>
                         )}
-                        {item.subtitle && (
-                          <div className="text-xs text-zinc-400 truncate">
-                            {item.book ? (
-                              <EntityLink kind="authors" name={item.book.authorName} />
-                            ) : (
-                              item.subtitle
-                            )}
-                          </div>
-                        )}
+                        {isSelected && <CornerDownLeft className="w-3.5 h-3.5 text-blue-400" />}
                       </div>
                     </div>
-
-                    <div className="flex items-center gap-2 shrink-0 ml-3">
-                      {item.badge && (
-                        <span className="text-[11px] font-mono px-2 py-0.5 rounded-sm bg-zinc-800 border border-zinc-700/80 text-zinc-300">
-                          {item.badge}
-                        </span>
-                      )}
-                      {isSelected && <CornerDownLeft className="w-3.5 h-3.5 text-blue-400" />}
-                    </div>
+                  );
+                })}
+                {hiddenLibraryCount > 0 && (
+                  <div className="px-3 pt-1.5 pb-1 flex flex-wrap items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowAllLibrary(true)}
+                      className="px-3 py-1.5 text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded-md border border-zinc-700 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400"
+                    >
+                      Show all library results ({hiddenLibraryCount} more)
+                    </button>
+                    <span className="text-xs font-mono tabular-nums text-zinc-400">
+                      Showing {visibleItems.length} of {items.length}
+                    </span>
                   </div>
-                );
-              })
+                )}
+              </>
             )}
           </div>
           {onSubmitRequest && query.trim() && (

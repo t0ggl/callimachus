@@ -372,3 +372,129 @@ func TestDiscoverMatchesAuthorPrefixedTitlesToLibraryAndRequests(t *testing.T) {
 		}
 	}
 }
+
+func TestDiscoverPagination(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	for _, query := range []string{
+		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','mock'),('google_books_api_key','mock')`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mt := testutil.NewMockTransportForTest(t)
+	mt.RegisterHandler("/search.json", func(r *http.Request) (*http.Response, error) {
+		q := r.URL.Query()
+		if q.Get("limit") != "2" {
+			t.Errorf("openlibrary limit = %q, want 2", q.Get("limit"))
+		}
+		if q.Get("page") == "1" {
+			return &http.Response{
+				StatusCode: 200,
+				Body: io.NopCloser(strings.NewReader(`{"num_found":3,"docs":[
+					{"key":"/works/OL1W","title":"OL Book 1","author_name":["Prolific Author"]},
+					{"key":"/works/OL2W","title":"OL Book 2","author_name":["Prolific Author"]}
+				]}`)),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: 200,
+			Body: io.NopCloser(strings.NewReader(`{"num_found":3,"docs":[
+				{"key":"/works/OL3W","title":"OL Book 3","author_name":["Prolific Author"]}
+			]}`)),
+		}, nil
+	})
+	mt.RegisterHandler("/v1/graphql", func(r *http.Request) (*http.Response, error) {
+		var req struct {
+			Query     string
+			Variables map[string]any
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(req.Query, "SearchBooks") {
+			page := int(req.Variables["page"].(float64))
+			body := `{"data":{"search":{"ids":[10,11]}}}`
+			if page == 2 {
+				body = `{"data":{"search":{"ids":[12]}}}`
+			}
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+		}
+		body := `{"data":{"books":[
+			{"id":10,"title":"HC Book 1","contributions":[{"author":{"name":"Prolific Author"}}]},
+			{"id":11,"title":"HC Book 2","contributions":[{"author":{"name":"Prolific Author"}}]},
+			{"id":12,"title":"HC Book 3","contributions":[{"author":{"name":"Prolific Author"}}]}
+		]}}`
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	mt.RegisterHandler("/books/v1/volumes", func(r *http.Request) (*http.Response, error) {
+		q := r.URL.Query()
+		if q.Get("maxResults") != "2" {
+			t.Errorf("google maxResults = %q, want 2", q.Get("maxResults"))
+		}
+		if q.Get("startIndex") == "0" {
+			return &http.Response{
+				StatusCode: 200,
+				Body: io.NopCloser(strings.NewReader(`{"totalItems":3,"items":[
+					{"volumeInfo":{"title":"GB Book 1","authors":["Prolific Author"]}},
+					{"volumeInfo":{"title":"GB Book 2","authors":["Prolific Author"]}}
+				]}`)),
+			}, nil
+		}
+		if q.Get("startIndex") != "2" {
+			t.Errorf("google startIndex = %q, want 2", q.Get("startIndex"))
+		}
+		return &http.Response{
+			StatusCode: 200,
+			Body: io.NopCloser(strings.NewReader(`{"totalItems":3,"items":[
+				{"volumeInfo":{"title":"GB Book 3","authors":["Prolific Author"]}}
+			]}`)),
+		}, nil
+	})
+
+	s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
+	type pageResp struct {
+		Results  []discoverTestMatch `json:"results"`
+		Page     int                 `json:"page"`
+		HasMore  bool                `json:"hasMore"`
+		NextPage int                 `json:"nextPage"`
+	}
+
+	w1 := httptest.NewRecorder()
+	s.handleDiscover(w1, httptest.NewRequest("GET", "/api/discover?q=Prolific+Author&page=1&limit=2", nil))
+	if w1.Code != 200 {
+		t.Fatalf("page 1 returned %d: %s", w1.Code, w1.Body)
+	}
+	var p1 pageResp
+	if err := json.Unmarshal(w1.Body.Bytes(), &p1); err != nil {
+		t.Fatal(err)
+	}
+	if p1.Page != 1 || !p1.HasMore || p1.NextPage != 2 || len(p1.Results) != 6 {
+		t.Fatalf("unexpected page 1 response: %+v", p1)
+	}
+	if p1.Results[0].Title != "HC Book 1" || p1.Results[2].Title != "OL Book 1" || p1.Results[4].Title != "GB Book 1" {
+		t.Errorf("unexpected provider ordering on page 1: %+v", p1.Results)
+	}
+
+	w2 := httptest.NewRecorder()
+	s.handleDiscover(w2, httptest.NewRequest("GET", "/api/discover?q=Prolific+Author&page=2&limit=2", nil))
+	if w2.Code != 200 {
+		t.Fatalf("page 2 returned %d: %s", w2.Code, w2.Body)
+	}
+	var p2 pageResp
+	if err := json.Unmarshal(w2.Body.Bytes(), &p2); err != nil {
+		t.Fatal(err)
+	}
+	if p2.Page != 2 || p2.HasMore || p2.NextPage != 0 || len(p2.Results) != 3 {
+		t.Fatalf("unexpected page 2 response: %+v", p2)
+	}
+
+	for _, bad := range []string{"/api/discover?q=Test&page=0", "/api/discover?q=Test&limit=0", "/api/discover?q=Test&page=abc"} {
+		wBad := httptest.NewRecorder()
+		s.handleDiscover(wBad, httptest.NewRequest("GET", bad, nil))
+		if wBad.Code != http.StatusBadRequest {
+			t.Errorf("%s returned %d, want 400", bad, wBad.Code)
+		}
+	}
+}
