@@ -675,3 +675,60 @@ func TestOpenLibraryLookupByWorkID(t *testing.T) {
 		t.Fatalf("expected ErrNotFound for invalid work id, got %v", err)
 	}
 }
+
+func TestOpenLibraryAndHardcoverSearchPage(t *testing.T) {
+	t.Parallel()
+	mt := testutil.NewMockTransportForTest(t)
+	mt.RegisterHandler("/search.json", func(r *http.Request) (*http.Response, error) {
+		q := r.URL.Query()
+		if q.Get("limit") != "2" {
+			t.Errorf("openlibrary limit = %q, want 2", q.Get("limit"))
+		}
+		body := `{"num_found":3,"docs":[{"key":"/works/OL1W","title":"Book 1","author_name":["Author"]},{"key":"/works/OL2W","title":"Book 2","author_name":["Author"]}]}`
+		if q.Get("page") == "2" {
+			body = `{"num_found":3,"docs":[{"key":"/works/OL3W","title":"Book 3","author_name":["Author"]}]}`
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	mt.RegisterHandler("/v1/graphql", func(r *http.Request) (*http.Response, error) {
+		var req struct {
+			Query     string
+			Variables map[string]any
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(req.Query, "SearchBooks") {
+			if int(req.Variables["perPage"].(float64)) != 2 {
+				t.Errorf("hardcover perPage = %v, want 2", req.Variables["perPage"])
+			}
+			body := `{"data":{"search":{"ids":[1,2]}}}`
+			if int(req.Variables["page"].(float64)) == 2 {
+				body = `{"data":{"search":{"ids":[3]}}}`
+			}
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+		}
+		body := `{"data":{"books":[{"id":1,"title":"HC 1","contributions":[{"author":{"name":"Author"}}]},{"id":2,"title":"HC 2","contributions":[{"author":{"name":"Author"}}]},{"id":3,"title":"HC 3","contributions":[{"author":{"name":"Author"}}]}]}}`
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+
+	ol := metadata.NewOpenLibraryProvider(metadata.WithOpenLibraryClient(mt.Client()))
+	p1, more1, err := ol.SearchPage(context.Background(), "Author", 1, 2)
+	if err != nil || len(p1) != 2 || !more1 {
+		t.Fatalf("openlibrary page 1: len=%d hasMore=%v err=%v", len(p1), more1, err)
+	}
+	p2, more2, err := ol.SearchPage(context.Background(), "Author", 2, 2)
+	if err != nil || len(p2) != 1 || more2 {
+		t.Fatalf("openlibrary page 2: len=%d hasMore=%v err=%v", len(p2), more2, err)
+	}
+
+	hc := metadata.NewHardcoverProvider("mock-key", metadata.WithHardcoverClient(mt.Client()))
+	h1, hMore1, err := hc.SearchPage(context.Background(), "Author", 1, 2)
+	if err != nil || len(h1) != 2 || !hMore1 || h1[0].Title != "HC 1" {
+		t.Fatalf("hardcover page 1: len=%d hasMore=%v err=%v", len(h1), hMore1, err)
+	}
+	h2, hMore2, err := hc.SearchPage(context.Background(), "Author", 2, 2)
+	if err != nil || len(h2) != 1 || hMore2 || h2[0].Title != "HC 3" {
+		t.Fatalf("hardcover page 2: len=%d hasMore=%v err=%v", len(h2), hMore2, err)
+	}
+}

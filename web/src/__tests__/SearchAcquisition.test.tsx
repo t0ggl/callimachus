@@ -21,7 +21,7 @@ it.each(['Frank Herbert', 'Dune', 'Herbert desert planet'])('discovers and queue
   const input = screen.getByRole('textbox', { name: 'Search books, authors, or keywords' });
   await user.type(input, query);
   const add = await screen.findByRole('button', { name: 'Add Dune' });
-  expect(fetchMock).toHaveBeenCalledWith(`/api/discover?q=${encodeURIComponent(query)}`, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  expect(fetchMock).toHaveBeenCalledWith(`/api/discover?q=${encodeURIComponent(query)}&page=1&limit=10`, expect.objectContaining({ signal: expect.any(AbortSignal) }));
   expect(screen.getByRole('img', { name: 'Cover of Dune' })).toHaveAttribute('src', '/cover.jpg');
   expect(screen.getByRole('button', { name: 'Dune series' })).toBeInTheDocument();
   await user.selectOptions(screen.getByLabelText('Format'), 'ebook');

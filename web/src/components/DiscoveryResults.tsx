@@ -8,11 +8,17 @@ import { SeriesDetailModal } from './SeriesDetailModal';
 type RequestFormat = 'epub' | 'm4b';
 
 const INITIAL_RESULT_LIMIT = 5;
+const LOAD_MORE_STEP = 10;
+const DISCOVER_PAGE_SIZE = 10;
+const MAX_PAGES_PER_LOAD = 3;
 
 type Match = {
   description?: string;
   cover_url?: string;
   series?: string;
+  hardcover_id?: string;
+  openlibrary_id?: string;
+  isbn13?: string;
   hardcover_series_id?: number;
   series_index?: number;
   series_total?: number;
@@ -23,6 +29,60 @@ type Match = {
   requested_formats?: string[];
   request_status?: string;
 };
+
+type DiscoverPageResponse = {
+  results: Match[];
+  page: number;
+  hasMore: boolean;
+  nextPage?: number;
+};
+
+function parseDiscoverResponse(data: unknown, requestedPage: number): DiscoverPageResponse {
+  if (Array.isArray(data)) {
+    return { results: data as Match[], page: requestedPage, hasMore: false };
+  }
+  if (data && typeof data === 'object' && Array.isArray((data as { results?: unknown }).results)) {
+    const obj = data as { results: Match[]; page?: number; hasMore?: boolean; nextPage?: number };
+    const hasMore = Boolean(obj.hasMore);
+    const page = typeof obj.page === 'number' && obj.page >= 1 ? obj.page : requestedPage;
+    const nextPage = hasMore
+      ? typeof obj.nextPage === 'number' && obj.nextPage > page
+        ? obj.nextPage
+        : page + 1
+      : undefined;
+    return { results: obj.results, page, hasMore, nextPage };
+  }
+  return { results: [], page: requestedPage, hasMore: false };
+}
+
+function matchIdentityKeys(m: Match): string[] {
+  const keys: string[] = [];
+  if (m.library_book_id) keys.push(`lib:${m.library_book_id}`);
+  if (m.hardcover_id) keys.push(`hc:${m.hardcover_id}`);
+  if (m.openlibrary_id) keys.push(`ol:${m.openlibrary_id}`);
+  if (m.isbn13) {
+    const clean = m.isbn13.replace(/[-\s]/g, '');
+    if (clean) keys.push(`isbn:${clean}`);
+  }
+  const authors = (m.authors ?? []).map((a) => a.trim().toLowerCase()).filter(Boolean).join(', ');
+  keys.push(`ta:${m.title.trim().toLowerCase()}\0${authors}`);
+  return keys;
+}
+
+function appendUniqueMatches(existing: Match[], incoming: Match[]): Match[] {
+  const seen = new Set<string>();
+  for (const item of existing) {
+    for (const key of matchIdentityKeys(item)) seen.add(key);
+  }
+  const merged = [...existing];
+  for (const item of incoming) {
+    const keys = matchIdentityKeys(item);
+    if (keys.some((key) => seen.has(key))) continue;
+    for (const key of keys) seen.add(key);
+    merged.push(item);
+  }
+  return merged;
+}
 
 function requiredFormats(format: RequestType): RequestFormat[] {
   if (format === 'ebook') return ['epub'];
@@ -91,14 +151,18 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
   const [selectedFormat, setSelectedFormat] = useState<RequestType>();
   const format = selectedFormat ?? defaultSearchFormat;
   const [matches, setMatches] = useState<Match[]>([]);
-  const [expanded, setExpanded] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(INITIAL_RESULT_LIMIT);
+  const [hasMore, setHasMore] = useState(false);
+  const [nextPage, setNextPage] = useState<number | undefined>(undefined);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [revealFocus, setRevealFocus] = useState<{ index: number; seq: number } | null>(null);
   const firstRevealedResult = useRef<HTMLLIElement>(null);
-  const remainingCount = matches.length - INITIAL_RESULT_LIMIT;
+  const loadMoreControllerRef = useRef<AbortController | null>(null);
   const [retry, setRetry] = useState(0);
   const [addingKey, setAddingKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [errorSource, setErrorSource] = useState<'search' | 'add' | null>(null);
+  const [errorSource, setErrorSource] = useState<'search' | 'more' | 'add' | null>(null);
   const [message, setMessage] = useState('');
   const [searched, setSearched] = useState(false);
   const [addedFormats, setAddedFormats] = useState<Record<string, RequestFormat[]>>({});
@@ -106,23 +170,34 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
   useEffect(() => {
     const controller = new AbortController();
     let current = true;
+    loadMoreControllerRef.current?.abort();
+    loadMoreControllerRef.current = null;
     setMatches([]);
-    setExpanded(false);
+    setVisibleCount(INITIAL_RESULT_LIMIT);
+    setHasMore(false);
+    setNextPage(undefined);
+    setLoadingMore(false);
+    setRevealFocus(null);
     setError('');
     setErrorSource(null);
     setMessage('');
     setSearched(false);
-    setBusy(Boolean(query.trim()));
-    if (!query.trim()) return;
+    const trimmed = query.trim();
+    setBusy(Boolean(trimmed));
+    if (!trimmed) return;
     const timer = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/discover?q=${encodeURIComponent(query.trim())}`, {
-          signal: controller.signal,
-        });
+        const res = await fetch(
+          `/api/discover?q=${encodeURIComponent(trimmed)}&page=1&limit=${DISCOVER_PAGE_SIZE}`,
+          { signal: controller.signal },
+        );
         if (!res.ok) throw new Error('Search unavailable. Try again shortly.');
         const data = await res.json();
+        const parsed = parseDiscoverResponse(data, 1);
         if (current) {
-          setMatches(Array.isArray(data) ? data : []);
+          setMatches(parsed.results);
+          setHasMore(parsed.hasMore);
+          setNextPage(parsed.nextPage);
           setSearched(true);
         }
       } catch (e) {
@@ -138,12 +213,105 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
       current = false;
       clearTimeout(timer);
       controller.abort();
+      loadMoreControllerRef.current?.abort();
+      loadMoreControllerRef.current = null;
     };
   }, [query, retry]);
 
   useEffect(() => {
-    if (expanded) firstRevealedResult.current?.focus();
-  }, [expanded]);
+    if (revealFocus) firstRevealedResult.current?.focus();
+  }, [revealFocus]);
+
+  const handleViewMore = async () => {
+    const trimmed = query.trim();
+    if (!trimmed || busy || loadingMore) return;
+    const revealIndex = visibleCount;
+    const targetVisible = visibleCount + LOAD_MORE_STEP;
+    setError('');
+    setErrorSource(null);
+
+    if (matches.length >= targetVisible || !hasMore || !nextPage) {
+      const nextVisible = Math.min(targetVisible, matches.length);
+      setVisibleCount(nextVisible);
+      if (nextVisible > revealIndex) {
+        setRevealFocus((prev) => ({ index: revealIndex, seq: (prev?.seq ?? 0) + 1 }));
+      }
+      return;
+    }
+
+    loadMoreControllerRef.current?.abort();
+    const controller = new AbortController();
+    loadMoreControllerRef.current = controller;
+    setLoadingMore(true);
+
+    let combined = matches;
+    let currentHasMore: boolean = hasMore;
+    let currentNextPage: number | undefined = nextPage;
+    let pagesFetched = 0;
+
+    try {
+      while (
+        combined.length < targetVisible &&
+        currentHasMore &&
+        currentNextPage &&
+        pagesFetched < MAX_PAGES_PER_LOAD
+      ) {
+        const requestedPage = currentNextPage;
+        const res = await fetch(
+          `/api/discover?q=${encodeURIComponent(trimmed)}&page=${requestedPage}&limit=${DISCOVER_PAGE_SIZE}`,
+          { signal: controller.signal },
+        );
+        if (!res.ok) throw new Error('Unable to load more results. Try again shortly.');
+        const data = await res.json();
+        if (controller.signal.aborted) return;
+        const parsed = parseDiscoverResponse(data, requestedPage);
+        pagesFetched++;
+        combined = appendUniqueMatches(combined, parsed.results);
+        if (parsed.results.length === 0) {
+          currentHasMore = false;
+          currentNextPage = undefined;
+          break;
+        }
+        currentHasMore = parsed.hasMore;
+        currentNextPage = parsed.nextPage;
+      }
+
+      if (controller.signal.aborted) return;
+      setMatches(combined);
+      setHasMore(currentHasMore);
+      setNextPage(currentNextPage);
+      const nextVisible = Math.min(targetVisible, combined.length);
+      setVisibleCount(nextVisible);
+      if (nextVisible > revealIndex) {
+        setRevealFocus((prev) => ({ index: revealIndex, seq: (prev?.seq ?? 0) + 1 }));
+      }
+    } catch (e) {
+      if (!controller.signal.aborted) {
+        if (combined.length > matches.length) {
+          setMatches(combined);
+          setHasMore(currentHasMore);
+          setNextPage(currentNextPage);
+          const nextVisible = Math.min(targetVisible, combined.length);
+          setVisibleCount(nextVisible);
+          if (nextVisible > revealIndex) {
+            setRevealFocus((prev) => ({ index: revealIndex, seq: (prev?.seq ?? 0) + 1 }));
+          }
+        }
+        setError((e as Error).message);
+        setErrorSource('more');
+      }
+    } finally {
+      if (loadMoreControllerRef.current === controller) {
+        loadMoreControllerRef.current = null;
+      }
+      if (!controller.signal.aborted) {
+        setLoadingMore(false);
+      }
+    }
+  };
+
+  const visibleMatches = matches.slice(0, visibleCount);
+  const canViewMore = matches.length > visibleMatches.length || hasMore;
 
   const add = async (m: Match) => {
     const authors = m.authors ?? [];
@@ -201,7 +369,10 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-semibold text-zinc-100">{allowRequest ? 'Find books to add' : 'Discover books'}</h2>
           {searched && matches.length > 0 && (
-            <span className="text-xs font-mono text-zinc-400">({matches.length})</span>
+            <span className="text-xs font-mono tabular-nums text-zinc-400">
+              ({visibleMatches.length}
+              {hasMore ? '+' : visibleMatches.length < matches.length ? ` of ${matches.length}` : ''})
+            </span>
           )}
         </div>
 
@@ -248,13 +419,19 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
             <AlertCircle className="w-4 h-4 text-red-400 shrink-0" aria-hidden="true" />
             <span className="min-w-0 break-words">{error}</span>
           </div>
-          {errorSource === 'search' && (
+          {(errorSource === 'search' || errorSource === 'more') && (
             <button
               type="button"
               className="px-2.5 py-1 text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded-md border border-zinc-700 transition-colors shrink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400"
-              onClick={() => setRetry((value) => value + 1)}
+              onClick={() => {
+                if (errorSource === 'more') {
+                  void handleViewMore();
+                } else {
+                  setRetry((value) => value + 1);
+                }
+              }}
             >
-              Retry search
+              {errorSource === 'more' ? 'Retry' : 'Retry search'}
             </button>
           )}
         </div>
@@ -272,7 +449,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
 
       {matches.length > 0 && (
         <ul className="space-y-2.5" aria-label="Book discovery results">
-          {(expanded ? matches : matches.slice(0, INITIAL_RESULT_LIMIT)).map((m, i) => {
+          {visibleMatches.map((m, i) => {
             const authors = m.authors ?? [];
             const itemKey = `${m.title}\0${authors.join(', ')}`;
             const requestedForBook = new Set<RequestFormat>([
@@ -285,8 +462,8 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
             return (
               <li
                 key={`${itemKey}-${i}`}
-                ref={i === INITIAL_RESULT_LIMIT ? firstRevealedResult : undefined}
-                tabIndex={i === INITIAL_RESULT_LIMIT ? -1 : undefined}
+                ref={revealFocus?.index === i ? firstRevealedResult : undefined}
+                tabIndex={revealFocus?.index === i ? -1 : undefined}
                 className="bg-zinc-950/60 border border-zinc-800 hover:border-zinc-700 rounded-lg p-3 flex items-center justify-between gap-3 sm:gap-4 transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400"
               >
                 <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -401,14 +578,22 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
           })}
         </ul>
       )}
-      {!expanded && remainingCount > 0 && (
-        <button
-          type="button"
-          onClick={() => setExpanded(true)}
-          className="px-3 py-2 text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded-md border border-zinc-700 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400"
-        >
-          Show more ({remainingCount} more)
-        </button>
+      {!busy && matches.length > 0 && canViewMore && (
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+          <button
+            type="button"
+            disabled={loadingMore}
+            onClick={() => void handleViewMore()}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded-md border border-zinc-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400"
+          >
+            {loadingMore && <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" aria-hidden="true" />}
+            {loadingMore ? 'Loading more…' : 'View more'}
+          </button>
+          <span className="text-xs font-mono tabular-nums text-zinc-400">
+            Showing {visibleMatches.length}
+            {hasMore ? '+' : ` of ${matches.length}`}
+          </span>
+        </div>
       )}
 
       {searched && !matches.length && !busy && !error && (

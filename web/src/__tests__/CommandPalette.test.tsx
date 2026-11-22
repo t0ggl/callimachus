@@ -232,6 +232,92 @@ describe('CommandPalette Component', () => {
     await user.keyboard('{ArrowDown}{Enter}');
     expect(onNavigate).toHaveBeenCalledWith('activity');
   });
+
+  it('shows the first 5 matching library books with a control to view all, independent of download search', async () => {
+    const user = userEvent.setup({ delay: null });
+    const onSelectBook = vi.fn();
+    const prolificBooks = Array.from({ length: 8 }, (_, index) => ({
+      ...testBooks[0],
+      id: `prolific_${index + 1}`,
+      title: `Cosmere Novel ${index + 1}`,
+      authorId: 'auth_prolific',
+      authorName: 'Brandon Sanderson',
+      seriesId: undefined,
+      seriesTitle: undefined,
+    }));
+    const prolificAuthors = [
+      { id: 'auth_prolific', name: 'Brandon Sanderson', sortName: 'Sanderson, Brandon', bookCount: 8 },
+    ];
+    const discoveryMatches = Array.from({ length: 16 }, (_, index) => ({
+      title: `Discover Sanderson ${index + 1}`,
+      authors: ['Brandon Sanderson'],
+      year: 2010 + index,
+    }));
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          results: discoveryMatches,
+          page: 1,
+          hasMore: false,
+        }),
+      }),
+    );
+
+    render(
+      <CommandPalette
+        isOpen={true}
+        onClose={vi.fn()}
+        books={prolificBooks}
+        authors={prolificAuthors}
+        series={[]}
+        onNavigate={vi.fn()}
+        onSelectBook={onSelectBook}
+        onSubmitRequest={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    const input = screen.getByTestId('command-palette-input');
+    await user.type(input, 'Brandon Sanderson');
+
+    // Only the first 5 library matches appear initially (8 books + 1 author = 9 total -> 4 hidden)
+    expect(screen.getByTestId('palette-item-book_prolific_5')).toBeInTheDocument();
+    expect(screen.queryByTestId('palette-item-book_prolific_6')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('palette-item-auth_auth_prolific')).not.toBeInTheDocument();
+
+    // Download search section renders separately with its first 5 results and View more control
+    expect(await screen.findByRole('heading', { name: 'Discover Sanderson 5' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Discover Sanderson 6' })).not.toBeInTheDocument();
+    const viewMoreDownload = screen.getByRole('button', { name: 'View more' });
+
+    // Expanding library results does not alter download search pagination
+    const showAllLibrary = screen.getByRole('button', { name: 'Show all library results (4 more)' });
+    await user.click(showAllLibrary);
+
+    expect(screen.getByTestId('palette-item-book_prolific_6')).toHaveFocus();
+    expect(screen.getByTestId('palette-item-book_prolific_8')).toBeInTheDocument();
+    expect(screen.getByTestId('palette-item-auth_auth_prolific')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Show all library results/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Discover Sanderson 6' })).not.toBeInTheDocument();
+
+    // Pressing View more in download search reveals the next 10 (5 -> 15) without touching library results
+    await user.click(viewMoreDownload);
+    expect(screen.getByRole('heading', { name: 'Discover Sanderson 15' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Discover Sanderson 16' })).not.toBeInTheDocument();
+
+    // Changing the query resets library expansion back to 5
+    await user.clear(input);
+    await user.type(input, 'Cosmere Novel');
+    expect(screen.getByTestId('palette-item-book_prolific_5')).toBeInTheDocument();
+    expect(screen.queryByTestId('palette-item-book_prolific_6')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show all library results (3 more)' })).toBeInTheDocument();
+
+    // Keyboard navigation wraps across visible items only before expanding
+    await user.keyboard('{ArrowUp}{Enter}');
+    expect(onSelectBook).toHaveBeenCalledWith(prolificBooks[4]);
+  });
 });
 
 describe('Global Palette Triggers in App', () => {

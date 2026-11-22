@@ -24,7 +24,7 @@ describe('book discovery', () => {
     expect(select).toHaveValue('both');
   });
 
-  it('shows five ranked matches, reveals the rest by keyboard, and resets for a new query', async () => {
+  it('shows five ranked matches, reveals 10 per View more press by keyboard until exhausted, and resets for a new query', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       const user = userEvent.setup({ delay: null });
@@ -36,7 +36,7 @@ describe('book discovery', () => {
           library_book_id: index === 5 ? 'owned-book' : undefined,
         })),
       });
-      const fetch = vi.fn().mockResolvedValueOnce(search('First', 8)).mockResolvedValueOnce(search('Second', 6));
+      const fetch = vi.fn().mockResolvedValueOnce(search('First', 26)).mockResolvedValueOnce(search('Second', 6));
       vi.stubGlobal('fetch', fetch);
       const onOpenBook = vi.fn();
       const props = { onSubmitRequest: vi.fn(), onOpenBook };
@@ -44,15 +44,17 @@ describe('book discovery', () => {
       await act(() => vi.advanceTimersByTimeAsync(250));
       vi.useRealTimers();
 
-      const showMore = screen.getByRole('button', { name: 'Show more (3 more)' });
+      const viewMore = screen.getByRole('button', { name: 'View more' });
       expect(screen.getAllByRole('listitem')).toHaveLength(5);
       expect(screen.getByRole('heading', { name: 'First 5' })).toBeInTheDocument();
       expect(screen.queryByRole('heading', { name: 'First 6' })).not.toBeInTheDocument();
 
-      showMore.focus();
+      // First View more press reveals next 10 (5 -> 15) and focuses item 6
+      viewMore.focus();
       await user.keyboard('{Enter}');
-      expect(screen.getAllByRole('listitem')).toHaveLength(8);
-      expect(screen.queryByRole('button', { name: /Show more/ })).not.toBeInTheDocument();
+      expect(screen.getAllByRole('listitem')).toHaveLength(15);
+      expect(screen.getByRole('heading', { name: 'First 15' })).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'First 16' })).not.toBeInTheDocument();
       expect(screen.getByRole('heading', { name: 'First 6' }).closest('li')).toHaveFocus();
       await user.tab();
       expect(screen.getByRole('button', { name: 'In Library: First 6' })).toHaveFocus();
@@ -60,14 +62,112 @@ describe('book discovery', () => {
       expect(onOpenBook).toHaveBeenCalledWith('owned-book');
       expect(fetch).toHaveBeenCalledTimes(1);
 
+      // Second View more press reveals next 10 (15 -> 25) and focuses item 16
+      await user.click(screen.getByRole('button', { name: 'View more' }));
+      expect(screen.getAllByRole('listitem')).toHaveLength(25);
+      expect(screen.getByRole('heading', { name: 'First 25' })).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'First 26' })).not.toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'First 16' }).closest('li')).toHaveFocus();
+
+      // Third View more press reveals the final item (25 -> 26) and hides View more
+      await user.click(screen.getByRole('button', { name: 'View more' }));
+      expect(screen.getAllByRole('listitem')).toHaveLength(26);
+      expect(screen.getByRole('heading', { name: 'First 26' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'View more' })).not.toBeInTheDocument();
+
+      // Query change resets back to 5
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       rerender(<DiscoveryResults query="Second" {...props} />);
       await act(() => vi.advanceTimersByTimeAsync(250));
       expect(screen.getAllByRole('listitem')).toHaveLength(5);
-      expect(screen.getByRole('button', { name: 'Show more (1 more)' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'View more' })).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('fetches paginated download results on demand, deduplicates across pages, handles load-more errors, and stops when exhausted', async () => {
+    const user = userEvent.setup({ delay: null });
+    const makeBatch = (start: number, count: number) =>
+      Array.from({ length: count }, (_, idx) => ({
+        title: `Author Work ${start + idx}`,
+        authors: ['Prolific Author'],
+        year: 2000 + start + idx,
+        openlibrary_id: `OL${start + idx}W`,
+      }));
+
+    let page3Failures = 1;
+    const fetchMock = vi.fn(async (url: string) => {
+      const parsed = new URL(url, 'http://localhost');
+      const page = Number(parsed.searchParams.get('page'));
+      const limit = Number(parsed.searchParams.get('limit'));
+      expect(limit).toBe(10);
+      if (page === 1) {
+        return {
+          ok: true,
+          json: async () => ({
+            results: makeBatch(1, 10),
+            page: 1,
+            hasMore: true,
+            nextPage: 2,
+          }),
+        };
+      }
+      if (page === 2) {
+        return {
+          ok: true,
+          json: async () => ({
+            // Include duplicate of item 10 from page 1 + 10 new items (11..20)
+            results: [...makeBatch(10, 1), ...makeBatch(11, 10)],
+            page: 2,
+            hasMore: true,
+            nextPage: 3,
+          }),
+        };
+      }
+      if (page === 3) {
+        if (page3Failures > 0) {
+          page3Failures--;
+          return { ok: false };
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            results: makeBatch(21, 3),
+            page: 3,
+            hasMore: false,
+          }),
+        };
+      }
+      throw new Error(`Unexpected page ${page}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<DiscoveryResults query="Prolific Author" onSubmitRequest={vi.fn()} />);
+
+    // Page 1 fetched (10 items loaded), only 5 shown initially
+    expect(await screen.findByRole('heading', { name: 'Author Work 5' })).toBeInTheDocument();
+    expect(screen.getAllByRole('listitem')).toHaveLength(5);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // 1st View more needs 15 total -> fetches page 2, deduplicates item 10, shows 15
+    await user.click(screen.getByRole('button', { name: 'View more' }));
+    expect(await screen.findByRole('heading', { name: 'Author Work 15' })).toBeInTheDocument();
+    expect(screen.getAllByRole('listitem')).toHaveLength(15);
+    expect(screen.getAllByRole('heading', { name: 'Author Work 10' })).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // 2nd View more needs 25 total -> fetches page 3 which fails first, keeping existing 15 intact
+    await user.click(screen.getByRole('button', { name: 'View more' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/Unable to load more results/i);
+    expect(screen.getAllByRole('listitem')).toHaveLength(15);
+
+    // Retrying loads page 3 (3 final items -> 23 unique total) and hides View more
+    await user.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByRole('heading', { name: 'Author Work 23' })).toBeInTheDocument();
+    expect(screen.getAllByRole('listitem')).toHaveLength(23);
+    expect(screen.queryByRole('button', { name: 'View more' })).not.toBeInTheDocument();
   });
 
   it('confirms metadata with a single compact Add action and loading/added states', async () => {

@@ -399,7 +399,42 @@ func (p *HardcoverProvider) Search(ctx context.Context, query string) ([]BookMet
 	if err := p.doQuery(ctx, `query SearchBooks($query: String!) { search(query: $query, query_type: "Book", per_page: 25) { ids } }`, map[string]interface{}{"query": query}, &search); err != nil {
 		return nil, err
 	}
-	if len(search.Data.Search.IDs) == 0 {
+	return p.fetchSearchDetails(ctx, search.Data.Search.IDs)
+}
+
+// SearchPage searches a single page of Hardcover books and reports whether more pages remain.
+func (p *HardcoverProvider) SearchPage(ctx context.Context, query string, page, limit int) ([]BookMetadata, bool, error) {
+	if limit <= 0 {
+		results, err := p.Search(ctx, query)
+		return results, false, err
+	}
+	if page < 1 {
+		page = 1
+	}
+	var search struct {
+		Data struct {
+			Search struct {
+				IDs []int `json:"ids"`
+			} `json:"search"`
+		} `json:"data"`
+	}
+	if err := p.doQuery(
+		ctx,
+		`query SearchBooks($query: String!, $perPage: Int!, $page: Int!) { search(query: $query, query_type: "Book", per_page: $perPage, page: $page) { ids } }`,
+		map[string]interface{}{"query": query, "perPage": limit, "page": page},
+		&search,
+	); err != nil {
+		return nil, false, err
+	}
+	results, err := p.fetchSearchDetails(ctx, search.Data.Search.IDs)
+	if err != nil {
+		return nil, false, err
+	}
+	return results, len(search.Data.Search.IDs) >= limit, nil
+}
+
+func (p *HardcoverProvider) fetchSearchDetails(ctx context.Context, ids []int) ([]BookMetadata, error) {
+	if len(ids) == 0 {
 		return []BookMetadata{}, nil
 	}
 	var res hardcoverBookResponse
@@ -409,11 +444,11 @@ func (p *HardcoverProvider) Search(ctx context.Context, query string) ([]BookMet
  `+hardcoverMembershipFields+`
  default_cover_edition { language { code2 code3 } publisher { name } }
  editions(where: {isbn_13: {_is_null: false}}, order_by: {id: asc}, limit: 1) { isbn_13 language { code2 code3 } }
- } }`+hardcoverMembershipFragment, map[string]interface{}{"ids": search.Data.Search.IDs}, &res); err != nil {
+ } }`+hardcoverMembershipFragment, map[string]interface{}{"ids": ids}, &res); err != nil {
 		return nil, err
 	}
 	results := make([]BookMetadata, 0, len(res.Data.Books))
-	for _, id := range search.Data.Search.IDs {
+	for _, id := range ids {
 		for _, b := range res.Data.Books {
 			if b.ID == id {
 				results = append(results, mapHardcoverBookNode(&b))

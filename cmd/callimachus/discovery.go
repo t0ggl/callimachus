@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -20,15 +21,56 @@ import (
 	"github.com/t0ggl/callimachus/pkg/requests"
 )
 
+const (
+	defaultDiscoverPageSize = 10
+	maxDiscoverPageSize     = 50
+	maxDiscoverPage         = 50
+)
+
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	if query == "" || len(query) > 500 {
 		http.Error(w, "Enter a title, author, or keywords", 400)
 		return
 	}
+	rawPage := strings.TrimSpace(r.URL.Query().Get("page"))
+	rawLimit := strings.TrimSpace(r.URL.Query().Get("limit"))
+	paginated := rawPage != "" || rawLimit != ""
+	page := 1
+	limit := defaultDiscoverPageSize
+	if paginated {
+		if rawPage != "" {
+			parsed, err := strconv.Atoi(rawPage)
+			if err != nil || parsed < 1 || parsed > maxDiscoverPage {
+				http.Error(w, "Invalid page number", http.StatusBadRequest)
+				return
+			}
+			page = parsed
+		}
+		if rawLimit != "" {
+			parsed, err := strconv.Atoi(rawLimit)
+			if err != nil || parsed < 1 || parsed > maxDiscoverPageSize {
+				http.Error(w, "Invalid page size", http.StatusBadRequest)
+				return
+			}
+			limit = parsed
+		}
+	}
 	ctx := r.Context()
 	slog.DebugContext(ctx, "metadata discovery search started")
-	books, status := s.searchMetadata(ctx, query)
+	var (
+		books   []metadata.BookMetadata
+		hasMore bool
+		status  int
+	)
+	if paginated {
+		books, hasMore, status = s.searchMetadataPage(ctx, query, page, limit)
+		if page >= maxDiscoverPage {
+			hasMore = false
+		}
+	} else {
+		books, status = s.searchMetadata(ctx, query)
+	}
 	if status != 0 {
 		http.Error(w, http.StatusText(status), status)
 		return
@@ -194,6 +236,23 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.DebugContext(ctx, "metadata discovery search completed", "results", len(out))
 	w.Header().Set("Content-Type", "application/json")
+	if paginated {
+		resp := struct {
+			Results  []match `json:"results"`
+			Page     int     `json:"page"`
+			HasMore  bool    `json:"hasMore"`
+			NextPage int     `json:"nextPage,omitempty"`
+		}{
+			Results: out,
+			Page:    page,
+			HasMore: hasMore,
+		}
+		if hasMore {
+			resp.NextPage = page + 1
+		}
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
 	json.NewEncoder(w).Encode(out)
 }
 
@@ -205,58 +264,93 @@ func (s *Server) searchMetadata(ctx context.Context, query string) ([]metadata.B
 	return s.searchMetadataWithSettings(ctx, cfg.Settings, query)
 }
 
+func (s *Server) searchMetadataPage(ctx context.Context, query string, page, limit int) ([]metadata.BookMetadata, bool, int) {
+	cfg, err := config.Load(ctx, s.db, s.baseOverrides)
+	if err != nil {
+		return nil, false, http.StatusInternalServerError
+	}
+	return s.searchMetadataPageWithSettings(ctx, cfg.Settings, query, page, limit)
+}
+
 func (s *Server) searchMetadataWithSettings(ctx context.Context, settings config.Settings, query string) ([]metadata.BookMetadata, int) {
+	books, _, status := s.searchMetadataPageWithSettings(ctx, settings, query, 0, 0)
+	return books, status
+}
+
+func (s *Server) searchMetadataPageWithSettings(ctx context.Context, settings config.Settings, query string, page, limit int) ([]metadata.BookMetadata, bool, int) {
 	client := s.prowlarrHTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
 	}
-	var providers []metadata.Provider
-	if settings.OpenLibraryEnabled {
-		providers = append(providers, metadata.NewOpenLibraryProvider(metadata.WithOpenLibraryClient(client)))
-	}
-	if settings.HardcoverAPIKey != "" {
-		providers = append(providers, metadata.NewHardcoverProvider(settings.HardcoverAPIKey, metadata.WithHardcoverClient(client)))
-	}
 	var books []metadata.BookMetadata
 	success := false
-	for _, p := range providers {
-		found, err := p.Search(ctx, query)
+	hasMore := false
+	if settings.OpenLibraryEnabled {
+		p := metadata.NewOpenLibraryProvider(metadata.WithOpenLibraryClient(client))
+		found, more, err := p.SearchPage(ctx, query, page, limit)
 		logMetadataResponse(ctx, p.Name(), len(found), err)
 		if err == nil {
 			success = true
+			hasMore = hasMore || more
+			books = append(found, books...)
+		}
+	}
+	if settings.HardcoverAPIKey != "" {
+		p := metadata.NewHardcoverProvider(settings.HardcoverAPIKey, metadata.WithHardcoverClient(client))
+		found, more, err := p.SearchPage(ctx, query, page, limit)
+		logMetadataResponse(ctx, p.Name(), len(found), err)
+		if err == nil {
+			success = true
+			hasMore = hasMore || more
 			books = append(found, books...)
 		}
 	}
 	if settings.GoogleBooksAPIKey != "" {
-		found, err := searchGoogleBooks(ctx, client, query, settings.GoogleBooksAPIKey)
+		found, more, err := searchGoogleBooksPage(ctx, client, query, settings.GoogleBooksAPIKey, page, limit)
 		logMetadataResponse(ctx, "Google Books", len(found), err)
 		if err == nil {
 			success = true
+			hasMore = hasMore || more
 			books = append(books, found...)
 		}
 	}
 	if !success {
-		return nil, http.StatusBadGateway
+		return nil, false, http.StatusBadGateway
 	}
-	return books, 0
+	return books, hasMore, 0
 }
 
 func searchGoogleBooks(ctx context.Context, client *http.Client, query, key string) ([]metadata.BookMetadata, error) {
+	books, _, err := searchGoogleBooksPage(ctx, client, query, key, 0, 0)
+	return books, err
+}
+
+func searchGoogleBooksPage(ctx context.Context, client *http.Client, query, key string, page, limit int) ([]metadata.BookMetadata, bool, error) {
 	values := url.Values{"q": {query}, "maxResults": {"20"}, "key": {key}}
+	startIndex := 0
+	if limit > 0 {
+		if page < 1 {
+			page = 1
+		}
+		startIndex = (page - 1) * limit
+		values.Set("maxResults", strconv.Itoa(limit))
+		values.Set("startIndex", strconv.Itoa(startIndex))
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", "https://www.googleapis.com/books/v1/volumes?"+values.Encode(), nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected Google Books status %d", resp.StatusCode)
+		return nil, false, fmt.Errorf("unexpected Google Books status %d", resp.StatusCode)
 	}
 	var result struct {
-		Items []struct {
+		TotalItems int `json:"totalItems"`
+		Items      []struct {
 			VolumeInfo struct {
 				Title               string
 				Subtitle            string
@@ -274,7 +368,7 @@ func searchGoogleBooks(ctx context.Context, client *http.Client, query, key stri
 		}
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	books := make([]metadata.BookMetadata, 0, len(result.Items))
 	for _, item := range result.Items {
@@ -296,7 +390,11 @@ func searchGoogleBooks(ctx context.Context, client *http.Client, query, key stri
 		}
 		books = append(books, book)
 	}
-	return books, nil
+	hasMore := false
+	if limit > 0 {
+		hasMore = len(result.Items) > 0 && (result.TotalItems > startIndex+len(result.Items) || len(result.Items) >= limit)
+	}
+	return books, hasMore, nil
 }
 
 func logMetadataResponse(ctx context.Context, provider string, count int, err error) {
