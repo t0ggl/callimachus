@@ -159,16 +159,14 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     setPrevBook(book);
     setActiveBook(book);
     setMonitored(Boolean(book?.monitored));
-    setActionError('');
-    setDeleteError('');
-    if (!sameResolvingBook) {
+    if (!sameResolvingBook && !sameBook) {
+      setActionError('');
+      setDeleteError('');
       setActionsMenuOpen(false);
       setShowDownloadOptions(false);
       setRepairBookID(initialPanel === 'repair' && book?.id ? book.id : undefined);
       setConfirmDelete(false);
       setDeleteFiles(false);
-    }
-    if (!sameResolvingBook && !sameBook) {
       setFindingCoverBookID(undefined);
       setCoverUploading(false);
       setCoverError('');
