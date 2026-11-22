@@ -33,7 +33,7 @@ docker run -d \
   -e CALLIMACHUS_ADMIN_PASSWORD="change-me" \
   -v /path/to/config:/config \
   -v /path/to/books:/books \
-  ghcr.io/t0ggl/callimachus:0.49.0
+  ghcr.io/t0ggl/callimachus:latest
 ```
 
 Open `http://localhost:8080` in your browser to sign in.
@@ -57,7 +57,7 @@ docker run -d \
   -v /path/to/config:/config \
   -v /path/to/books:/books \
   -v /path/to/completed-downloads:/downloads/completed \
-  ghcr.io/t0ggl/callimachus:0.49.0
+  ghcr.io/t0ggl/callimachus:latest
 ```
 
 ## Building from Source
