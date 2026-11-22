@@ -108,13 +108,17 @@ func TestBookMetadataRepair(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	root := t.TempDir()
 	path := filepath.Join(root, "First.EPUB")
-	second := filepath.Join(root, "Second.epub")
 	sidecar := filepath.Join(root, "First.opf")
+	dupA := filepath.Join(root, "DupAuthor", "SeriesA", "Dup Book (2024)", "Dup Book (2024) - DupAuthor.epub")
+	dupB := filepath.Join(root, "DupAuthor", "SeriesB", "Dup Book (2024)", "Dup Book (2024) - DupAuthor.epub")
 	fixture, err := os.ReadFile(filepath.Join(testutil.RepoRoot(), "testdata", "epubs", "epub3_valid.epub"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, target := range []string{path, second} {
+	for _, target := range []string{path, dupA, dupB} {
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(target, fixture, 0640); err != nil {
 			t.Fatal(err)
 		}
@@ -127,14 +131,19 @@ func TestBookMetadataRepair(t *testing.T) {
 		INSERT INTO series (id, title) VALUES ('s', 'Library Series');
 		INSERT INTO books (id, title, author_id, subtitle, series_id, series_index, release_date, synopsis)
 		VALUES ('b', 'Library Title', 'a', 'Library Subtitle', 's', 0.5, '2024', 'Library synopsis'),
+		       ('dup', 'Dup Book', 'a', NULL, 's', 1.0, '2024', NULL),
 		       ('empty', 'No EPUB', 'a', NULL, NULL, NULL, NULL, NULL);
 		INSERT INTO book_editions (id, book_id, format, language, publisher, isbn13, publication_date)
 		VALUES ('e', 'b', 'epub', 'fr', 'Library Press', '9781234567897', '2024-05-20'),
-		       ('e2', 'b', 'epub', 'de', 'Other Press', NULL, NULL);
+		       ('e-dup', 'dup', 'epub', 'en', 'Dup Press', NULL, NULL);
 	`); err != nil {
 		t.Fatal(err)
 	}
-	for _, asset := range []struct{ id, edition, path string }{{"first", "e", path}, {"second", "e2", second}} {
+	for _, asset := range []struct{ id, edition, path string }{
+		{"first", "e", path},
+		{"dup-a", "e-dup", dupA},
+		{"dup-b", "e-dup", dupB},
+	} {
 		if _, err := db.Exec("INSERT INTO media_assets (id, edition_id, file_path, file_size) VALUES (?, ?, ?, ?)",
 			asset.id, asset.edition, asset.path, len(fixture)); err != nil {
 			t.Fatal(err)
@@ -200,51 +209,64 @@ func TestBookMetadataRepair(t *testing.T) {
 	request("GET", "/api/books/unknown/metadata-diff", nil, admin, http.StatusNotFound)
 	request("GET", "/api/books/empty/metadata-diff", nil, admin, http.StatusBadRequest)
 
+	// Duplicate EPUB book surfaces both relative paths in preview and blocks apply with 409 Conflict.
+	var dupPreview repairPreview
+	if err := json.Unmarshal(request("GET", "/api/books/dup/metadata-diff", nil, admin, 200), &dupPreview); err != nil {
+		t.Fatal(err)
+	}
+	if !dupPreview.HasDuplicates || len(dupPreview.Files) != 2 {
+		t.Fatalf("expected duplicate preview with 2 files, got %+v", dupPreview)
+	}
+	request("POST", "/api/books/dup/fix-metadata", nil, admin, http.StatusConflict)
+	assertMetadataRepairBytes(t, dupA, fixture)
+	assertMetadataRepairBytes(t, dupB, fixture)
+
 	var preview repairPreview
 	if err := json.Unmarshal(request("GET", base+"metadata-diff", nil, admin, 200), &preview); err != nil {
 		t.Fatal(err)
 	}
-	if len(preview.Files) != 2 || preview.Files[0].Filename != "First.EPUB" ||
+	if len(preview.Files) != 1 || preview.Files[0].Filename != "First.EPUB" ||
 		preview.Files[0].Diffs[0] != (metadataDiff{"title", "Synthetic Test Book Beta", "Library Title", true}) {
 		t.Fatalf("unexpected preview: %+v", preview)
 	}
-	// An invalid second EPUB blocks publication, even after the first was staged.
-	if err := os.WriteFile(second, []byte("broken EPUB"), 0640); err != nil {
+	wantInitialRel := "Library Author/Library Series/Library Title (2024)/Library Title (2024) - Library Author.epub"
+	if preview.Files[0].TargetPath != wantInitialRel {
+		t.Fatalf("preview targetPath = %q, want %q", preview.Files[0].TargetPath, wantInitialRel)
+	}
+	// An invalid EPUB blocks publication without modifying sidecar.
+	if err := os.WriteFile(path, []byte("broken EPUB"), 0640); err != nil {
 		t.Fatal(err)
 	}
 	request("POST", base+"fix-metadata", nil, admin, http.StatusBadRequest)
-	assertMetadataRepairBytes(t, path, fixture)
 	assertSidecarTitle(t, sidecar, "Stale sidecar")
-	if err := os.Remove(second); err != nil {
+	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
 	outside := filepath.Join(t.TempDir(), "external.epub")
 	if err := os.WriteFile(outside, fixture, 0640); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, second); err != nil {
+	if err := os.Symlink(outside, path); err != nil {
 		t.Fatal(err)
 	}
 	request("GET", base+"metadata-diff", nil, admin, http.StatusNotFound)
 	request("POST", base+"fix-metadata", nil, admin, http.StatusNotFound)
 	assertMetadataRepairBytes(t, outside, fixture)
-	if err := os.Remove(second); err != nil {
+	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(second, fixture, 0640); err != nil {
+	if err := os.WriteFile(path, fixture, 0640); err != nil {
 		t.Fatal(err)
 	}
 	request("POST", base+"fix-metadata", repairRequest{Preview: preview.Preview}, admin, 200)
-	assertSidecarTitle(t, sidecar, "Library Title")
-	if _, err := os.Stat(filepath.Join(root, "Second.opf")); !os.IsNotExist(err) {
-		t.Fatalf("repair created a missing sidecar: %v", err)
+	relocatedPath := filepath.Join(root, filepath.FromSlash(wantInitialRel))
+	relocatedSidecar := strings.TrimSuffix(relocatedPath, ".epub") + ".opf"
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("old EPUB path still exists after relocation: %v", err)
 	}
-	genericSidecar := filepath.Join(root, "metadata.opf")
-	if err := epub.WriteSidecarFile(epub.Metadata{Title: "Generic sidecar"}, genericSidecar); err != nil {
-		t.Fatal(err)
-	}
-	assertMetadataRepairArchive(t, path, fixture)
-	original, err := epub.OpenNative(path)
+	assertSidecarTitle(t, relocatedSidecar, "Library Title")
+	assertMetadataRepairArchive(t, relocatedPath, fixture)
+	original, err := epub.OpenNative(relocatedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +309,11 @@ func TestBookMetadataRepair(t *testing.T) {
 	if preview.BookDiffs[0].LibraryValue != "Other Name" || preview.Files[0].Diffs[0].FileValue != "Library Title" {
 		t.Fatalf("unexpected candidate preview: %+v", preview)
 	}
-	assertSidecarTitle(t, sidecar, "Library Title")
+	wantCandidateRel := "New Author & Second Author/Library Series/Other Name (2026)/Other Name (2026) - New Author & Second Author.epub"
+	if preview.Files[0].TargetPath != wantCandidateRel {
+		t.Fatalf("candidate preview targetPath = %q, want %q", preview.Files[0].TargetPath, wantCandidateRel)
+	}
+	assertSidecarTitle(t, relocatedSidecar, "Library Title")
 	title := func() string {
 		t.Helper()
 		var title string
@@ -304,24 +330,33 @@ func TestBookMetadataRepair(t *testing.T) {
 	if got := title(); got != "Other Name" {
 		t.Fatalf("library title = %q", got)
 	}
-	assertSidecarTitle(t, sidecar, "Other Name")
-	assertSidecarTitle(t, genericSidecar, "Other Name")
-	data, err := os.ReadFile(sidecar)
+	finalPath := filepath.Join(root, filepath.FromSlash(wantCandidateRel))
+	finalSidecar := strings.TrimSuffix(finalPath, ".epub") + ".opf"
+	assertSidecarTitle(t, finalSidecar, "Other Name")
+	if _, err := os.Stat(filepath.Join(root, "Library Author")); !os.IsNotExist(err) {
+		t.Fatalf("empty old author directory was not pruned: %v", err)
+	}
+	data, err := os.ReadFile(finalSidecar)
 	if err != nil || !bytes.Contains(data, []byte(`href="First.jpg"`)) {
 		t.Fatalf("repair discarded the sidecar cover reference: %v", err)
 	}
-	for _, target := range []string{path, second} {
-		book, err := epub.OpenNative(target)
-		if err != nil {
-			t.Fatal(err)
-		}
-		meta := book.Metadata()
-		if meta.Title != "Other Name" || meta.ISBN13 != "9789999999991" || strings.Join(meta.Authors, ", ") != "New Author, Second Author" {
-			t.Fatalf("candidate metadata not written: %+v", meta)
-		}
+	book, err := epub.OpenNative(finalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta = book.Metadata()
+	if meta.Title != "Other Name" || meta.ISBN13 != "9789999999991" || strings.Join(meta.Authors, ", ") != "New Author, Second Author" {
+		t.Fatalf("candidate metadata not written: %+v", meta)
+	}
+	var storedPath string
+	if err := db.QueryRow("SELECT file_path FROM media_assets WHERE id = 'first'").Scan(&storedPath); err != nil {
+		t.Fatal(err)
+	}
+	if storedPath != finalPath {
+		t.Fatalf("DB file_path = %q, want %q", storedPath, finalPath)
 	}
 	request("POST", base+"fix-metadata", candidate, admin, http.StatusConflict)
-	matchesOnDisk, err := filepath.Glob(filepath.Join(root, ".callimachus-metadata-*"))
+	matchesOnDisk, err := filepath.Glob(filepath.Join(filepath.Dir(finalPath), ".callimachus-metadata-*"))
 	if err != nil || len(matchesOnDisk) != 0 {
 		t.Fatalf("staged files were not cleaned up: %v (%v)", matchesOnDisk, err)
 	}
@@ -495,7 +530,7 @@ func TestBookMetadataRepair_DeflatedDirectoriesAndErrorLogs(t *testing.T) {
 	handler := auth.Authenticate(s.sessionMgr, db)(s.withAuthGate(mux))
 	admin := createTestSessionCookie(t, s, "admin", "admin", auth.RoleAdmin)
 
-	// 1. Repairing an EPUB with deflated empty directory entries succeeds.
+	// 1. Repairing an EPUB with deflated empty directory entries succeeds and relocates to canonical path.
 	req := httptest.NewRequest("POST", "/api/books/b-good/fix-metadata", nil)
 	req.AddCookie(admin)
 	res := httptest.NewRecorder()
@@ -503,13 +538,18 @@ func TestBookMetadataRepair_DeflatedDirectoriesAndErrorLogs(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("fix-metadata status = %d, want 200; body = %s", res.Code, res.Body)
 	}
-	assertMetadataRepairArchive(t, goodPath, goodBytes)
-	repaired, err := epub.OpenNative(goodPath)
+	relocatedGoodPath := filepath.Join(root, "Library Author", "Repaired Book", "Repaired Book - Library Author.epub")
+	assertMetadataRepairArchive(t, relocatedGoodPath, goodBytes)
+	repaired, err := epub.OpenNative(relocatedGoodPath)
 	if err != nil {
 		t.Fatalf("OpenNative after repair: %v", err)
 	}
 	if repaired.Metadata().Title != "Repaired Book" {
 		t.Fatalf("repaired title = %q, want Repaired Book", repaired.Metadata().Title)
+	}
+	// Shared old directory is preserved because badPath still resides in it.
+	if _, err := os.Stat(badPath); err != nil {
+		t.Fatalf("other book in shared directory was unexpectedly affected: %v", err)
 	}
 
 	// 2. Failing EPUB logs filename, relative path, asset ID, entry name, and error,

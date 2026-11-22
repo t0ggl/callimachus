@@ -236,6 +236,7 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	adminOnly := auth.RequireRole(auth.RoleAdmin)
 	mux.Handle("GET /api/activity/metadata-mismatches", adminOnly(http.HandlerFunc(s.handleListEPUBMetadataMismatches)))
 	mux.Handle("POST /api/activity/metadata-mismatches/{id}/apply", adminOnly(http.HandlerFunc(s.handleApplyEPUBIdealMetadata)))
+	mux.Handle("POST /api/activity/metadata-mismatches/{id}/resolve-duplicates", adminOnly(http.HandlerFunc(s.handleResolveEPUBDuplicates)))
 	mux.Handle("GET /api/library/review", adminOnly(http.HandlerFunc(s.handleLibraryReview)))
 	mux.Handle("PUT /api/library/review/{id}/keep", adminOnly(http.HandlerFunc(s.handleKeepLibraryReview)))
 	mux.Handle("DELETE /api/library/review/{id}", adminOnly(http.HandlerFunc(s.handleRemoveLibraryReview)))

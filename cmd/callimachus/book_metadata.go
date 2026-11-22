@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
@@ -278,22 +279,29 @@ func writeMetadataJSON(w http.ResponseWriter, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+var errPathConflict = errors.New("destination path conflict")
+
 type repairRequest struct {
 	Candidate *epub.Metadata `json:"candidate"`
 	Preview   string         `json:"preview"`
 }
 
 type repairPreview struct {
-	Files     []fileMetadataDiff `json:"files"`
-	BookDiffs []metadataDiff     `json:"bookDiffs,omitempty"`
-	Preview   string             `json:"preview"`
+	Files         []fileMetadataDiff `json:"files"`
+	BookDiffs     []metadataDiff     `json:"bookDiffs,omitempty"`
+	HasDuplicates bool               `json:"hasDuplicates,omitempty"`
+	Preview       string             `json:"preview"`
 }
 
 type fileMetadataDiff struct {
-	ID           string         `json:"id"`
-	Filename     string         `json:"filename"`
-	Diffs        []metadataDiff `json:"diffs"`
-	LibraryDiffs []metadataDiff `json:"libraryDiffs,omitempty"`
+	ID            string         `json:"id"`
+	BookID        string         `json:"bookId,omitempty"`
+	Filename      string         `json:"filename"`
+	RelativePath  string         `json:"relativePath,omitempty"`
+	TargetPath    string         `json:"targetPath,omitempty"`
+	FileSizeBytes int64          `json:"fileSizeBytes,omitempty"`
+	Diffs         []metadataDiff `json:"diffs"`
+	LibraryDiffs  []metadataDiff `json:"libraryDiffs,omitempty"`
 }
 
 func (s *Server) handleBookMetadata(w http.ResponseWriter, r *http.Request) {
@@ -330,9 +338,11 @@ func (s *Server) handleMetadataRepair(w http.ResponseWriter, r *http.Request, ap
 		}
 	}
 	if apply {
-		// Serialize repairs so two confirmations cannot both act on the same preview.
+		// Serialize repairs and library scans in the same lock order as deleteBook.
 		s.metadataRepairMu.Lock()
 		defer s.metadataRepairMu.Unlock()
+		libraryScanMu.Lock()
+		defer libraryScanMu.Unlock()
 	}
 	ctx, id := r.Context(), r.PathValue("id")
 	book, files, err := s.repairBook(ctx, id)
@@ -356,7 +366,20 @@ func (s *Server) handleMetadataRepair(w http.ResponseWriter, r *http.Request, ap
 	}
 	defer root.Close()
 
+	dupGroup, err := s.findDuplicateEPUBGroupForBook(ctx, root, rootPath, id)
+	if err != nil {
+		slog.ErrorContext(ctx, "metadata repair duplicate check failed", "book", id, "error", err)
+		http.Error(w, "Unable to inspect EPUB duplicates.", http.StatusInternalServerError)
+		return
+	}
+	hasDuplicates := dupGroup != nil && len(dupGroup.assets) > 1
+	if apply && hasDuplicates {
+		http.Error(w, "Multiple EPUB files exist for this book. Resolve duplicate EPUBs before applying metadata changes.", http.StatusConflict)
+		return
+	}
+
 	var preview repairPreview
+	preview.HasDuplicates = hasDuplicates
 	if req.Candidate != nil {
 		bookTarget := repairTarget(book, req.Candidate)
 		for _, field := range compareMetadata(book, bookTarget) {
@@ -368,13 +391,38 @@ func (s *Server) handleMetadataRepair(w http.ResponseWriter, r *http.Request, ap
 			}
 		}
 	}
-	var staged []stagedMetadataFile
-	sidecars := make(map[string]bool)
-	defer func() {
-		for _, file := range staged {
-			_ = root.Remove(file.temp)
+
+	if hasDuplicates {
+		// Surface every affected EPUB path in the duplicate group (including cross-book duplicates
+		// across differing series names) so the admin can explicitly resolve them before applying.
+		for _, asset := range dupGroup.assets {
+			target := repairTarget(book, req.Candidate)
+			file := repairFile{
+				id:      asset.assetID,
+				path:    asset.filePath,
+				library: book,
+				target:  target,
+			}
+			diff, _, _, prepErr := prepareMetadataFile(root, asset.rel, file, false)
+			if prepErr != nil {
+				diff = fileMetadataDiff{
+					ID:       asset.assetID,
+					Filename: filepath.Base(asset.rel),
+				}
+			}
+			diff.BookID = asset.bookID
+			diff.RelativePath = filepath.ToSlash(asset.rel)
+			diff.FileSizeBytes = asset.fileSize
+			preview.Files = append(preview.Files, diff)
 		}
-	}()
+		fingerprint, _ := json.Marshal(preview)
+		hash := sha256.Sum256(append([]byte(id+"\x00"), fingerprint...))
+		preview.Preview = hex.EncodeToString(hash[:])
+		writeMetadataJSON(w, preview)
+		return
+	}
+
+	// Build preview & compute deterministic preview hash first (no filesystem mutation before hash check).
 	for i := range files {
 		file := &files[i]
 		file.target = repairTarget(file.library, req.Candidate)
@@ -384,22 +432,21 @@ func (s *Server) handleMetadataRepair(w http.ResponseWriter, r *http.Request, ap
 			http.Error(w, "An EPUB file is missing or outside the library.", http.StatusNotFound)
 			return
 		}
-		diff, pending, status, err := prepareMetadataFile(root, rel, *file, apply)
-		staged = append(staged, pending...)
+		diff, _, status, err := prepareMetadataFile(root, rel, *file, false)
 		if err != nil {
-			slog.WarnContext(ctx, "metadata repair could not prepare an EPUB", "book", id, "asset", file.id, "file", filepath.Base(rel), "path", rel, "error", err)
+			slog.WarnContext(ctx, "metadata repair could not inspect an EPUB", "book", id, "asset", file.id, "file", filepath.Base(rel), "path", rel, "error", err)
 			http.Error(w, "Unable to process "+filepath.Base(rel)+" or its OPF sidecar.", status)
 			return
 		}
-		if apply {
-			sidecar, status, err := s.prepareMetadataSidecar(ctx, root, rootPath, rel, id, file.target, sidecars)
-			if err != nil {
-				slog.WarnContext(ctx, "metadata repair could not prepare an OPF", "book", id, "asset", file.id, "file", filepath.Base(rel), "path", rel, "error", err)
-				http.Error(w, "Unable to update the companion OPF for "+filepath.Base(rel)+".", status)
-				return
-			}
-			if sidecar.temp != "" {
-				staged = append(staged, sidecar)
+		diff.BookID = id
+		diff.RelativePath = filepath.ToSlash(rel)
+		if info, statErr := root.Lstat(rel); statErr == nil {
+			diff.FileSizeBytes = info.Size()
+		}
+		if shouldRelocateEPUB(book, file.target, diff.Diffs, req.Candidate != nil) {
+			dstRel, _, pathErr := canonicalEPUBRelPath(rootPath, file.target)
+			if pathErr == nil && filepath.Clean(dstRel) != filepath.Clean(rel) {
+				diff.TargetPath = filepath.ToSlash(dstRel)
 			}
 		}
 		if req.Candidate != nil {
@@ -423,14 +470,589 @@ func (s *Server) handleMetadataRepair(w http.ResponseWriter, r *http.Request, ap
 		http.Error(w, "Metadata changed or the preview is missing. Review a fresh preview before applying.", http.StatusConflict)
 		return
 	}
-	if err := s.publishMetadataRepair(ctx, root, id, book, files, staged, req.Candidate); err != nil {
-		slog.ErrorContext(ctx, "metadata repair failed", "book", id, "error", err)
-		http.Error(w, "Unable to finish applying metadata. Review the preview before retrying.", http.StatusInternalServerError)
+
+	status, msg := s.applyBookMetadataRepair(ctx, root, rootPath, id, book, files, req.Candidate)
+	if msg != "" {
+		http.Error(w, msg, status)
 		return
 	}
 	writeMetadataJSON(w, struct {
 		Updated int `json:"updated"`
 	}{len(files)})
+}
+
+// applyBookMetadataRepair stages EPUB, companion OPF/cover updates, and canonical path
+// relocations (when author, title, or series changed), then publishes atomically with
+// full rollback on any failure. Shared by handleFixMetadata and handleApplyEPUBIdealMetadata.
+func (s *Server) applyBookMetadataRepair(
+	ctx context.Context,
+	root *os.Root,
+	rootPath string,
+	bookID string,
+	book epub.Metadata,
+	files []repairFile,
+	candidate *epub.Metadata,
+) (int, string) {
+	var staged []stagedMetadataFile
+	var createdDirs []string
+	sidecars := make(map[string]bool)
+	committed := false
+	defer func() {
+		for _, file := range staged {
+			if file.temp != "" {
+				_ = root.Remove(file.temp)
+			}
+		}
+		if !committed {
+			for _, dir := range slices.Backward(createdDirs) {
+				_ = root.Remove(dir)
+			}
+		}
+	}()
+
+	for i := range files {
+		file := &files[i]
+		file.target = repairTarget(file.library, candidate)
+		rel, err := repairRelativePath(root, rootPath, file.path)
+		if err != nil {
+			slog.WarnContext(ctx, "metadata repair could not access an EPUB", "book", bookID, "asset", file.id, "file", filepath.Base(file.path), "error", err)
+			return http.StatusNotFound, "An EPUB file is missing or outside the library."
+		}
+
+		diff, _, status, err := prepareMetadataFile(root, rel, *file, false)
+		if err != nil {
+			slog.WarnContext(ctx, "metadata repair could not inspect an EPUB", "book", bookID, "asset", file.id, "file", filepath.Base(rel), "path", rel, "error", err)
+			return status, "Unable to process " + filepath.Base(rel) + " or its OPF sidecar."
+		}
+
+		relocate := false
+		var dstRel, dstAbs string
+		if shouldRelocateEPUB(book, file.target, diff.Diffs, candidate != nil) {
+			candRel, candAbs, pathErr := canonicalEPUBRelPath(rootPath, file.target)
+			if pathErr != nil {
+				slog.WarnContext(ctx, "metadata repair could not compute canonical path", "book", bookID, "asset", file.id, "error", pathErr)
+				return http.StatusBadRequest, "Unable to determine a valid canonical path for " + filepath.Base(rel) + "."
+			}
+			if filepath.Clean(candRel) != filepath.Clean(rel) {
+				relocate = true
+				dstRel = candRel
+				dstAbs = candAbs
+			}
+		}
+
+		if relocate {
+			pending, dirs, status, err := s.prepareRelocatedMetadataFiles(ctx, root, rootPath, bookID, rel, dstRel, dstAbs, *file)
+			createdDirs = append(createdDirs, dirs...)
+			staged = append(staged, pending...)
+			if err != nil {
+				slog.WarnContext(ctx, "metadata repair could not prepare relocation", "book", bookID, "asset", file.id, "file", filepath.Base(rel), "path", rel, "error", err)
+				if errors.Is(err, errPathConflict) {
+					return http.StatusConflict, "Destination path already exists in the library. Resolve the conflicting file before applying metadata changes."
+				}
+				return status, "Unable to relocate " + filepath.Base(rel) + " or its companion files."
+			}
+			continue
+		}
+
+		_, pending, status, err := prepareMetadataFile(root, rel, *file, true)
+		staged = append(staged, pending...)
+		if err != nil {
+			slog.WarnContext(ctx, "metadata repair could not prepare an EPUB", "book", bookID, "asset", file.id, "file", filepath.Base(rel), "path", rel, "error", err)
+			return status, "Unable to process " + filepath.Base(rel) + " or its OPF sidecar."
+		}
+		sidecar, status, err := s.prepareMetadataSidecar(ctx, root, rootPath, rel, bookID, file.target, sidecars)
+		if err != nil {
+			slog.WarnContext(ctx, "metadata repair could not prepare an OPF", "book", bookID, "asset", file.id, "file", filepath.Base(rel), "path", rel, "error", err)
+			return status, "Unable to update the companion OPF for " + filepath.Base(rel) + "."
+		}
+		if sidecar.temp != "" {
+			staged = append(staged, sidecar)
+		}
+	}
+
+	if err := s.publishMetadataRepair(ctx, root, bookID, book, files, staged, createdDirs, candidate); err != nil {
+		slog.ErrorContext(ctx, "metadata repair failed", "book", bookID, "error", err)
+		if errors.Is(err, errPathConflict) {
+			return http.StatusConflict, "Destination path already exists in the library. Resolve the conflicting file before applying metadata changes."
+		}
+		return http.StatusInternalServerError, "Unable to finish applying metadata. Review the preview before retrying."
+	}
+	committed = true
+	return 0, ""
+}
+
+func shouldRelocateEPUB(book epub.Metadata, target epub.Metadata, diffs []metadataDiff, hasCandidate bool) bool {
+	if hasCandidate {
+		if strings.TrimSpace(target.Title) != strings.TrimSpace(book.Title) ||
+			!slices.Equal(target.Authors, book.Authors) ||
+			strings.TrimSpace(target.Series) != strings.TrimSpace(book.Series) {
+			return true
+		}
+	}
+	for _, d := range diffs {
+		if !d.Changed {
+			continue
+		}
+		switch d.Field {
+		case "title", "authors", "series":
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalEPUBRelPath(rootPath string, target epub.Metadata) (string, string, error) {
+	details := catalog.BookDetails{
+		Title:  strings.TrimSpace(target.Title),
+		Author: strings.Join(target.Authors, " & "),
+		Series: strings.TrimSpace(target.Series),
+		Year:   metadata.ReleaseYear(target.PublishDate, 0),
+	}
+	absPath, _, _, err := catalog.ResolveCanonicalPath(rootPath, details, ".epub")
+	if err != nil {
+		return "", "", err
+	}
+	rel, err := filepath.Rel(rootPath, absPath)
+	if err != nil || !filepath.IsLocal(rel) {
+		return "", "", os.ErrInvalid
+	}
+	return filepath.Clean(rel), filepath.Clean(absPath), nil
+}
+
+func checkNoSymlinksInRoot(root *os.Root, rel string) error {
+	clean := filepath.Clean(rel)
+	if !filepath.IsLocal(clean) {
+		return os.ErrInvalid
+	}
+	parts := strings.Split(clean, string(filepath.Separator))
+	curr := ""
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if curr == "" {
+			curr = part
+		} else {
+			curr = filepath.Join(curr, part)
+		}
+		info, err := root.Lstat(curr)
+		if errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return catalog.ErrSymlinkForbidden
+		}
+	}
+	return nil
+}
+
+func mkdirAllInRoot(root *os.Root, relDir string) ([]string, error) {
+	clean := filepath.Clean(relDir)
+	if clean == "." || clean == "" {
+		return nil, nil
+	}
+	if !filepath.IsLocal(clean) {
+		return nil, os.ErrInvalid
+	}
+	parts := strings.Split(clean, string(filepath.Separator))
+	curr := ""
+	var created []string
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if curr == "" {
+			curr = part
+		} else {
+			curr = filepath.Join(curr, part)
+		}
+		info, err := root.Lstat(curr)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return created, catalog.ErrSymlinkForbidden
+			}
+			if !info.IsDir() {
+				return created, fmt.Errorf("%w: %s is not a directory", errPathConflict, curr)
+			}
+			continue
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return created, err
+		}
+		if err := root.Mkdir(curr, 0755); err != nil {
+			return created, err
+		}
+		created = append(created, curr)
+	}
+	return created, nil
+}
+
+func pruneEmptyDirsInRoot(root *os.Root, dirs []string) {
+	seen := make(map[string]bool)
+	for _, dir := range dirs {
+		dir = filepath.Clean(dir)
+		for dir != "." && dir != "" && dir != string(filepath.Separator) && !seen[dir] {
+			seen[dir] = true
+			if err := root.Remove(dir); err != nil {
+				break
+			}
+			dir = filepath.Dir(dir)
+		}
+	}
+}
+
+func (s *Server) prepareRelocatedMetadataFiles(
+	ctx context.Context,
+	root *os.Root,
+	rootPath string,
+	bookID string,
+	srcRel string,
+	dstRel string,
+	dstAbs string,
+	file repairFile,
+) ([]stagedMetadataFile, []string, int, error) {
+	if err := checkNoSymlinksInRoot(root, dstRel); err != nil {
+		return nil, nil, http.StatusBadRequest, err
+	}
+
+	srcInfo, err := root.Lstat(srcRel)
+	if err != nil || !srcInfo.Mode().IsRegular() {
+		return nil, nil, http.StatusNotFound, fmt.Errorf("stat EPUB %s: %w", filepath.Base(srcRel), cmp.Or(err, os.ErrInvalid))
+	}
+
+	// Check DB for another media_assets row occupying the destination path.
+	var dbConflict bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM media_assets WHERE file_path = ? AND id <> ?)`, dstAbs, file.id).Scan(&dbConflict); err != nil {
+		return nil, nil, http.StatusInternalServerError, err
+	}
+	if dbConflict {
+		return nil, nil, http.StatusConflict, fmt.Errorf("%w: asset already cataloged at destination", errPathConflict)
+	}
+
+	// Check disk for an existing different file at dstRel.
+	var dstEPUBInfo os.FileInfo
+	sameFileRename := false
+	if existing, err := root.Lstat(dstRel); err == nil {
+		if !existing.Mode().IsRegular() || !os.SameFile(srcInfo, existing) {
+			return nil, nil, http.StatusConflict, fmt.Errorf("%w: destination EPUB exists", errPathConflict)
+		}
+		dstEPUBInfo = existing
+		sameFileRename = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, http.StatusConflict, fmt.Errorf("%w: inspect destination EPUB: %v", errPathConflict, err)
+	}
+
+	// Determine whether source stem or directory is shared by any other cataloged asset.
+	srcStem := strings.TrimSuffix(srcRel, filepath.Ext(srcRel))
+	srcDir := filepath.Dir(srcRel)
+	dstStem := strings.TrimSuffix(dstRel, filepath.Ext(dstRel))
+	dstDir := filepath.Dir(dstRel)
+
+	var srcStemShared bool
+	stemPrefix := filepath.Join(rootPath, srcStem) + "."
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM media_assets WHERE id <> ? AND substr(file_path, 1, length(?)) = ?)`,
+		file.id, stemPrefix, stemPrefix).Scan(&srcStemShared); err != nil {
+		return nil, nil, http.StatusInternalServerError, err
+	}
+
+	srcDirShared := srcDir == "."
+	if !srcDirShared {
+		dirPrefix := filepath.Join(rootPath, srcDir) + string(filepath.Separator)
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT EXISTS(SELECT 1 FROM media_assets WHERE id <> ? AND substr(file_path, 1, length(?)) = ?)`,
+			file.id, dirPrefix, dirPrefix).Scan(&srcDirShared); err != nil {
+			return nil, nil, http.StatusInternalServerError, err
+		}
+	}
+
+	// Check whether the destination directory already holds another asset of THIS SAME book (e.g. an .m4b)
+	// and NO assets of any other book, so same-book companions don't falsely trigger conflict.
+	dstDirOwnedByThisBookOnly := false
+	dstDirPrefix := filepath.Join(rootPath, dstDir) + string(filepath.Separator)
+	var otherBookInDstDir, sameBookInDstDir bool
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM media_assets m JOIN book_editions e ON e.id = m.edition_id
+			WHERE e.book_id <> ? AND substr(m.file_path, 1, length(?)) = ?
+		), EXISTS(
+			SELECT 1 FROM media_assets m JOIN book_editions e ON e.id = m.edition_id
+			WHERE e.book_id = ? AND m.id <> ? AND substr(m.file_path, 1, length(?)) = ?
+		)`, bookID, dstDirPrefix, dstDirPrefix, bookID, file.id, dstDirPrefix, dstDirPrefix).Scan(&otherBookInDstDir, &sameBookInDstDir); err != nil {
+		return nil, nil, http.StatusInternalServerError, err
+	}
+	dstDirOwnedByThisBookOnly = sameBookInDstDir && !otherBookInDstDir
+
+	// Discover companion cover files before OPF rewrite so we can update cover hrefs if renamed.
+	type coverPlan struct {
+		srcRel    string
+		dstRel    string
+		info      os.FileInfo
+		removeSrc bool
+		skipWrite bool // true when same-book cover already exists at destination
+	}
+	var covers []coverPlan
+	var oldCoverBase, newCoverBase string
+	for _, ext := range []string{".jpg", ".jpeg", ".png"} {
+		cand := srcStem + ext
+		info, err := root.Lstat(cand)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || !info.Mode().IsRegular() {
+			return nil, nil, http.StatusBadRequest, fmt.Errorf("stat cover %s: %w", filepath.Base(cand), cmp.Or(err, os.ErrInvalid))
+		}
+		targetCover := dstStem + ext
+		if oldCoverBase == "" {
+			oldCoverBase = filepath.Base(cand)
+			newCoverBase = filepath.Base(targetCover)
+		}
+		skipWrite := false
+		if existing, err := root.Lstat(targetCover); err == nil {
+			if os.SameFile(info, existing) {
+				continue
+			}
+			if !dstDirOwnedByThisBookOnly {
+				return nil, nil, http.StatusConflict, fmt.Errorf("%w: destination cover exists", errPathConflict)
+			}
+			skipWrite = true
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, nil, http.StatusConflict, fmt.Errorf("%w: inspect destination cover: %v", errPathConflict, err)
+		}
+		covers = append(covers, coverPlan{
+			srcRel:    cand,
+			dstRel:    targetCover,
+			info:      info,
+			removeSrc: !srcStemShared,
+			skipWrite: skipWrite,
+		})
+	}
+	if len(covers) == 0 && !srcDirShared {
+		for _, name := range []string{"cover.jpg", "cover.jpeg", "cover.png", "folder.jpg"} {
+			cand := filepath.Join(srcDir, name)
+			info, err := root.Lstat(cand)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			targetCover := dstStem + strings.ToLower(filepath.Ext(name))
+			oldCoverBase = filepath.Base(cand)
+			newCoverBase = filepath.Base(targetCover)
+			skipWrite := false
+			if existing, err := root.Lstat(targetCover); err == nil {
+				if os.SameFile(info, existing) {
+					break
+				}
+				if !dstDirOwnedByThisBookOnly {
+					return nil, nil, http.StatusConflict, fmt.Errorf("%w: destination cover exists", errPathConflict)
+				}
+				skipWrite = true
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return nil, nil, http.StatusConflict, fmt.Errorf("%w: inspect destination cover: %v", errPathConflict, err)
+			}
+			covers = append(covers, coverPlan{
+				srcRel:    cand,
+				dstRel:    targetCover,
+				info:      info,
+				removeSrc: true,
+				skipWrite: skipWrite,
+			})
+			break
+		}
+	}
+
+	// Discover companion OPF sidecar.
+	type opfPlan struct {
+		srcRel      string
+		dstRel      string
+		info        os.FileInfo
+		dstOriginal os.FileInfo
+		removeSrc   bool
+		data        []byte
+	}
+	var opf *opfPlan
+	opfCandidates := []struct {
+		rel       string
+		removeSrc bool
+	}{
+		{srcStem + ".opf", !srcStemShared},
+	}
+	if !srcDirShared {
+		opfCandidates = append(opfCandidates, struct {
+			rel       string
+			removeSrc bool
+		}{filepath.Join(srcDir, "metadata.opf"), true})
+	}
+	for _, cand := range opfCandidates {
+		info, err := root.Lstat(cand.rel)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || !info.Mode().IsRegular() {
+			return nil, nil, http.StatusBadRequest, fmt.Errorf("stat sidecar %s: %w", filepath.Base(cand.rel), cmp.Or(err, os.ErrInvalid))
+		}
+		targetOPF := dstStem + ".opf"
+		var dstOPFInfo os.FileInfo
+		if existing, err := root.Lstat(targetOPF); err == nil {
+			if os.SameFile(info, existing) {
+				dstOPFInfo = existing
+			} else if dstDirOwnedByThisBookOnly && existing.Mode().IsRegular() {
+				dstOPFInfo = existing
+			} else {
+				return nil, nil, http.StatusConflict, fmt.Errorf("%w: destination sidecar exists", errPathConflict)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, nil, http.StatusConflict, fmt.Errorf("%w: inspect destination sidecar: %v", errPathConflict, err)
+		}
+
+		rewritten, status, err := readAndRewriteSidecar(root, cand.rel, info, file.target, oldCoverBase, newCoverBase)
+		if err != nil {
+			return nil, nil, status, err
+		}
+		opf = &opfPlan{
+			srcRel:      cand.rel,
+			dstRel:      targetOPF,
+			info:        info,
+			dstOriginal: dstOPFInfo,
+			removeSrc:   cand.removeSrc && (dstOPFInfo == nil || !os.SameFile(info, dstOPFInfo)),
+			data:        rewritten,
+		}
+		break
+	}
+
+	// Open and parse the EPUB before creating destination directories.
+	source, err := root.Open(srcRel)
+	if err != nil {
+		return nil, nil, http.StatusNotFound, fmt.Errorf("open EPUB %s: %w", filepath.Base(srcRel), err)
+	}
+	defer source.Close()
+	if opened, err := source.Stat(); err != nil || !os.SameFile(srcInfo, opened) {
+		return nil, nil, http.StatusNotFound, fmt.Errorf("verify EPUB %s: %w", filepath.Base(srcRel), cmp.Or(err, os.ErrInvalid))
+	}
+	archive, err := epub.OpenNativeReader(source, srcInfo.Size())
+	if err != nil {
+		return nil, nil, http.StatusBadRequest, fmt.Errorf("read EPUB %s: %w", filepath.Base(srcRel), err)
+	}
+	diffs := compareMetadata(archive.Metadata(), file.target)
+	needsRewrite := slices.ContainsFunc(diffs, func(field metadataDiff) bool { return field.Changed })
+
+	// Create destination directories only after all conflict checks and reads succeeded.
+	createdDirs, err := mkdirAllInRoot(root, dstDir)
+	if err != nil {
+		if errors.Is(err, errPathConflict) {
+			return nil, createdDirs, http.StatusConflict, err
+		}
+		return nil, createdDirs, http.StatusInternalServerError, err
+	}
+
+	var staged []stagedMetadataFile
+
+	// Stage the EPUB into dstDir.
+	stagedEPUB, err := stageMetadataFileAt(root, srcRel, dstRel, srcInfo, dstEPUBInfo, !sameFileRename, func(output io.Writer) error {
+		if needsRewrite {
+			return archive.WriteArchive(output, file.target)
+		}
+		if _, seekErr := source.Seek(0, io.SeekStart); seekErr != nil {
+			return seekErr
+		}
+		_, copyErr := io.Copy(output, source)
+		return copyErr
+	})
+	if err != nil {
+		return staged, createdDirs, http.StatusInternalServerError, fmt.Errorf("stage relocated EPUB %s: %w", filepath.Base(srcRel), err)
+	}
+	stagedEPUB.assetID = file.id
+	stagedEPUB.newAbsPath = dstAbs
+	staged = append(staged, stagedEPUB)
+
+	// Stage the companion OPF into dstDir.
+	if opf != nil {
+		stagedOPF, err := stageMetadataFileAt(root, opf.srcRel, opf.dstRel, opf.info, opf.dstOriginal, opf.removeSrc, func(output io.Writer) error {
+			_, writeErr := output.Write(opf.data)
+			return writeErr
+		})
+		if err != nil {
+			return staged, createdDirs, http.StatusInternalServerError, fmt.Errorf("stage relocated sidecar %s: %w", filepath.Base(opf.srcRel), err)
+		}
+		staged = append(staged, stagedOPF)
+	}
+
+	// Stage companion covers into dstDir (or schedule removal of redundant old cover when same-book cover exists at dst).
+	for _, cov := range covers {
+		if cov.skipWrite {
+			if cov.removeSrc {
+				staged = append(staged, stagedMetadataFile{
+					srcPath:   cov.srcRel,
+					dstPath:   cov.dstRel,
+					original:  cov.info,
+					removeSrc: true,
+				})
+			}
+			continue
+		}
+		stagedCov, err := stageMetadataFileAt(root, cov.srcRel, cov.dstRel, cov.info, nil, cov.removeSrc, func(output io.Writer) error {
+			in, openErr := root.Open(cov.srcRel)
+			if openErr != nil {
+				return openErr
+			}
+			defer in.Close()
+			if opened, statErr := in.Stat(); statErr != nil || !os.SameFile(cov.info, opened) {
+				return cmp.Or(statErr, os.ErrInvalid)
+			}
+			_, copyErr := io.Copy(output, in)
+			return copyErr
+		})
+		if err != nil {
+			return staged, createdDirs, http.StatusInternalServerError, fmt.Errorf("stage relocated cover %s: %w", filepath.Base(cov.srcRel), err)
+		}
+		staged = append(staged, stagedCov)
+	}
+
+	return staged, createdDirs, 0, nil
+}
+
+func readAndRewriteSidecar(root *os.Root, sidecar string, sidecarInfo os.FileInfo, target epub.Metadata, oldCoverBase, newCoverBase string) ([]byte, int, error) {
+	source, err := root.Open(sidecar)
+	if err != nil {
+		return nil, http.StatusBadRequest, fmt.Errorf("open sidecar %s: %w", filepath.Base(sidecar), err)
+	}
+	defer source.Close()
+	if opened, err := source.Stat(); err != nil || !os.SameFile(sidecarInfo, opened) {
+		return nil, http.StatusBadRequest, fmt.Errorf("verify sidecar %s: %w", filepath.Base(sidecar), cmp.Or(err, os.ErrInvalid))
+	}
+	const maxSidecarBytes = 16 << 20
+	data, err := io.ReadAll(io.LimitReader(source, maxSidecarBytes+1))
+	if err != nil {
+		return nil, http.StatusBadRequest, fmt.Errorf("read sidecar %s: %w", filepath.Base(sidecar), err)
+	}
+	if len(data) > maxSidecarBytes {
+		return nil, http.StatusBadRequest, fmt.Errorf("sidecar %s exceeds maximum size", filepath.Base(sidecar))
+	}
+	rewritten, err := epub.ReplaceSidecarMetadata(data, target)
+	if err != nil {
+		return nil, http.StatusBadRequest, fmt.Errorf("rewrite sidecar %s: %w", filepath.Base(sidecar), err)
+	}
+	if oldCoverBase != "" && newCoverBase != "" && oldCoverBase != newCoverBase {
+		oldAttr := []byte(`href="` + xmlAttrEscapeSimple(oldCoverBase) + `"`)
+		newAttr := []byte(`href="` + xmlAttrEscapeSimple(newCoverBase) + `"`)
+		rewritten = bytes.ReplaceAll(rewritten, oldAttr, newAttr)
+	}
+	return rewritten, 0, nil
+}
+
+func xmlAttrEscapeSimple(s string) string {
+	return strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		`"`, "&quot;",
+		"'", "&apos;",
+	).Replace(s)
 }
 
 func repairTarget(library epub.Metadata, candidate *epub.Metadata) epub.Metadata {
@@ -477,9 +1099,11 @@ func repairRelativePath(root *os.Root, rootPath, path string) (string, error) {
 }
 
 type stagedMetadataFile struct {
-	temp, path, assetID string
-	size                int64
-	original            os.FileInfo
+	temp, srcPath, dstPath, assetID, newAbsPath string
+	size                                        int64
+	original                                    os.FileInfo
+	dstOriginal                                 os.FileInfo
+	removeSrc                                   bool
 }
 
 func prepareMetadataFile(root *os.Root, path string, file repairFile, stage bool) (fileMetadataDiff, []stagedMetadataFile, int, error) {
@@ -548,25 +1172,9 @@ func (s *Server) prepareMetadataSidecar(ctx context.Context, root *os.Root, root
 	if err != nil || !sidecarInfo.Mode().IsRegular() {
 		return empty, http.StatusBadRequest, fmt.Errorf("stat sidecar %s: %w", filepath.Base(sidecar), cmp.Or(err, os.ErrInvalid))
 	}
-	source, err := root.Open(sidecar)
+	rewritten, status, err := readAndRewriteSidecar(root, sidecar, sidecarInfo, target, "", "")
 	if err != nil {
-		return empty, http.StatusBadRequest, fmt.Errorf("open sidecar %s: %w", filepath.Base(sidecar), err)
-	}
-	defer source.Close()
-	if opened, err := source.Stat(); err != nil || !os.SameFile(sidecarInfo, opened) {
-		return empty, http.StatusBadRequest, fmt.Errorf("verify sidecar %s: %w", filepath.Base(sidecar), cmp.Or(err, os.ErrInvalid))
-	}
-	const maxSidecarBytes = 16 << 20
-	data, err := io.ReadAll(io.LimitReader(source, maxSidecarBytes+1))
-	if err != nil {
-		return empty, http.StatusBadRequest, fmt.Errorf("read sidecar %s: %w", filepath.Base(sidecar), err)
-	}
-	if len(data) > maxSidecarBytes {
-		return empty, http.StatusBadRequest, fmt.Errorf("sidecar %s exceeds maximum size", filepath.Base(sidecar))
-	}
-	rewritten, err := epub.ReplaceSidecarMetadata(data, target)
-	if err != nil {
-		return empty, http.StatusBadRequest, fmt.Errorf("rewrite sidecar %s: %w", filepath.Base(sidecar), err)
+		return empty, status, err
 	}
 	pending, err := stageMetadataFile(root, sidecar, sidecarInfo, func(output io.Writer) error {
 		_, err := output.Write(rewritten)
@@ -580,14 +1188,22 @@ func (s *Server) prepareMetadataSidecar(ctx context.Context, root *os.Root, root
 }
 
 func stageMetadataFile(root *os.Root, path string, info os.FileInfo, write func(io.Writer) error) (stagedMetadataFile, error) {
-	temp := filepath.Join(filepath.Dir(path), ".callimachus-metadata-"+rand.Text())
-	output, err := root.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
+	return stageMetadataFileAt(root, path, path, info, info, false, write)
+}
+
+func stageMetadataFileAt(root *os.Root, srcPath, dstPath string, srcInfo, dstInfo os.FileInfo, removeSrc bool, write func(io.Writer) error) (stagedMetadataFile, error) {
+	temp := filepath.Join(filepath.Dir(dstPath), ".callimachus-metadata-"+rand.Text())
+	perm := srcInfo.Mode().Perm()
+	if perm == 0 {
+		perm = 0644
+	}
+	output, err := root.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 	if err != nil {
 		return stagedMetadataFile{}, err
 	}
 	err = write(output)
 	if err == nil {
-		err = output.Chmod(info.Mode().Perm())
+		err = output.Chmod(perm)
 	}
 	if err == nil {
 		err = output.Sync()
@@ -597,10 +1213,27 @@ func stageMetadataFile(root *os.Root, path string, info os.FileInfo, write func(
 		_ = root.Remove(temp)
 		return stagedMetadataFile{}, err
 	}
-	return stagedMetadataFile{temp: temp, path: path, size: written.Size(), original: info}, nil
+	return stagedMetadataFile{
+		temp:        temp,
+		srcPath:     srcPath,
+		dstPath:     dstPath,
+		size:        written.Size(),
+		original:    srcInfo,
+		dstOriginal: dstInfo,
+		removeSrc:   removeSrc,
+	}, nil
 }
 
-func (s *Server) publishMetadataRepair(ctx context.Context, root *os.Root, bookID string, book epub.Metadata, files []repairFile, staged []stagedMetadataFile, candidate *epub.Metadata) error {
+func (s *Server) publishMetadataRepair(
+	ctx context.Context,
+	root *os.Root,
+	bookID string,
+	book epub.Metadata,
+	files []repairFile,
+	staged []stagedMetadataFile,
+	createdDirs []string,
+	candidate *epub.Metadata,
+) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -617,40 +1250,112 @@ func (s *Server) publishMetadataRepair(ctx context.Context, root *os.Root, bookI
 	}
 	for _, file := range staged {
 		if file.assetID != "" {
-			if _, err := tx.ExecContext(ctx, "UPDATE media_assets SET file_size = ?, checksum = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?", file.size, file.assetID); err != nil {
-				return err
+			if file.newAbsPath != "" {
+				if _, err := tx.ExecContext(ctx, "UPDATE media_assets SET file_path = ?, file_size = ?, checksum = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?", file.newAbsPath, file.size, file.assetID); err != nil {
+					return err
+				}
+			} else {
+				if _, err := tx.ExecContext(ctx, "UPDATE media_assets SET file_size = ?, checksum = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?", file.size, file.assetID); err != nil {
+					return err
+				}
 			}
 		}
 	}
-	// Each rename is atomic. Keep original files until the database commits so
-	// a failed rename or commit can restore the files already replaced.
-	var restore []stagedMetadataFile
+
+	type replacedFile struct{ backup, dst string }
+	type trashedFile struct{ trash, src string }
+	var restoreReplaced []replacedFile
+	var removeCreated []string
+	var restoreTrashed []trashedFile
 	committed := false
 	defer func() {
-		for _, file := range slices.Backward(restore) {
-			if committed {
-				_ = root.Remove(file.temp)
-			} else if err := root.Rename(file.temp, file.path); err != nil {
-				slog.Error("unable to restore metadata file", "file", file.path, "backup", file.temp, "error", err)
+		if committed {
+			for _, r := range slices.Backward(restoreReplaced) {
+				_ = root.Remove(r.backup)
+			}
+			var dirsToPrune []string
+			for _, t := range slices.Backward(restoreTrashed) {
+				_ = root.Remove(t.trash)
+				dirsToPrune = append(dirsToPrune, filepath.Dir(t.src))
+			}
+			pruneEmptyDirsInRoot(root, dirsToPrune)
+			return
+		}
+		for _, t := range slices.Backward(restoreTrashed) {
+			if err := root.Rename(t.trash, t.src); err != nil {
+				slog.Error("unable to restore moved metadata file", "file", t.src, "trash", t.trash, "error", err)
 			}
 		}
+		for _, dst := range slices.Backward(removeCreated) {
+			if err := root.Remove(dst); err != nil && !errors.Is(err, os.ErrNotExist) {
+				slog.Error("unable to remove staged destination file", "file", dst, "error", err)
+			}
+		}
+		for _, r := range slices.Backward(restoreReplaced) {
+			if err := root.Rename(r.backup, r.dst); err != nil {
+				slog.Error("unable to restore metadata file", "file", r.dst, "backup", r.backup, "error", err)
+			}
+		}
+		for _, dir := range slices.Backward(createdDirs) {
+			_ = root.Remove(dir)
+		}
 	}()
+
+	// 1. Verify sources and place all destination files without touching sources yet.
 	for _, file := range staged {
-		current, err := root.Lstat(file.path)
+		current, err := root.Lstat(file.srcPath)
 		if err != nil || !os.SameFile(current, file.original) || current.Size() != file.original.Size() ||
 			!current.ModTime().Equal(file.original.ModTime()) {
-			return fmt.Errorf("file changed during metadata repair: %s", file.path)
+			return fmt.Errorf("file changed during metadata repair: %s", file.srcPath)
 		}
-		backup := file.temp + ".original"
-		if err := root.Link(file.path, backup); err != nil {
-			return fmt.Errorf("backup %s: %w", filepath.Base(file.path), err)
+		if file.temp == "" {
+			continue
 		}
-		if err := root.Rename(file.temp, file.path); err != nil {
-			_ = root.Remove(backup)
-			return fmt.Errorf("replace %s: %w", filepath.Base(file.path), err)
+		if file.dstOriginal != nil {
+			dstCurrent, err := root.Lstat(file.dstPath)
+			if err != nil || !os.SameFile(dstCurrent, file.dstOriginal) || dstCurrent.Size() != file.dstOriginal.Size() ||
+				!dstCurrent.ModTime().Equal(file.dstOriginal.ModTime()) {
+				return fmt.Errorf("destination changed during metadata repair: %s", file.dstPath)
+			}
+			backup := file.temp + ".original"
+			if err := root.Link(file.dstPath, backup); err != nil {
+				return fmt.Errorf("backup %s: %w", filepath.Base(file.dstPath), err)
+			}
+			if err := root.Rename(file.temp, file.dstPath); err != nil {
+				_ = root.Remove(backup)
+				return fmt.Errorf("replace %s: %w", filepath.Base(file.dstPath), err)
+			}
+			restoreReplaced = append(restoreReplaced, replacedFile{backup: backup, dst: file.dstPath})
+		} else {
+			// Link fails atomically with EEXIST if another file appeared at dstPath.
+			if err := root.Link(file.temp, file.dstPath); err != nil {
+				if errors.Is(err, os.ErrExist) {
+					return fmt.Errorf("%w: %s", errPathConflict, filepath.Base(file.dstPath))
+				}
+				return fmt.Errorf("place %s: %w", filepath.Base(file.dstPath), err)
+			}
+			_ = root.Remove(file.temp)
+			removeCreated = append(removeCreated, file.dstPath)
 		}
-		restore = append(restore, stagedMetadataFile{temp: backup, path: file.path})
 	}
+
+	// 2. Rename removable source files to temporary sibling trash BEFORE DB commit so
+	// read-only source directories fail cleanly and trigger full rollback with zero data loss.
+	for _, file := range staged {
+		if !file.removeSrc || file.srcPath == file.dstPath {
+			continue
+		}
+		current, err := root.Lstat(file.srcPath)
+		if err != nil || !os.SameFile(current, file.original) {
+			return fmt.Errorf("source changed before removal: %s", file.srcPath)
+		}
+		trash := filepath.Join(filepath.Dir(file.srcPath), ".callimachus-trash-"+rand.Text())
+		if err := root.Rename(file.srcPath, trash); err != nil {
+			return fmt.Errorf("retire original %s: %w", filepath.Base(file.srcPath), err)
+		}
+		restoreTrashed = append(restoreTrashed, trashedFile{trash: trash, src: file.srcPath})
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}

@@ -428,3 +428,78 @@ it('shows an error alert when deleting a book fails', async () => {
   expect(onBookDeleted).not.toHaveBeenCalled();
 });
 
+it('shows path relocation preview and explicit duplicate EPUB resolution inside Fix Metadata', async () => {
+  const user = userEvent.setup({ delay: null });
+  let duplicatesResolved = false;
+  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+    if (url.endsWith('/metadata-candidates')) {
+      return Response.json([]);
+    }
+    if (url.endsWith('/metadata-diff')) {
+      if (!duplicatesResolved) {
+        return Response.json({
+          preview: 'dup-preview',
+          hasDuplicates: true,
+          files: [
+            {
+              id: 'asset-ac',
+              bookId: 'book/with spaces',
+              filename: 'Altered Carbon (2002) - Richard K. Morgan.epub',
+              relativePath: 'Richard K. Morgan/Altered Carbon/Altered Carbon (2002)/Altered Carbon (2002) - Richard K. Morgan.epub',
+              fileSizeBytes: 102400,
+              diffs: [{ field: 'series', fileValue: 'Altered Carbon', libraryValue: 'Takeshi Kovacs', changed: true }],
+            },
+            {
+              id: 'asset-tk',
+              bookId: 'book/with spaces',
+              filename: 'Altered Carbon (2002) - Richard K. Morgan.epub',
+              relativePath: 'Richard K. Morgan/Takeshi Kovacs/Altered Carbon (2002)/Altered Carbon (2002) - Richard K. Morgan.epub',
+              fileSizeBytes: 122880,
+              diffs: [{ field: 'series', fileValue: 'Takeshi Kovacs', libraryValue: 'Takeshi Kovacs', changed: false }],
+            },
+          ],
+        });
+      }
+      return Response.json({
+        preview: 'relocate-preview',
+        files: [
+          {
+            id: 'asset-ac',
+            bookId: 'book/with spaces',
+            filename: 'Altered Carbon (2002) - Richard K. Morgan.epub',
+            relativePath: 'Richard K. Morgan/Altered Carbon/Altered Carbon (2002)/Altered Carbon (2002) - Richard K. Morgan.epub',
+            targetPath: 'Richard K. Morgan/Takeshi Kovacs/Altered Carbon (2002)/Altered Carbon (2002) - Richard K. Morgan.epub',
+            diffs: [{ field: 'series', fileValue: 'Altered Carbon', libraryValue: 'Takeshi Kovacs', changed: true }],
+          },
+        ],
+      });
+    }
+    if (url === '/api/activity/metadata-mismatches/book%2Fwith%20spaces/resolve-duplicates' && options?.method === 'POST') {
+      duplicatesResolved = true;
+      return Response.json({ bookId: 'book/with spaces', keptAssetId: 'asset-ac', removedAssets: 1, deletedFiles: 2 });
+    }
+    throw new Error(`Unexpected request ${options?.method ?? 'GET'} ${url}`);
+  });
+  const onApplied = vi.fn();
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<BookDetailModal book={book} onClose={vi.fn()} isAdmin onMetadataApplied={onApplied} />);
+  await user.click(screen.getByRole('button', { name: 'More actions' }));
+  await user.click(screen.getByRole('menuitem', { name: 'Fix Metadata' }));
+
+  expect(await screen.findByText('Duplicate EPUB files detected (2)')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Apply Metadata' })).toBeDisabled();
+
+  await user.click(
+    screen.getByRole('radio', {
+      name: 'Keep Richard K. Morgan/Altered Carbon/Altered Carbon (2002)/Altered Carbon (2002) - Richard K. Morgan.epub',
+    }),
+  );
+  await user.click(screen.getByRole('button', { name: /Keep Selected & Remove Duplicates/ }));
+
+  expect(await screen.findByText('File path will move to match updated metadata')).toBeVisible();
+  expect(screen.getByText('Richard K. Morgan/Takeshi Kovacs/Altered Carbon (2002)/Altered Carbon (2002) - Richard K. Morgan.epub')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Apply Metadata' })).toBeEnabled();
+  expect(onApplied).toHaveBeenCalledOnce();
+});
+

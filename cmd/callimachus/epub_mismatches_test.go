@@ -149,6 +149,18 @@ func TestEPUBMetadataMismatchesAuthorization(t *testing.T) {
 			if recApply.Code != tc.wantApply {
 				t.Errorf("POST apply status = %d, want %d (body: %s)", recApply.Code, tc.wantApply, recApply.Body.String())
 			}
+
+			resolveBody := strings.NewReader(`{"keepAssetId":"a","removeAssetIds":["b"]}`)
+			reqResolve := httptest.NewRequest(http.MethodPost, "/api/activity/metadata-mismatches/missing-book/resolve-duplicates", resolveBody)
+			reqResolve.Header.Set("Content-Type", "application/json")
+			if tc.user != nil {
+				reqResolve = reqResolve.WithContext(auth.ContextWithUser(reqResolve.Context(), tc.user))
+			}
+			recResolve := httptest.NewRecorder()
+			handler.ServeHTTP(recResolve, reqResolve)
+			if recResolve.Code != tc.wantApply {
+				t.Errorf("POST resolve-duplicates status = %d, want %d (body: %s)", recResolve.Code, tc.wantApply, recResolve.Body.String())
+			}
 		})
 	}
 }
@@ -681,4 +693,672 @@ func TestEPUBIdealApplyMatchesRepairPreviewTarget(t *testing.T) {
 	if previewValues["authors"].Changed || previewValues["releaseDate"].Changed || previewValues["language"].Changed {
 		t.Errorf("expected unchanged fields marked changed=false in preview: %+v", previewValues)
 	}
+}
+
+func TestEPUBDuplicateDetectionAndResolution(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("same book with duplicate EPUBs across differing series names and unrelated files preserved", func(t *testing.T) {
+		t.Parallel()
+		db := testutil.NewTestDB(t)
+		libRoot := t.TempDir()
+		idx1 := 1.0
+
+		// Reproduce Richard K. Morgan's Altered Carbon under two differing series folders.
+		acPath := filepath.Join(libRoot, "Richard K. Morgan", "Altered Carbon", "Altered Carbon (2002)", "Altered Carbon (2002) - Richard K. Morgan.epub")
+		tkPath := filepath.Join(libRoot, "Richard K. Morgan", "Takeshi Kovacs", "Altered Carbon (2002)", "Altered Carbon (2002) - Richard K. Morgan.epub")
+		createTestEPUBFile(t, acPath, epub.Metadata{
+			Title:       "Altered Carbon",
+			Authors:     []string{"Richard K. Morgan"},
+			Series:      "Altered Carbon",
+			SeriesIndex: &idx1,
+			PublishDate: "2002",
+			Language:    "en",
+		})
+		createTestEPUBFile(t, tkPath, epub.Metadata{
+			Title:       "Altered Carbon",
+			Authors:     []string{"Richard K. Morgan"},
+			Series:      "Takeshi Kovacs",
+			SeriesIndex: &idx1,
+			PublishDate: "2002",
+			Language:    "en",
+		})
+		// Add companion OPF/JPG and an unrelated notes.txt file in the Altered Carbon folder.
+		acOPF := strings.TrimSuffix(acPath, ".epub") + ".opf"
+		acJPG := strings.TrimSuffix(acPath, ".epub") + ".jpg"
+		unrelatedFile := filepath.Join(filepath.Dir(acPath), "reading-notes.txt")
+		if err := epub.WriteSidecarFile(epub.Metadata{Title: "Altered Carbon", Authors: []string{"Richard K. Morgan"}, Series: "Altered Carbon"}, acOPF); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(acJPG, []byte("fake-jpg"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(unrelatedFile, []byte("keep my notes"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		srv := &Server{
+			db:            db,
+			baseOverrides: config.Overrides{LibraryRoot: libRoot},
+		}
+		if _, err := srv.scanLibrary(ctx); err != nil {
+			t.Fatalf("scanLibrary: %v", err)
+		}
+
+		// List mismatches: must surface Altered Carbon with hasDuplicates=true and both relative paths.
+		listRec := httptest.NewRecorder()
+		srv.handleListEPUBMetadataMismatches(listRec, httptest.NewRequest(http.MethodGet, "/api/activity/metadata-mismatches", nil))
+		if listRec.Code != http.StatusOK {
+			t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
+		}
+		if strings.Contains(listRec.Body.String(), libRoot) {
+			t.Fatal("mismatch response leaked absolute library root path")
+		}
+		var listResp apiEPUBMismatchesResponse
+		if err := json.Unmarshal(listRec.Body.Bytes(), &listResp); err != nil {
+			t.Fatalf("decode list: %v", err)
+		}
+		if len(listResp.Items) != 1 {
+			t.Fatalf("got %d items, want 1: %+v", len(listResp.Items), listResp.Items)
+		}
+		item := listResp.Items[0]
+		if !item.HasDuplicates || len(item.Files) != 2 {
+			t.Fatalf("expected hasDuplicates=true with 2 files, got %+v", item)
+		}
+		wantACRel := "Richard K. Morgan/Altered Carbon/Altered Carbon (2002)/Altered Carbon (2002) - Richard K. Morgan.epub"
+		wantTKRel := "Richard K. Morgan/Takeshi Kovacs/Altered Carbon (2002)/Altered Carbon (2002) - Richard K. Morgan.epub"
+		if item.Files[0].RelativePath != wantACRel || item.Files[1].RelativePath != wantTKRel {
+			t.Fatalf("unexpected relativePaths: %+v", item.Files)
+		}
+		acAssetID := item.Files[0].AssetID
+		tkAssetID := item.Files[1].AssetID
+
+		// Applying ideal metadata or fix-metadata while duplicates exist MUST return 409 Conflict without touching files.
+		acBefore, _ := os.ReadFile(acPath)
+		tkBefore, _ := os.ReadFile(tkPath)
+		applyReq := httptest.NewRequest(http.MethodPost, "/api/activity/metadata-mismatches/"+item.BookID+"/apply", nil)
+		applyReq.SetPathValue("id", item.BookID)
+		applyRec := httptest.NewRecorder()
+		srv.handleApplyEPUBIdealMetadata(applyRec, applyReq)
+		if applyRec.Code != http.StatusConflict {
+			t.Fatalf("apply with duplicates status = %d, want 409; body = %s", applyRec.Code, applyRec.Body.String())
+		}
+		fixReq := httptest.NewRequest(http.MethodPost, "/api/books/"+item.BookID+"/fix-metadata", nil)
+		fixReq.SetPathValue("id", item.BookID)
+		fixRec := httptest.NewRecorder()
+		srv.handleFixMetadata(fixRec, fixReq)
+		if fixRec.Code != http.StatusConflict {
+			t.Fatalf("fix-metadata with duplicates status = %d, want 409; body = %s", fixRec.Code, fixRec.Body.String())
+		}
+		if cur, _ := os.ReadFile(acPath); !bytes.Equal(cur, acBefore) {
+			t.Fatal("Altered Carbon copy modified despite duplicate conflict")
+		}
+		if cur, _ := os.ReadFile(tkPath); !bytes.Equal(cur, tkBefore) {
+			t.Fatal("Takeshi Kovacs copy modified despite duplicate conflict")
+		}
+
+		// Reject cross-site and mismatched removeAssetIds.
+		crossBody, _ := json.Marshal(resolveDuplicatesRequest{KeepAssetID: tkAssetID, RemoveAssetIDs: []string{acAssetID}})
+		crossReq := httptest.NewRequest(http.MethodPost, "/api/activity/metadata-mismatches/"+item.BookID+"/resolve-duplicates", bytes.NewReader(crossBody))
+		crossReq.SetPathValue("id", item.BookID)
+		crossReq.Header.Set("Content-Type", "application/json")
+		crossReq.Header.Set("Sec-Fetch-Site", "cross-site")
+		crossRec := httptest.NewRecorder()
+		srv.handleResolveEPUBDuplicates(crossRec, crossReq)
+		if crossRec.Code != http.StatusForbidden {
+			t.Fatalf("cross-site resolve status = %d, want 403", crossRec.Code)
+		}
+
+		staleBody, _ := json.Marshal(resolveDuplicatesRequest{KeepAssetID: tkAssetID, RemoveAssetIDs: []string{"nonexistent"}})
+		staleReq := httptest.NewRequest(http.MethodPost, "/api/activity/metadata-mismatches/"+item.BookID+"/resolve-duplicates", bytes.NewReader(staleBody))
+		staleReq.SetPathValue("id", item.BookID)
+		staleReq.Header.Set("Content-Type", "application/json")
+		staleRec := httptest.NewRecorder()
+		srv.handleResolveEPUBDuplicates(staleRec, staleReq)
+		if staleRec.Code != http.StatusConflict {
+			t.Fatalf("stale resolve status = %d, want 409; body = %s", staleRec.Code, staleRec.Body.String())
+		}
+
+		// Explicit resolution: keep Takeshi Kovacs copy, remove Altered Carbon copy.
+		resolveReq := httptest.NewRequest(http.MethodPost, "/api/activity/metadata-mismatches/"+item.BookID+"/resolve-duplicates", bytes.NewReader(crossBody))
+		resolveReq.SetPathValue("id", item.BookID)
+		resolveReq.Header.Set("Content-Type", "application/json")
+		resolveRec := httptest.NewRecorder()
+		srv.handleResolveEPUBDuplicates(resolveRec, resolveReq)
+		if resolveRec.Code != http.StatusOK {
+			t.Fatalf("resolve status = %d, body = %s", resolveRec.Code, resolveRec.Body.String())
+		}
+		var resolveResp resolveDuplicatesResponse
+		if err := json.Unmarshal(resolveRec.Body.Bytes(), &resolveResp); err != nil {
+			t.Fatal(err)
+		}
+		if resolveResp.KeptAssetID != tkAssetID || resolveResp.RemovedAssets != 1 || resolveResp.DeletedFiles != 3 {
+			t.Fatalf("unexpected resolve response: %+v", resolveResp)
+		}
+
+		// Removed EPUB and its OPF/JPG companions are gone; kept EPUB and unrelated file are preserved!
+		for _, gone := range []string{acPath, acOPF, acJPG} {
+			if _, err := os.Stat(gone); !os.IsNotExist(err) {
+				t.Errorf("expected removed file %s to be deleted, stat err = %v", gone, err)
+			}
+		}
+		if _, err := os.Stat(tkPath); err != nil {
+			t.Fatalf("kept EPUB missing: %v", err)
+		}
+		if data, err := os.ReadFile(unrelatedFile); err != nil || string(data) != "keep my notes" {
+			t.Fatalf("unrelated file not preserved: err=%v data=%q", err, string(data))
+		}
+	})
+
+	t.Run("cross-book duplicates across differing series names merge cleanly and preserve audiobook edition", func(t *testing.T) {
+		t.Parallel()
+		db := testutil.NewTestDB(t)
+		libRoot := t.TempDir()
+		idx1 := 1.0
+
+		acPath := filepath.Join(libRoot, "Richard K. Morgan", "Altered Carbon", "Altered Carbon (2002)", "Altered Carbon (2002) - Richard K. Morgan.epub")
+		tkPath := filepath.Join(libRoot, "Richard K. Morgan", "Takeshi Kovacs", "Altered Carbon (2002)", "Altered Carbon (2002) - Richard K. Morgan.epub")
+		audioPath := filepath.Join(libRoot, "Richard K. Morgan", "Takeshi Kovacs", "Altered Carbon (2002)", "Altered Carbon (2002) - Richard K. Morgan.m4b")
+		createTestEPUBFile(t, acPath, epub.Metadata{Title: "Altered Carbon", Authors: []string{"Richard K. Morgan"}, Series: "Altered Carbon", SeriesIndex: &idx1})
+		createTestEPUBFile(t, tkPath, epub.Metadata{Title: "Altered Carbon", Authors: []string{"Richard K. Morgan"}, Series: "Takeshi Kovacs", SeriesIndex: &idx1})
+		if err := os.WriteFile(audioPath, []byte("m4b-data"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'Richard K. Morgan', 'Morgan, Richard K.');
+			INSERT INTO series (id, title, author_id) VALUES ('s-ac', 'Altered Carbon', 'a1'), ('s-tk', 'Takeshi Kovacs', 'a1');
+			INSERT INTO books (id, author_id, series_id, series_index, title, release_date) VALUES
+				('b-ac', 'a1', 's-ac', 1.0, 'Altered Carbon', '2002'),
+				('b-tk', 'a1', 's-tk', 1.0, 'Altered Carbon', '2002');
+			INSERT INTO book_editions (id, book_id, format, language) VALUES
+				('e-ac', 'b-ac', 'epub', 'en'),
+				('e-ac-audio', 'b-ac', 'm4b', 'en'),
+				('e-tk', 'b-tk', 'epub', 'en');
+			INSERT INTO media_assets (id, edition_id, file_path, file_size) VALUES
+				('m-ac', 'e-ac', ?, 100),
+				('m-audio', 'e-ac-audio', ?, 100),
+				('m-tk', 'e-tk', ?, 100);
+		`, acPath, audioPath, tkPath); err != nil {
+			t.Fatal(err)
+		}
+
+		srv := &Server{db: db, baseOverrides: config.Overrides{LibraryRoot: libRoot}}
+
+		// Even with ZERO field mismatches, cross-book duplicates are surfaced as one duplicate group.
+		listRec := httptest.NewRecorder()
+		srv.handleListEPUBMetadataMismatches(listRec, httptest.NewRequest(http.MethodGet, "/api/activity/metadata-mismatches", nil))
+		if listRec.Code != http.StatusOK {
+			t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
+		}
+		var listResp apiEPUBMismatchesResponse
+		if err := json.Unmarshal(listRec.Body.Bytes(), &listResp); err != nil {
+			t.Fatal(err)
+		}
+		if len(listResp.Items) != 1 || !listResp.Items[0].HasDuplicates || len(listResp.Items[0].Files) != 2 {
+			t.Fatalf("expected 1 merged cross-book duplicate item, got %+v", listResp.Items)
+		}
+
+		// Resolve keeping m-tk (on b-tk) and removing m-ac (on b-ac).
+		payload, _ := json.Marshal(resolveDuplicatesRequest{KeepAssetID: "m-tk", RemoveAssetIDs: []string{"m-ac"}})
+		req := httptest.NewRequest(http.MethodPost, "/api/activity/metadata-mismatches/b-ac/resolve-duplicates", bytes.NewReader(payload))
+		req.SetPathValue("id", "b-ac")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.handleResolveEPUBDuplicates(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("resolve status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+
+		// Empty Altered Carbon series & book directories are pruned, while Richard K. Morgan & Takeshi Kovacs stay.
+		if _, err := os.Stat(filepath.Join(libRoot, "Richard K. Morgan", "Altered Carbon")); !os.IsNotExist(err) {
+			t.Fatalf("empty old series dir not pruned: %v", err)
+		}
+		if _, err := os.Stat(tkPath); err != nil {
+			t.Fatalf("kept EPUB missing: %v", err)
+		}
+		if _, err := os.Stat(audioPath); err != nil {
+			t.Fatalf("audiobook file missing: %v", err)
+		}
+		// Empty duplicate book b-ac is deleted; audiobook edition was reassigned to b-tk!
+		var audioBookID string
+		if err := db.QueryRowContext(ctx, `SELECT book_id FROM book_editions WHERE id = 'e-ac-audio'`).Scan(&audioBookID); err != nil {
+			t.Fatalf("audiobook edition missing: %v", err)
+		}
+		if audioBookID != "b-tk" {
+			t.Fatalf("audiobook edition book_id = %q, want b-tk", audioBookID)
+		}
+		var remainingBooks int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM books`).Scan(&remainingBooks); err != nil {
+			t.Fatal(err)
+		}
+		if remainingBooks != 1 {
+			t.Fatalf("remaining books = %d, want 1", remainingBooks)
+		}
+	})
+
+	t.Run("shared directory duplicates preserve shared companions and rollback on read-only removal failure", func(t *testing.T) {
+		t.Parallel()
+		db := testutil.NewTestDB(t)
+		libRoot := t.TempDir()
+
+		sharedDir := filepath.Join(libRoot, "Author", "Book (2024)")
+		keepPath := filepath.Join(sharedDir, "Book (2024) - Author.epub")
+		dupPath := filepath.Join(sharedDir, "Book (2024) - Author [Copy].epub")
+		genericOPF := filepath.Join(sharedDir, "metadata.opf")
+		genericCover := filepath.Join(sharedDir, "cover.jpg")
+		createTestEPUBFile(t, keepPath, epub.Metadata{Title: "Book", Authors: []string{"Author"}})
+		createTestEPUBFile(t, dupPath, epub.Metadata{Title: "Book", Authors: []string{"Author"}})
+		if err := epub.WriteSidecarFile(epub.Metadata{Title: "Book", Authors: []string{"Author"}}, genericOPF); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(genericCover, []byte("cover"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'Author', 'Author');
+			INSERT INTO books (id, author_id, title, release_date) VALUES ('b1', 'a1', 'Book', '2024');
+			INSERT INTO book_editions (id, book_id, format, language) VALUES ('e1', 'b1', 'epub', 'en');
+			INSERT INTO media_assets (id, edition_id, file_path, file_size) VALUES
+				('m-keep', 'e1', ?, 100),
+				('m-dup', 'e1', ?, 100);
+		`, keepPath, dupPath); err != nil {
+			t.Fatal(err)
+		}
+
+		srv := &Server{db: db, baseOverrides: config.Overrides{LibraryRoot: libRoot}}
+
+		// Test rollback when directory is read-only (skip chmod failure test if running as root).
+		if os.Geteuid() != 0 {
+			if err := os.Chmod(sharedDir, 0555); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(sharedDir, 0755) })
+			payload, _ := json.Marshal(resolveDuplicatesRequest{KeepAssetID: "m-keep", RemoveAssetIDs: []string{"m-dup"}})
+			failReq := httptest.NewRequest(http.MethodPost, "/api/activity/metadata-mismatches/b1/resolve-duplicates", bytes.NewReader(payload))
+			failReq.SetPathValue("id", "b1")
+			failReq.Header.Set("Content-Type", "application/json")
+			failRec := httptest.NewRecorder()
+			srv.handleResolveEPUBDuplicates(failRec, failReq)
+			if failRec.Code != http.StatusInternalServerError {
+				t.Fatalf("expected 500 on read-only dir, got %d (%s)", failRec.Code, failRec.Body.String())
+			}
+			if err := os.Chmod(sharedDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			// Both files and DB rows must remain completely intact!
+			if _, err := os.Stat(dupPath); err != nil {
+				t.Fatalf("dup file lost on rollback: %v", err)
+			}
+			var count int
+			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM media_assets`).Scan(&count); err != nil || count != 2 {
+				t.Fatalf("media_assets count = %d (err %v), want 2 after rollback", count, err)
+			}
+		}
+
+		// Now resolve normally: shared metadata.opf and cover.jpg must be preserved!
+		payload, _ := json.Marshal(resolveDuplicatesRequest{KeepAssetID: "m-keep", RemoveAssetIDs: []string{"m-dup"}})
+		req := httptest.NewRequest(http.MethodPost, "/api/activity/metadata-mismatches/b1/resolve-duplicates", bytes.NewReader(payload))
+		req.SetPathValue("id", "b1")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.handleResolveEPUBDuplicates(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("resolve status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		if _, err := os.Stat(dupPath); !os.IsNotExist(err) {
+			t.Fatalf("duplicate EPUB should be deleted: %v", err)
+		}
+		for _, kept := range []string{keepPath, genericOPF, genericCover} {
+			if _, err := os.Stat(kept); err != nil {
+				t.Errorf("expected shared file %s preserved, err = %v", kept, err)
+			}
+		}
+	})
+}
+
+func TestEPUBMetadataFixRelocationAndConflictSafety(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("relocates EPUB and companions on series/title/author change and prunes empty parent dirs only under library root", func(t *testing.T) {
+		t.Parallel()
+		db := testutil.NewTestDB(t)
+		libRoot := t.TempDir()
+		idx1 := 1.0
+
+		oldEPUB := filepath.Join(libRoot, "R. K. Morgan", "Altered Carbon", "Altered Carbon (2002)", "Altered Carbon (2002) - R. K. Morgan.epub")
+		oldOPF := strings.TrimSuffix(oldEPUB, ".epub") + ".opf"
+		oldJPG := strings.TrimSuffix(oldEPUB, ".epub") + ".jpg"
+		createTestEPUBFile(t, oldEPUB, epub.Metadata{
+			Title:       "Altered Carbon",
+			Authors:     []string{"R. K. Morgan"},
+			Series:      "Altered Carbon",
+			SeriesIndex: &idx1,
+			PublishDate: "2002",
+			Language:    "en",
+		})
+		if err := epub.WriteSidecarFile(epub.Metadata{
+			Title:       "Altered Carbon",
+			Authors:     []string{"R. K. Morgan"},
+			Series:      "Altered Carbon",
+			SeriesIndex: &idx1,
+		}, oldOPF); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(oldJPG, []byte("cover-bytes"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'R. K. Morgan', 'Morgan, R. K.');
+			INSERT INTO series (id, title, author_id) VALUES ('s1', 'Altered Carbon', 'a1');
+			INSERT INTO books (id, author_id, series_id, series_index, title, release_date)
+			VALUES ('b1', 'a1', 's1', 1.0, 'Altered Carbon', '2002');
+			INSERT INTO book_editions (id, book_id, format, language, publication_date)
+			VALUES ('e1', 'b1', 'epub', 'en', '2002');
+			INSERT INTO media_assets (id, edition_id, file_path, file_size)
+			VALUES ('m1', 'e1', ?, 100);
+		`, oldEPUB); err != nil {
+			t.Fatal(err)
+		}
+
+		srv := &Server{db: db, baseOverrides: config.Overrides{LibraryRoot: libRoot}}
+
+		cand := epub.Metadata{
+			Title:       "Altered Carbon",
+			Authors:     []string{"Richard K. Morgan"},
+			Series:      "Takeshi Kovacs",
+			SeriesIndex: &idx1,
+			PublishDate: "2002",
+		}
+		body, _ := json.Marshal(repairRequest{Candidate: &cand})
+		previewReq := httptest.NewRequest(http.MethodPost, "/api/books/b1/metadata-diff", bytes.NewReader(body))
+		previewReq.SetPathValue("id", "b1")
+		previewReq.Header.Set("Content-Type", "application/json")
+		previewRec := httptest.NewRecorder()
+		srv.handleBookMetadata(previewRec, previewReq)
+		if previewRec.Code != http.StatusOK {
+			t.Fatalf("preview status = %d, body = %s", previewRec.Code, previewRec.Body.String())
+		}
+		var preview repairPreview
+		if err := json.Unmarshal(previewRec.Body.Bytes(), &preview); err != nil {
+			t.Fatal(err)
+		}
+		wantRel := "Richard K. Morgan/Takeshi Kovacs/Altered Carbon (2002)/Altered Carbon (2002) - Richard K. Morgan.epub"
+		if len(preview.Files) != 1 || preview.Files[0].TargetPath != wantRel {
+			t.Fatalf("unexpected targetPath in preview: %+v", preview.Files)
+		}
+
+		applyBody, _ := json.Marshal(repairRequest{Candidate: &cand, Preview: preview.Preview})
+		applyReq := httptest.NewRequest(http.MethodPost, "/api/books/b1/fix-metadata", bytes.NewReader(applyBody))
+		applyReq.SetPathValue("id", "b1")
+		applyReq.Header.Set("Content-Type", "application/json")
+		applyRec := httptest.NewRecorder()
+		srv.handleFixMetadata(applyRec, applyReq)
+		if applyRec.Code != http.StatusOK {
+			t.Fatalf("fix-metadata status = %d, body = %s", applyRec.Code, applyRec.Body.String())
+		}
+
+		newEPUB := filepath.Join(libRoot, filepath.FromSlash(wantRel))
+		newOPF := strings.TrimSuffix(newEPUB, ".epub") + ".opf"
+		newJPG := strings.TrimSuffix(newEPUB, ".epub") + ".jpg"
+
+		for _, present := range []string{newEPUB, newOPF, newJPG} {
+			if _, err := os.Stat(present); err != nil {
+				t.Errorf("expected relocated file %s to exist: %v", present, err)
+			}
+		}
+		if err := epub.Validate(newEPUB); err != nil {
+			t.Fatalf("relocated EPUB failed validation: %v", err)
+		}
+		opfBytes, err := os.ReadFile(newOPF)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opfMeta, err := epub.ParseOPF(opfBytes)
+		if err != nil || opfMeta.Series != "Takeshi Kovacs" || len(opfMeta.Authors) == 0 || opfMeta.Authors[0] != "Richard K. Morgan" {
+			t.Fatalf("relocated OPF metadata mismatch: %+v (err=%v)", opfMeta, err)
+		}
+		if !bytes.Contains(opfBytes, []byte(`href="Altered Carbon (2002) - Richard K. Morgan.jpg"`)) {
+			t.Errorf("relocated OPF cover href was not updated: %s", string(opfBytes))
+		}
+		if jpgBytes, err := os.ReadFile(newJPG); err != nil || string(jpgBytes) != "cover-bytes" {
+			t.Fatalf("relocated cover bytes mismatch: err=%v data=%q", err, string(jpgBytes))
+		}
+		// Old empty author/series/title dirs must be pruned, while libraryRoot itself remains!
+		if _, err := os.Stat(filepath.Join(libRoot, "R. K. Morgan")); !os.IsNotExist(err) {
+			t.Fatalf("empty old author directory not pruned: %v", err)
+		}
+		if _, err := os.Stat(libRoot); err != nil {
+			t.Fatalf("libraryRoot itself was affected: %v", err)
+		}
+		var dbPath string
+		if err := db.QueryRowContext(ctx, `SELECT file_path FROM media_assets WHERE id = 'm1'`).Scan(&dbPath); err != nil || dbPath != newEPUB {
+			t.Fatalf("DB file_path = %q (err=%v), want %q", dbPath, err, newEPUB)
+		}
+	})
+
+	t.Run("handles path conflicts and read-only source failure without data loss, and preserves unrelated files", func(t *testing.T) {
+		t.Parallel()
+		db := testutil.NewTestDB(t)
+		libRoot := t.TempDir()
+		idx1 := 1.0
+
+		oldEPUB := filepath.Join(libRoot, "Richard K. Morgan", "Altered Carbon", "Altered Carbon (2002)", "Altered Carbon (2002) - Richard K. Morgan.epub")
+		oldOPF := strings.TrimSuffix(oldEPUB, ".epub") + ".opf"
+		unrelated := filepath.Join(filepath.Dir(oldEPUB), "extras.txt")
+		targetEPUB := filepath.Join(libRoot, "Richard K. Morgan", "Takeshi Kovacs", "Altered Carbon (2002)", "Altered Carbon (2002) - Richard K. Morgan.epub")
+
+		createTestEPUBFile(t, oldEPUB, epub.Metadata{Title: "Altered Carbon", Authors: []string{"Richard K. Morgan"}, Series: "Altered Carbon", SeriesIndex: &idx1, PublishDate: "2002"})
+		if err := epub.WriteSidecarFile(epub.Metadata{Title: "Altered Carbon", Authors: []string{"Richard K. Morgan"}, Series: "Altered Carbon"}, oldOPF); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(unrelated, []byte("preserve me"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		// Place a conflicting file at the destination path!
+		if err := os.MkdirAll(filepath.Dir(targetEPUB), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(targetEPUB, []byte("existing-unrelated-content"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'Richard K. Morgan', 'Morgan, Richard K.');
+			INSERT INTO series (id, title, author_id) VALUES ('s1', 'Altered Carbon', 'a1');
+			INSERT INTO books (id, author_id, series_id, series_index, title, release_date)
+			VALUES ('b1', 'a1', 's1', 1.0, 'Altered Carbon', '2002');
+			INSERT INTO book_editions (id, book_id, format, language, publication_date)
+			VALUES ('e1', 'b1', 'epub', 'en', '2002');
+			INSERT INTO media_assets (id, edition_id, file_path, file_size)
+			VALUES ('m1', 'e1', ?, 100);
+		`, oldEPUB); err != nil {
+			t.Fatal(err)
+		}
+		if err := catalog.New(db).SaveIdealMetadata(ctx, "b1", "Altered Carbon", "Takeshi Kovacs", &idx1, catalog.IdealSourceMatch); err != nil {
+			t.Fatal(err)
+		}
+
+		srv := &Server{db: db, baseOverrides: config.Overrides{LibraryRoot: libRoot}}
+		oldBefore, _ := os.ReadFile(oldEPUB)
+
+		// 1. Conflict at destination -> 409 Conflict, neither source nor conflicting destination modified!
+		applyReq := httptest.NewRequest(http.MethodPost, "/api/activity/metadata-mismatches/b1/apply", nil)
+		applyReq.SetPathValue("id", "b1")
+		applyRec := httptest.NewRecorder()
+		srv.handleApplyEPUBIdealMetadata(applyRec, applyReq)
+		if applyRec.Code != http.StatusConflict {
+			t.Fatalf("expected 409 on destination conflict, got %d (%s)", applyRec.Code, applyRec.Body.String())
+		}
+		if got, _ := os.ReadFile(targetEPUB); string(got) != "existing-unrelated-content" {
+			t.Fatalf("conflicting destination file was overwritten: %q", string(got))
+		}
+		if got, _ := os.ReadFile(oldEPUB); !bytes.Equal(got, oldBefore) {
+			t.Fatal("source EPUB changed despite conflict")
+		}
+
+		// Remove the conflicting file and test partial-failure rollback when old dir is read-only.
+		if err := os.Remove(targetEPUB); err != nil {
+			t.Fatal(err)
+		}
+		if os.Geteuid() != 0 {
+			oldDir := filepath.Dir(oldEPUB)
+			if err := os.Chmod(oldDir, 0555); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(oldDir, 0755) })
+			failReq := httptest.NewRequest(http.MethodPost, "/api/activity/metadata-mismatches/b1/apply", nil)
+			failReq.SetPathValue("id", "b1")
+			failRec := httptest.NewRecorder()
+			srv.handleApplyEPUBIdealMetadata(failRec, failReq)
+			if failRec.Code != http.StatusInternalServerError {
+				t.Fatalf("expected 500 on read-only source dir, got %d (%s)", failRec.Code, failRec.Body.String())
+			}
+			if err := os.Chmod(oldDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			// Rolled back: destination EPUB must NOT exist, original EPUB and DB path must be untouched!
+			if _, err := os.Stat(targetEPUB); !os.IsNotExist(err) {
+				t.Fatalf("staged destination EPUB remained after rollback: %v", err)
+			}
+			if got, _ := os.ReadFile(oldEPUB); !bytes.Equal(got, oldBefore) {
+				t.Fatal("original EPUB modified after rollback")
+			}
+			var dbPath string
+			if err := db.QueryRowContext(ctx, `SELECT file_path FROM media_assets WHERE id = 'm1'`).Scan(&dbPath); err != nil || dbPath != oldEPUB {
+				t.Fatalf("DB file_path = %q, want original %q after rollback", dbPath, oldEPUB)
+			}
+		}
+
+		// 2. Now apply succeeds: relocates EPUB + OPF, preserves unrelated extras.txt in old dir!
+		okReq := httptest.NewRequest(http.MethodPost, "/api/activity/metadata-mismatches/b1/apply", nil)
+		okReq.SetPathValue("id", "b1")
+		okRec := httptest.NewRecorder()
+		srv.handleApplyEPUBIdealMetadata(okRec, okReq)
+		if okRec.Code != http.StatusOK {
+			t.Fatalf("apply status = %d, body = %s", okRec.Code, okRec.Body.String())
+		}
+		if _, err := os.Stat(targetEPUB); err != nil {
+			t.Fatalf("relocated EPUB missing: %v", err)
+		}
+		if _, err := os.Stat(oldEPUB); !os.IsNotExist(err) {
+			t.Fatalf("old EPUB still exists after relocation: %v", err)
+		}
+		if data, err := os.ReadFile(unrelated); err != nil || string(data) != "preserve me" {
+			t.Fatalf("unrelated file lost during relocation: err=%v data=%q", err, string(data))
+		}
+	})
+
+	t.Run("preserves shared audiobook companions and merges cleanly into destination holding same book audiobook", func(t *testing.T) {
+		t.Parallel()
+		db := testutil.NewTestDB(t)
+		libRoot := t.TempDir()
+		idx1 := 1.0
+		idx2 := 2.0
+
+		// Book 1: shares old dir & stem with an .m4b AND destination dir already has its own same-book .m4b/.opf/.jpg.
+		oldEPUB := filepath.Join(libRoot, "Richard K. Morgan", "Altered Carbon", "Altered Carbon (2002)", "Altered Carbon (2002) - Richard K. Morgan.epub")
+		oldM4B := strings.TrimSuffix(oldEPUB, ".epub") + ".m4b"
+		oldOPF := strings.TrimSuffix(oldEPUB, ".epub") + ".opf"
+		oldJPG := strings.TrimSuffix(oldEPUB, ".epub") + ".jpg"
+		newEPUB := filepath.Join(libRoot, "Richard K. Morgan", "Takeshi Kovacs", "Altered Carbon (2002)", "Altered Carbon (2002) - Richard K. Morgan.epub")
+		newM4B := strings.TrimSuffix(newEPUB, ".epub") + ".m4b"
+		newOPF := strings.TrimSuffix(newEPUB, ".epub") + ".opf"
+		newJPG := strings.TrimSuffix(newEPUB, ".epub") + ".jpg"
+
+		createTestEPUBFile(t, oldEPUB, epub.Metadata{Title: "Altered Carbon", Authors: []string{"Richard K. Morgan"}, Series: "Altered Carbon", SeriesIndex: &idx1, PublishDate: "2002"})
+		if err := os.WriteFile(oldM4B, []byte("old-audio"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := epub.WriteSidecarFile(epub.Metadata{Title: "Altered Carbon", Authors: []string{"Richard K. Morgan"}, Series: "Altered Carbon"}, oldOPF); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(oldJPG, []byte("old-cover"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(newEPUB), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(newM4B, []byte("new-audio"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := epub.WriteSidecarFile(epub.Metadata{Title: "Altered Carbon", Authors: []string{"Richard K. Morgan"}, Series: "Takeshi Kovacs"}, newOPF); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(newJPG, []byte("existing-new-cover"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Book 2: non-path change (seriesIndex only) in non-canonical path must update in place without relocating.
+		inPlaceEPUB := filepath.Join(libRoot, "CustomFolder", "Broken Angels.epub")
+		createTestEPUBFile(t, inPlaceEPUB, epub.Metadata{Title: "Broken Angels", Authors: []string{"Richard K. Morgan"}, Series: "Takeshi Kovacs", SeriesIndex: &idx1, PublishDate: "2003"})
+
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'Richard K. Morgan', 'Morgan, Richard K.');
+			INSERT INTO series (id, title, author_id) VALUES ('s1', 'Altered Carbon', 'a1'), ('s2', 'Takeshi Kovacs', 'a1');
+			INSERT INTO books (id, author_id, series_id, series_index, title, release_date) VALUES
+				('b1', 'a1', 's1', 1.0, 'Altered Carbon', '2002'),
+				('b2', 'a1', 's2', 2.0, 'Broken Angels', '2003');
+			INSERT INTO book_editions (id, book_id, format, language, publication_date) VALUES
+				('e1-epub', 'b1', 'epub', 'en', '2002'),
+				('e1-m4b',  'b1', 'm4b',  'en', '2002'),
+				('e2-epub', 'b2', 'epub', 'en', '2003');
+			INSERT INTO media_assets (id, edition_id, file_path, file_size) VALUES
+				('m1-epub',    'e1-epub', ?, 100),
+				('m1-old-m4b', 'e1-m4b',  ?, 100),
+				('m1-new-m4b', 'e1-m4b',  ?, 100),
+				('m2-epub',    'e2-epub', ?, 100);
+		`, oldEPUB, oldM4B, newM4B, inPlaceEPUB); err != nil {
+			t.Fatal(err)
+		}
+		if err := catalog.New(db).SaveIdealMetadata(ctx, "b1", "Altered Carbon", "Takeshi Kovacs", &idx1, catalog.IdealSourceMatch); err != nil {
+			t.Fatal(err)
+		}
+		if err := catalog.New(db).SaveIdealMetadata(ctx, "b2", "Broken Angels", "Takeshi Kovacs", &idx2, catalog.IdealSourceMatch); err != nil {
+			t.Fatal(err)
+		}
+
+		srv := &Server{db: db, baseOverrides: config.Overrides{LibraryRoot: libRoot}}
+
+		// Apply b1 -> moves EPUB into newDir, preserves oldM4B/oldOPF/oldJPG because stem was shared,
+		// and updates newOPF while preserving existing newM4B and newJPG!
+		req1 := httptest.NewRequest(http.MethodPost, "/api/activity/metadata-mismatches/b1/apply", nil)
+		req1.SetPathValue("id", "b1")
+		rec1 := httptest.NewRecorder()
+		srv.handleApplyEPUBIdealMetadata(rec1, req1)
+		if rec1.Code != http.StatusOK {
+			t.Fatalf("b1 apply status = %d, body = %s", rec1.Code, rec1.Body.String())
+		}
+		if _, err := os.Stat(newEPUB); err != nil {
+			t.Fatalf("relocated EPUB missing: %v", err)
+		}
+		for _, kept := range []string{oldM4B, oldOPF, oldJPG, newM4B, newOPF, newJPG} {
+			if _, err := os.Stat(kept); err != nil {
+				t.Errorf("expected preserved companion/audiobook %s, err = %v", kept, err)
+			}
+		}
+		if got, _ := os.ReadFile(newJPG); string(got) != "existing-new-cover" {
+			t.Errorf("existing destination same-book cover was overwritten: %q", string(got))
+		}
+
+		// Apply b2 (seriesIndex-only change) -> stays in place at CustomFolder/Broken Angels.epub.
+		req2 := httptest.NewRequest(http.MethodPost, "/api/activity/metadata-mismatches/b2/apply", nil)
+		req2.SetPathValue("id", "b2")
+		rec2 := httptest.NewRecorder()
+		srv.handleApplyEPUBIdealMetadata(rec2, req2)
+		if rec2.Code != http.StatusOK {
+			t.Fatalf("b2 apply status = %d, body = %s", rec2.Code, rec2.Body.String())
+		}
+		if _, err := os.Stat(inPlaceEPUB); err != nil {
+			t.Fatalf("seriesIndex-only change unexpectedly moved EPUB: %v", err)
+		}
+		fixedB2, err := epub.OpenNative(inPlaceEPUB)
+		if err != nil || fixedB2.Metadata().SeriesIndex == nil || *fixedB2.Metadata().SeriesIndex != 2.0 {
+			t.Fatalf("b2 seriesIndex not updated in place: err=%v meta=%+v", err, fixedB2.Metadata())
+		}
+	})
 }

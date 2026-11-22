@@ -1,6 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ArrowRight, Check } from 'lucide-react';
-import type { MetadataCandidate, MetadataCandidatesResponse, MetadataDiff, MetadataPreview } from '../types';
+import { ArrowRight, Check, Copy, Download, FolderOutput, Trash2 } from 'lucide-react';
+import type {
+  MetadataCandidate,
+  MetadataCandidatesResponse,
+  MetadataDiff,
+  MetadataPreview,
+  ResolveDuplicatesResponse,
+} from '../types';
 import {
   ALL_LANGUAGES,
   buildLanguageOptions,
@@ -17,6 +23,15 @@ const fields: Record<string, string> = {
 };
 const focus = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300';
 const secondary = `rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium hover:bg-zinc-700 disabled:opacity-50 ${focus}`;
+const danger = `inline-flex items-center gap-1.5 rounded-md bg-rose-500 px-3 py-2 text-sm font-semibold text-zinc-950 hover:bg-rose-400 disabled:opacity-50 ${focus}`;
+
+function formatFileSize(bytes?: number): string {
+  if (!bytes || !Number.isFinite(bytes) || bytes <= 0) return '';
+  const k = 1024;
+  const units = ['B', 'KiB', 'MiB', 'GiB'];
+  const i = Math.max(0, Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(k))));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${units[i]}`;
+}
 
 async function metadataRequest<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
@@ -137,6 +152,7 @@ function parseCandidatesPayload(
 export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate, onBack, onApplied }: Props) {
   const heading = useRef<HTMLHeadingElement>(null);
   const id = useId();
+  const [activeBookID, setActiveBookID] = useState(bookID);
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState({ term: '', attempt: 0 });
   const [defaultLang, setDefaultLang] = useState(
@@ -153,7 +169,11 @@ export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate,
   const [applyError, setApplyError] = useState('');
   const [applying, setApplying] = useState(false);
   const [completed, setCompleted] = useState(false);
-  const base = `/api/books/${encodeURIComponent(bookID)}`;
+  const [keepAssetId, setKeepAssetId] = useState('');
+  const [resolvingDuplicates, setResolvingDuplicates] = useState(false);
+  const [duplicateStatus, setDuplicateStatus] = useState('');
+  const [duplicateError, setDuplicateError] = useState('');
+  const base = `/api/books/${encodeURIComponent(activeBookID)}`;
   const effectiveLanguage = selectedLanguage ?? defaultLang;
   const languageOptions = useMemo(
     () => buildLanguageOptions(defaultLang, availableLanguages, effectiveLanguage),
@@ -163,6 +183,10 @@ export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate,
     () => availableLanguages.filter((lang) => lang !== effectiveLanguage),
     [availableLanguages, effectiveLanguage],
   );
+
+  useEffect(() => {
+    setActiveBookID(bookID);
+  }, [bookID]);
 
   useEffect(() => { heading.current?.focus(); }, []);
 
@@ -226,8 +250,43 @@ export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate,
     setCandidate(next);
   }
 
+  async function resolveDuplicates() {
+    if (!preview?.hasDuplicates || !keepAssetId || resolvingDuplicates) return;
+    const removeAssetIds = preview.files
+      .map((file) => file.id)
+      .filter((assetId) => assetId !== keepAssetId);
+    if (removeAssetIds.length === 0) return;
+
+    setResolvingDuplicates(true);
+    setDuplicateError('');
+    setDuplicateStatus('');
+    setApplyError('');
+    try {
+      const result = await metadataRequest<ResolveDuplicatesResponse>(
+        `/api/activity/metadata-mismatches/${encodeURIComponent(activeBookID)}/resolve-duplicates`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keepAssetId, removeAssetIds }),
+        },
+      );
+      setKeepAssetId('');
+      setPreview(undefined);
+      if (result.bookId && result.bookId !== activeBookID) {
+        setActiveBookID(result.bookId);
+      }
+      setPreviewAttempt((attempt) => attempt + 1);
+      setDuplicateStatus('Duplicate EPUBs resolved. Review the updated preview below before applying metadata.');
+      onApplied?.();
+    } catch (error) {
+      setDuplicateError(error instanceof Error ? error.message : 'Unable to resolve duplicate EPUBs.');
+    } finally {
+      setResolvingDuplicates(false);
+    }
+  }
+
   async function apply() {
-    if (!preview || applying) return;
+    if (!preview || preview.hasDuplicates || applying) return;
     setApplying(true);
     setApplyError('');
     try {
@@ -247,12 +306,18 @@ export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate,
     }
   }
 
+  const hasDuplicates = Boolean(preview?.hasDuplicates && preview.files.length > 1);
+  const keptDuplicate = hasDuplicates ? preview?.files.find((f) => f.id === keepAssetId) : undefined;
+  const duplicatesToRemove = keptDuplicate
+    ? (preview?.files ?? []).filter((f) => f.id !== keptDuplicate.id)
+    : [];
+
   return (
     <section aria-labelledby={id} className="flex min-h-0 flex-1 flex-col">
       <div className="space-y-5 overflow-y-auto p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 id={id} ref={heading} tabIndex={-1} className="text-lg font-semibold">Fix Metadata</h3>
-        <button type="button" className={secondary} disabled={applying} onClick={onBack}>Back to details</button>
+        <button type="button" className={secondary} disabled={applying || resolvingDuplicates} onClick={onBack}>Back to details</button>
       </div>
       {completed ? (
         <p role="status" className="text-sm text-emerald-300">Metadata applied to {candidate ? 'the library and EPUB files.' : 'the EPUB files.'}</p>
@@ -268,10 +333,10 @@ export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate,
             <div className="space-y-1.5">
               <label htmlFor={id + '-query'} className="block text-sm font-medium text-zinc-200">Search metadata by title</label>
               <div className="flex gap-2">
-                <input id={id + '-query'} type="search" value={query} maxLength={500} disabled={applying}
+                <input id={id + '-query'} type="search" value={query} maxLength={500} disabled={applying || resolvingDuplicates}
                   onChange={(event) => setQuery(event.target.value)}
                   className={`min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 ${focus}`} />
-                <button type="submit" className={secondary} disabled={applying}>Search</button>
+                <button type="submit" className={secondary} disabled={applying || resolvingDuplicates}>Search</button>
               </div>
             </div>
             <div className="space-y-1.5 sm:min-w-[11rem]">
@@ -279,7 +344,7 @@ export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate,
               <select
                 id={id + '-language'}
                 value={effectiveLanguage}
-                disabled={applying}
+                disabled={applying || resolvingDuplicates}
                 onChange={(event) => handleLanguageChange(event.target.value)}
                 className={`w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 ${focus}`}
               >
@@ -292,7 +357,7 @@ export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate,
             </div>
           </div>
         </form>
-        <fieldset disabled={applying} className="min-w-0 space-y-1">
+        <fieldset disabled={applying || resolvingDuplicates} className="min-w-0 space-y-1">
           <legend className="mb-2 text-sm font-semibold">{search.term ? 'Search results' : 'Suggested matches'}</legend>
           <label className="flex items-start gap-2 rounded-md px-2 py-2 text-sm hover:bg-zinc-800">
             <input type="radio" name={id} checked={!candidate} onChange={() => select(undefined)}
@@ -345,6 +410,11 @@ export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate,
         </fieldset>
         <div className="space-y-3 border-t border-zinc-800 pt-4">
           <h4 className="text-sm font-semibold">Preview metadata to apply</h4>
+          {duplicateStatus && (
+            <p role="status" className="rounded-md border border-emerald-900/60 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
+              {duplicateStatus}
+            </p>
+          )}
           {previewError && (
             <div className="space-y-2">
               <p role="alert" className="text-sm text-red-300">{previewError}</p>
@@ -355,15 +425,141 @@ export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate,
             </div>
           )}
           {!preview && !previewError && <p role="status" className="text-sm text-zinc-300">Loading preview…</p>}
+          {hasDuplicates && preview && (
+            <div className="space-y-3 rounded-lg border border-rose-900/60 bg-rose-950/20 p-3">
+              <div className="space-y-1">
+                <p className="flex items-center gap-1.5 text-sm font-semibold text-rose-200">
+                  <Copy className="w-4 h-4 shrink-0" aria-hidden="true" />
+                  Duplicate EPUB files detected ({preview.files.length})
+                </p>
+                <p className="text-xs text-zinc-300">
+                  Multiple EPUB files match this book. Choose one copy to keep before applying metadata changes so no duplicate is modified or overwritten unexpectedly.
+                </p>
+              </div>
+              {duplicateError && <p role="alert" className="text-xs text-red-300">{duplicateError}</p>}
+              <fieldset disabled={resolvingDuplicates} className="space-y-2">
+                <legend className="sr-only">Choose EPUB copy to keep</legend>
+                {preview.files.map((file) => {
+                  const displayPath = file.relativePath || file.filename;
+                  const sizeLabel = formatFileSize(file.fileSizeBytes);
+                  const isSelected = keepAssetId === file.id;
+                  const downloadBookId = file.bookId || activeBookID;
+                  return (
+                    <div
+                      key={file.id}
+                      className={`rounded-md border p-2.5 space-y-2 ${
+                        isSelected ? 'border-blue-500/60 bg-blue-950/20' : 'border-zinc-800 bg-zinc-950/60'
+                      }`}
+                    >
+                      <label className="flex items-start gap-2.5 cursor-pointer">
+                        <input
+                          type="radio"
+                          name={id + '-keep-duplicate'}
+                          checked={isSelected}
+                          onChange={() => setKeepAssetId(file.id)}
+                          aria-label={`Keep ${displayPath}`}
+                          className={`mt-0.5 shrink-0 accent-blue-400 ${focus}`}
+                        />
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-mono text-xs text-zinc-100 break-all">{displayPath}</span>
+                            <div className="flex items-center gap-2 text-xs text-zinc-400 tabular-nums shrink-0">
+                              {sizeLabel && <span>{sizeLabel}</span>}
+                              <a
+                                href={`/api/books/${encodeURIComponent(downloadBookId)}/files/${encodeURIComponent(file.id)}`}
+                                download={file.filename}
+                                onClick={(e) => e.stopPropagation()}
+                                className={`inline-flex items-center gap-1 text-blue-300 hover:text-blue-200 underline underline-offset-2 ${focus}`}
+                              >
+                                <Download className="w-3 h-3" aria-hidden="true" />
+                                Download
+                              </a>
+                            </div>
+                          </div>
+                        </div>
+                      </label>
+                      {file.diffs.length > 0 && (
+                        <MetadataPreviewTable rows={file.diffs} before="Current file" after={candidate ? 'Selected metadata' : 'Library metadata'} />
+                      )}
+                    </div>
+                  );
+                })}
+              </fieldset>
+              {keptDuplicate ? (
+                <div className="space-y-2 rounded-md border border-zinc-800 bg-zinc-950/80 p-3 text-xs">
+                  <p className="text-zinc-200">
+                    <span className="font-semibold text-emerald-300">Keep:</span>{' '}
+                    <span className="font-mono break-all">{keptDuplicate.relativePath || keptDuplicate.filename}</span>
+                  </p>
+                  {duplicatesToRemove.map((rem) => (
+                    <p key={rem.id} className="text-zinc-300">
+                      <span className="font-semibold text-rose-300">Remove:</span>{' '}
+                      <span className="font-mono break-all">{rem.relativePath || rem.filename}</span>
+                    </p>
+                  ))}
+                  <p className="text-zinc-400">Unrelated files are preserved; empty folders will be removed.</p>
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={resolvingDuplicates}
+                      onClick={() => void resolveDuplicates()}
+                      className={danger}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                      {resolvingDuplicates ? 'Resolving…' : 'Keep Selected & Remove Duplicates'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={resolvingDuplicates}
+                      onClick={() => setKeepAssetId('')}
+                      className={secondary}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-zinc-300">
+                  Select the EPUB copy you want to keep to review and confirm duplicate removal.
+                </p>
+              )}
+            </div>
+          )}
           {preview?.bookDiffs && preview.bookDiffs.length > 0 && (
             <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
               <h5 className="text-sm font-semibold">Library book</h5>
               <MetadataPreviewTable rows={preview.bookDiffs} before="Current library" after="Selected metadata" />
             </div>
           )}
-          {preview?.files.map((file) => (
+          {!hasDuplicates && preview?.files.map((file) => (
             <div key={file.id} className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
-              <h5 className="text-sm font-semibold [overflow-wrap:anywhere]">{file.filename}</h5>
+              <div className="space-y-0.5">
+                <h5 className="text-sm font-semibold [overflow-wrap:anywhere]">{file.filename}</h5>
+                {file.relativePath && file.relativePath !== file.filename && (
+                  <p className="font-mono text-xs text-zinc-400 break-all">{file.relativePath}</p>
+                )}
+              </div>
+              {file.targetPath && file.targetPath !== file.relativePath && (
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/[0.07] p-2.5 space-y-1 text-xs">
+                  <p className="flex items-center gap-1.5 font-medium text-amber-200">
+                    <FolderOutput className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    File path will move to match updated metadata
+                  </p>
+                  {file.relativePath && (
+                    <p className="text-zinc-300">
+                      <span className="text-zinc-400">From:</span>{' '}
+                      <span className="font-mono break-all">{file.relativePath}</span>
+                    </p>
+                  )}
+                  <p className="text-amber-100">
+                    <span className="text-zinc-400">To:</span>{' '}
+                    <span className="font-mono font-medium break-all">{file.targetPath}</span>
+                  </p>
+                  <p className="text-zinc-400">
+                    Companion OPF and cover files will move with the EPUB; empty folders will be removed.
+                  </p>
+                </div>
+              )}
               <MetadataPreviewTable rows={file.diffs} before="Current file" after={candidate ? 'Selected metadata' : 'Library metadata'} />
               {file.libraryDiffs && file.libraryDiffs.length > 0 && (
                 <div className="space-y-2 border-t border-zinc-800 pt-3">
@@ -379,8 +575,13 @@ export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate,
       {!completed && (
         <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2 border-t border-zinc-800 bg-zinc-950/60 px-6 py-3">
           {applyError && <p role="alert" className="grow text-sm text-red-300">{applyError}</p>}
-          <button type="button" onClick={() => void apply()} disabled={!preview || applying}
-            className={`rounded-md bg-blue-400 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-blue-300 disabled:opacity-50 ${focus}`}>
+          <button
+            type="button"
+            onClick={() => void apply()}
+            disabled={!preview || hasDuplicates || applying || resolvingDuplicates}
+            title={hasDuplicates ? 'Resolve duplicate EPUB files before applying metadata' : undefined}
+            className={`rounded-md bg-blue-400 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-blue-300 disabled:opacity-50 ${focus}`}
+          >
             {applying ? 'Applying metadata…' : 'Apply Metadata'}
           </button>
         </div>
