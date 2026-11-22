@@ -291,9 +291,7 @@ func TestOrganizeBook_WithSidecarAndCover(t *testing.T) {
 	srcDir := t.TempDir()
 
 	srcMedia := filepath.Join(srcDir, "raw_book.epub")
-	if err := os.WriteFile(srcMedia, []byte("synthetic epub content"), 0644); err != nil {
-		t.Fatalf("write src media: %v", err)
-	}
+	createTestEPUBWithCover(t, srcMedia, testCoverJPEG(t))
 
 	coverBytes := testCoverJPEG(t)
 	book := BookDetails{
@@ -514,5 +512,266 @@ func TestAtomicReplacementPreservesOldOnFailure(t *testing.T) {
 	entries, _ := os.ReadDir(root)
 	if len(entries) != 1 {
 		t.Fatalf("temporary files or source leaked: %v", entries)
+	}
+}
+
+func TestOrganizeBook_RewritesEPUBMetadataAndPreservesIntegrity(t *testing.T) {
+	t.Parallel()
+
+	chapterBody := `<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><body><p>Ash fell from the sky.</p></body></html>`
+	coverBytes := testCoverJPEG(t)
+	idx := 2.5
+
+	buildEPUB := func(t *testing.T, targetPath, version string) {
+		t.Helper()
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		mw, err := zw.CreateHeader(&zip.FileHeader{Name: "mimetype", Method: zip.Store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = mw.Write([]byte("application/epub+zip"))
+
+		cw, _ := zw.Create("META-INF/container.xml")
+		_, _ = cw.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`))
+
+		opf, _ := zw.Create("OEBPS/content.opf")
+		_, _ = opf.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="pub-id" version="` + version + `">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:identifier id="pub-id">urn:uuid:11111111-2222-3333-4444-555555555555</dc:identifier>
+    <dc:title>02.5 - Dirty Scene Title [Retail]</dc:title>
+    <dc:creator opf:role="aut">Sanderson, B.</dc:creator>
+    <dc:language>en</dc:language>
+    <dc:publisher>Original Press</dc:publisher>
+    <meta name="calibre:series" content="Wrong Series"/>
+    <meta name="calibre:series_index" content="9"/>
+    <meta name="cover" content="cover-image"/>
+  </metadata>
+  <manifest>
+    <item id="cover-image" href="cover.jpg" media-type="image/jpeg" properties="cover-image"/>
+    <item id="ch1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="ch1"/></spine>
+</package>`))
+
+		imgW, _ := zw.Create("OEBPS/cover.jpg")
+		_, _ = imgW.Write(coverBytes)
+		chW, _ := zw.Create("OEBPS/chapter1.xhtml")
+		_, _ = chW.Write([]byte(chapterBody))
+
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(targetPath, buf.Bytes(), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, version := range []string{"2.0", "3.0"} {
+		t.Run("EPUB_"+version, func(t *testing.T) {
+			t.Parallel()
+			libraryRoot := t.TempDir()
+			srcPath := filepath.Join(t.TempDir(), "downloaded.epub")
+			buildEPUB(t, srcPath, version)
+
+			book := BookDetails{
+				Title:       "Edgedancer",
+				Subtitle:    "A Stormlight Archive Novella",
+				Author:      "Brandon Sanderson",
+				Series:      "The Stormlight Archive",
+				SeriesIndex: &idx,
+				Year:        2016,
+				PublishDate: "2016-11-22",
+				Description: "Lift travels to Yeddaw.",
+				ISBN13:      "9781250166548",
+				Language:    "en",
+			}
+
+			res, err := OrganizeBook(libraryRoot, book, srcPath, nil)
+			if err != nil {
+				t.Fatalf("OrganizeBook failed: %v", err)
+			}
+			if _, err := os.Stat(srcPath); !os.IsNotExist(err) {
+				t.Fatalf("expected staging source to be removed, stat err = %v", err)
+			}
+			if err := epub.Validate(res.MediaPath); err != nil {
+				t.Fatalf("rewritten EPUB failed Validate: %v", err)
+			}
+
+			reloaded, err := epub.OpenNative(res.MediaPath)
+			if err != nil {
+				t.Fatalf("OpenNative after OrganizeBook: %v", err)
+			}
+			got := reloaded.Metadata()
+			if got.Title != "Edgedancer" {
+				t.Errorf("title = %q, want Edgedancer", got.Title)
+			}
+			if got.Subtitle != "A Stormlight Archive Novella" {
+				t.Errorf("subtitle = %q", got.Subtitle)
+			}
+			if len(got.Authors) != 1 || got.Authors[0] != "Brandon Sanderson" {
+				t.Errorf("authors = %v, want [Brandon Sanderson]", got.Authors)
+			}
+			if got.Series != "The Stormlight Archive" {
+				t.Errorf("series = %q, want The Stormlight Archive", got.Series)
+			}
+			if got.SeriesIndex == nil || *got.SeriesIndex != 2.5 {
+				t.Errorf("seriesIndex = %v, want 2.5", got.SeriesIndex)
+			}
+			if got.PublishDate != "2016-11-22" {
+				t.Errorf("publishDate = %q, want 2016-11-22", got.PublishDate)
+			}
+			if got.Publisher != "Original Press" {
+				t.Errorf("publisher = %q, want preserved Original Press", got.Publisher)
+			}
+			if got.ISBN13 != "9781250166548" {
+				t.Errorf("isbn13 = %q, want 9781250166548", got.ISBN13)
+			}
+			if got.Description != "Lift travels to Yeddaw." {
+				t.Errorf("description = %q", got.Description)
+			}
+
+			// Verify chapter and cover entries were preserved verbatim.
+			zr, err := zip.OpenReader(res.MediaPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer zr.Close()
+			var foundChapter, foundCover bool
+			for _, f := range zr.File {
+				switch f.Name {
+				case "OEBPS/chapter1.xhtml":
+					rc, err := f.Open()
+					if err != nil {
+						t.Fatal(err)
+					}
+					var data bytes.Buffer
+					_, _ = data.ReadFrom(rc)
+					_ = rc.Close()
+					if data.String() != chapterBody {
+						t.Errorf("chapter body altered: %q", data.String())
+					}
+					foundChapter = true
+				case "OEBPS/cover.jpg":
+					rc, err := f.Open()
+					if err != nil {
+						t.Fatal(err)
+					}
+					var data bytes.Buffer
+					_, _ = data.ReadFrom(rc)
+					_ = rc.Close()
+					if !bytes.Equal(data.Bytes(), coverBytes) {
+						t.Errorf("embedded cover bytes altered")
+					}
+					foundCover = true
+				}
+			}
+			if !foundChapter || !foundCover {
+				t.Fatalf("missing preserved entries: chapter=%v cover=%v", foundChapter, foundCover)
+			}
+		})
+	}
+}
+
+func TestOrganizeBook_EPUBFailurePreservesPriorContentAndSource(t *testing.T) {
+	t.Parallel()
+
+	makeCorruptEntryEPUB := func(t *testing.T) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		mw, _ := zw.CreateHeader(&zip.FileHeader{Name: "mimetype", Method: zip.Store})
+		_, _ = mw.Write([]byte("application/epub+zip"))
+		cw, _ := zw.Create("META-INF/container.xml")
+		_, _ = cw.Write([]byte(`<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`))
+		ow, _ := zw.Create("OEBPS/content.opf")
+		_, _ = ow.Write([]byte(`<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Broken</dc:title><dc:creator>Author</dc:creator></metadata><manifest><item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="ch1"/></spine></package>`))
+		ch, _ := zw.CreateHeader(&zip.FileHeader{Name: "OEBPS/ch1.xhtml", Method: zip.Deflate})
+		_, _ = ch.Write([]byte("<html><body>Some chapter text to corrupt in transit.</body></html>"))
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		raw := buf.Bytes()
+		// Corrupt the deflated payload of ch1.xhtml so OpenNativeReader succeeds
+		// (only reading container.xml and content.opf) while WriteArchive fails CRC validation.
+		marker := []byte("OEBPS/ch1.xhtml")
+		idx := bytes.Index(raw, marker)
+		if idx < 0 || idx+len(marker)+6 >= len(raw) {
+			t.Fatal("could not locate ch1.xhtml header")
+		}
+		raw[idx+len(marker)+4] ^= 0xff
+		return raw
+	}
+
+	cases := []struct {
+		name string
+		data []byte
+	}{
+		{name: "not_a_zip", data: []byte("truncated download")},
+		{name: "corrupt_entry_during_write", data: makeCorruptEntryEPUB(t)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			libraryRoot := t.TempDir()
+			book := BookDetails{Title: "Dune", Author: "Frank Herbert", Year: 1965}
+
+			// Seed a valid prior EPUB + OPF at the canonical destination.
+			priorSrc := filepath.Join(t.TempDir(), "prior.epub")
+			createTestEPUBWithCover(t, priorSrc, testCoverJPEG(t))
+			priorRes, err := OrganizeBook(libraryRoot, book, priorSrc, nil)
+			if err != nil {
+				t.Fatalf("seed prior OrganizeBook: %v", err)
+			}
+			priorEPUBBytes, err := os.ReadFile(priorRes.MediaPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			priorOPFBytes, err := os.ReadFile(priorRes.OpfPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Attempt to import a failing EPUB targeting the same canonical book.
+			badSrc := filepath.Join(t.TempDir(), "broken.epub")
+			if err := os.WriteFile(badSrc, tc.data, 0644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := OrganizeBook(libraryRoot, book, badSrc, nil); err == nil {
+				t.Fatalf("expected OrganizeBook to fail on %s EPUB", tc.name)
+			}
+
+			// Prior library EPUB, prior OPF, and source EPUB must all be preserved verbatim.
+			afterEPUBBytes, err := os.ReadFile(priorRes.MediaPath)
+			if err != nil || !bytes.Equal(priorEPUBBytes, afterEPUBBytes) {
+				t.Fatalf("prior library EPUB altered on failure (err=%v)", err)
+			}
+			afterOPFBytes, err := os.ReadFile(priorRes.OpfPath)
+			if err != nil || !bytes.Equal(priorOPFBytes, afterOPFBytes) {
+				t.Fatalf("prior library OPF altered on failure (err=%v)", err)
+			}
+			afterSrcBytes, err := os.ReadFile(badSrc)
+			if err != nil || !bytes.Equal(tc.data, afterSrcBytes) {
+				t.Fatalf("source EPUB altered or removed on failure (err=%v)", err)
+			}
+
+			// No staged temp directories/files left behind in titleDir.
+			entries, err := os.ReadDir(priorRes.CanonicalDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range entries {
+				if e.Name()[0] == '.' {
+					t.Errorf("leaked temporary entry in canonical dir: %s", e.Name())
+				}
+			}
+		})
 	}
 }

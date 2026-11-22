@@ -63,7 +63,7 @@ func TestEmbeddedCovers(t *testing.T) {
 					}
 					before, _ := os.ReadFile(src)
 					cat := New(testutil.NewTestDB(t))
-					book := BookDetails{Title: "Art", Author: "Artist", Year: 2024}
+					book := BookDetails{Title: "Synthetic Illustrated", Author: "Synthetic Illustrator"}
 					res, err := cat.IngestBook(context.Background(), root, book, src, nil)
 					if err != nil {
 						t.Fatal(err)

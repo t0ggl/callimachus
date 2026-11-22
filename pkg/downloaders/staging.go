@@ -530,27 +530,57 @@ func (sm *StagingMonitor) resolveBookDetails(ctx context.Context, item database.
 		query := `
 			SELECT b.id, b.title, COALESCE(b.subtitle, ''), a.name,
 			       COALESCE(s.title, ''), b.series_index,
-			       COALESCE(b.release_date, ''),
+			       COALESCE(NULLIF(ed.publication_date, ''), b.release_date, ''),
 			       COALESCE(b.synopsis, ''),
+			       COALESCE(ed.publisher, ''), COALESCE(ed.language, ''),
 			       COALESCE(ed.isbn13, ''), COALESCE(ed.asin, ''),
-			       COALESCE(ed.format, '')
+			       COALESCE(ed.format, ''),
+			       im.book_id IS NOT NULL, COALESCE(im.title, ''), COALESCE(im.series, ''), im.series_index, COALESCE(im.source, '')
 			FROM books b
-			LEFT JOIN book_editions ed ON ed.book_id=b.id AND ed.id=?
+			LEFT JOIN book_editions ed ON ed.id = COALESCE(?, (
+				SELECT e2.id FROM book_editions e2
+				JOIN book_requests r2 ON r2.book_id = e2.book_id
+				JOIN download_queue q2 ON q2.request_id = r2.id
+				WHERE q2.id = ? AND e2.format = r2.format LIMIT 1
+			))
 			JOIN authors a ON b.author_id = a.id
 			LEFT JOIN series s ON b.series_id = s.id
+			LEFT JOIN book_ideal_metadata im ON im.book_id = b.id
 			WHERE b.id = COALESCE((SELECT r.book_id FROM book_requests r JOIN download_queue q ON q.request_id=r.id WHERE q.id=?),
 				(SELECT book_id FROM book_editions WHERE id=?)) LIMIT 1;
 		`
 		var releaseDate string
-		row := sm.db.QueryRowContext(ctx, query, item.EditionID, item.ID, item.EditionID)
+		var hasIdeal bool
+		var idealTitle, idealSeries, idealSource string
+		var idealIndex *float64
+		row := sm.db.QueryRowContext(ctx, query, item.EditionID, item.ID, item.ID, item.EditionID)
 		err := row.Scan(
 			&details.BookID, &details.Title, &details.Subtitle, &details.Author,
 			&details.Series, &details.SeriesIndex, &releaseDate,
-			&details.Description, &details.ISBN13, &details.ASIN,
-			&details.Format,
+			&details.Description, &details.Publisher, &details.Language,
+			&details.ISBN13, &details.ASIN, &details.Format,
+			&hasIdeal, &idealTitle, &idealSeries, &idealIndex, &idealSource,
 		)
 		if err == nil {
 			foundInDB = true
+			if hasIdeal && strings.TrimSpace(idealTitle) != "" {
+				details.Title = strings.TrimSpace(idealTitle)
+				if s := strings.TrimSpace(idealSeries); s != "" {
+					if !strings.EqualFold(s, details.Series) {
+						details.SeriesIndex = nil
+					}
+					details.Series = s
+					if idealIndex != nil {
+						details.SeriesIndex = idealIndex
+					}
+				} else if idealSource == catalog.IdealSourceManualRepair {
+					details.Series = ""
+					details.SeriesIndex = nil
+				}
+			}
+			if normDate := metadata.NormalizeReleaseDate(releaseDate, 0); normDate != "" {
+				details.PublishDate = normDate
+			}
 			if y := metadata.ReleaseYear(releaseDate, 0); y > 0 {
 				details.Year = y
 			}

@@ -16,6 +16,7 @@ import (
 	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/config"
+	"github.com/t0ggl/callimachus/pkg/downloaders"
 	"github.com/t0ggl/callimachus/pkg/epub"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
@@ -376,5 +377,195 @@ func TestEPUBMetadataMismatchesDetectionAndApply(t *testing.T) {
 	}
 	if len(afterResp.Items) != 1 || afterResp.Items[0].BookID != "b-novella" {
 		t.Fatalf("expected only b-novella after applying b-mismatch, got %+v", afterResp.Items)
+	}
+}
+
+func TestEPUBProvenanceDistinction_DownloadImportFixesExternalScanReports(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	libRoot := t.TempDir()
+	completedRoot := t.TempDir()
+	cat := catalog.New(db)
+
+	idx1 := 1.0
+	idx2 := 2.0
+	wrongIdx := 9.0
+
+	// 1. Seed two selected catalog books with authoritative metadata.
+	//    - b-downloaded will arrive through the download/import pipeline (StagingMonitor).
+	//    - b-external will be added directly into the library folder and discovered via normal library scan.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, username, email, role) VALUES ('u1', 'reader', 'reader@example.com', 'requester');
+		INSERT INTO authors (id, name, sort_name) VALUES
+			('a1', 'Brandon Sanderson', 'Sanderson, Brandon'),
+			('a2', 'Frank Herbert', 'Herbert, Frank');
+		INSERT INTO series (id, title, author_id) VALUES
+			('s1', 'Mistborn', 'a1'),
+			('s2', 'Dune Chronicles', 'a2');
+		INSERT INTO books (id, author_id, series_id, series_index, title, release_date, synopsis) VALUES
+			('b-downloaded', 'a1', 's1', 1.0, 'The Final Empire', '2006', 'A world of ash and mist.'),
+			('b-external',   'a2', 's2', 2.0, 'Dune Messiah', '1969', 'Paul Atreides rules the universe.');
+		INSERT INTO book_requests (id, user_id, book_id, title, author, format, status, year)
+		VALUES (1, 'u1', 'b-downloaded', 'The Final Empire', 'Brandon Sanderson', 'epub', 'downloading', 2006);
+	`); err != nil {
+		t.Fatalf("seed catalog: %v", err)
+	}
+	if err := cat.SaveIdealMetadata(ctx, "b-downloaded", "The Final Empire", "Mistborn", &idx1, catalog.IdealSourceMatch); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.SaveIdealMetadata(ctx, "b-external", "Dune Messiah", "Dune Chronicles", &idx2, catalog.IdealSourceMatch); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Place a dirty downloaded EPUB in completedRoot and run the real StagingMonitor importer.
+	downloadReleaseDir := filepath.Join(completedRoot, "Mistborn.01.Final.Empire.Retail.EPUB")
+	downloadedSrc := filepath.Join(downloadReleaseDir, "mistborn_dirty.epub")
+	createTestEPUBFile(t, downloadedSrc, epub.Metadata{
+		Title:       "01 - Mistborn [Retail]",
+		Authors:     []string{"Sanderson, B."},
+		Series:      "Mistborn Trilogy",
+		SeriesIndex: &wrongIdx,
+		Language:    "en",
+	})
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO download_queue (id, request_id, download_client_task_id, title, protocol, status, staging_path)
+		VALUES ('dq-1', 1, 'guid-1', 'Mistborn.01.Final.Empire.Retail.EPUB', 'torrent', 'downloading', ?);
+	`, downloadReleaseDir); err != nil {
+		t.Fatal(err)
+	}
+
+	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{
+		DB:            db,
+		Catalog:       cat,
+		LibraryRoot:   libRoot,
+		CompletedRoot: completedRoot,
+	})
+	if err := sm.PollOnce(ctx); err != nil {
+		t.Fatalf("StagingMonitor.PollOnce: %v", err)
+	}
+
+	// Verify the downloaded EPUB was automatically fixed during import and preserves EPUB integrity.
+	var importedPath string
+	if err := db.QueryRowContext(ctx, `SELECT m.file_path FROM media_assets m JOIN book_editions e ON e.id = m.edition_id WHERE e.book_id = 'b-downloaded'`).Scan(&importedPath); err != nil {
+		t.Fatalf("query imported asset: %v", err)
+	}
+	if err := epub.Validate(importedPath); err != nil {
+		t.Fatalf("imported EPUB failed integrity validation: %v", err)
+	}
+	importedEPUB, err := epub.OpenNative(importedPath)
+	if err != nil {
+		t.Fatalf("OpenNative imported EPUB: %v", err)
+	}
+	importedMeta := importedEPUB.Metadata()
+	if importedMeta.Title != "The Final Empire" || importedMeta.Series != "Mistborn" || importedMeta.SeriesIndex == nil || *importedMeta.SeriesIndex != 1.0 {
+		t.Fatalf("downloaded EPUB not auto-fixed: %+v", importedMeta)
+	}
+	importedBytesBeforeScan, err := os.ReadFile(importedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Externally drop TWO dirty EPUBs directly into the library folder:
+	//    (a) Matching pre-existing catalog book b-external (IdealSourceMatch)
+	//    (b) Brand-new canonical library book discovered solely by scanning (IdealSourceScan)
+	externalMatchedPath := filepath.Join(libRoot, "Frank Herbert", "Dune Chronicles", "Dune Messiah (1969)", "Dune Messiah (1969) - Frank Herbert.epub")
+	createTestEPUBFile(t, externalMatchedPath, epub.Metadata{
+		Title:       "02 - Dune Messiah [Scene]",
+		Authors:     []string{"Herbert, F."},
+		Series:      "Wrong Dune Series",
+		SeriesIndex: &wrongIdx,
+		Language:    "en",
+	})
+	externalMatchedBefore, err := os.ReadFile(externalMatchedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	externalNewPath := filepath.Join(libRoot, "Ursula K. Le Guin", "Earthsea Cycle", "A Wizard of Earthsea (1968)", "A Wizard of Earthsea (1968) - Ursula K. Le Guin.epub")
+	createTestEPUBFile(t, externalNewPath, epub.Metadata{
+		Title:       "Earthsea 01 - Wizard [Dirty]",
+		Authors:     []string{"Le Guin, U."},
+		Series:      "Earthsea Books",
+		SeriesIndex: &wrongIdx,
+		Language:    "en",
+	})
+	externalNewBefore, err := os.ReadFile(externalNewPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 4. Run the real library scan entry point (s.scanLibrary).
+	srv := &Server{
+		db:            db,
+		baseOverrides: config.Overrides{LibraryRoot: libRoot},
+	}
+	scannedCount, err := srv.scanLibrary(ctx)
+	if err != nil {
+		t.Fatalf("scanLibrary: %v", err)
+	}
+	if scannedCount != 3 {
+		t.Fatalf("scanLibrary books = %d, want 3", scannedCount)
+	}
+
+	// Verify NO EPUB on disk was modified by the scan (neither externally added files nor the already-imported file).
+	for name, tc := range map[string]struct {
+		path   string
+		before []byte
+	}{
+		"imported":         {importedPath, importedBytesBeforeScan},
+		"external_matched": {externalMatchedPath, externalMatchedBefore},
+		"external_new":     {externalNewPath, externalNewBefore},
+	} {
+		after, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatalf("read %s after scan: %v", name, err)
+		}
+		if !bytes.Equal(tc.before, after) {
+			t.Errorf("%s EPUB was modified during library scan", name)
+		}
+	}
+
+	// 5. Query GET /api/activity/metadata-mismatches:
+	//    - b-downloaded MUST NOT be reported (fixed during download/import).
+	//    - Both externally added EPUBs MUST be reported as mismatches.
+	rec := httptest.NewRecorder()
+	srv.handleListEPUBMetadataMismatches(rec, httptest.NewRequest(http.MethodGet, "/api/activity/metadata-mismatches", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list mismatches status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp apiEPUBMismatchesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode mismatches: %v", err)
+	}
+	if resp.ScannedBooks != 3 {
+		t.Errorf("scannedBooks = %d, want 3", resp.ScannedBooks)
+	}
+	if len(resp.Items) != 2 {
+		t.Fatalf("mismatch items = %d (%+v), want 2 external books only", len(resp.Items), resp.Items)
+	}
+
+	byTitle := make(map[string]apiEPUBMismatchItem, len(resp.Items))
+	for _, item := range resp.Items {
+		if item.BookID == "b-downloaded" {
+			t.Errorf("downloaded/imported book b-downloaded was unexpectedly reported as a mismatch: %+v", item)
+		}
+		byTitle[item.Title] = item
+	}
+
+	extMatched, ok := byTitle["Dune Messiah"]
+	if !ok {
+		t.Fatalf("expected external matched book 'Dune Messiah' in mismatches, got %+v", resp.Items)
+	}
+	if got := extMatched.MismatchedFields; len(got) != 3 || got[0] != "title" || got[1] != "series" || got[2] != "seriesIndex" {
+		t.Errorf("Dune Messiah mismatchedFields = %v, want [title series seriesIndex]", got)
+	}
+
+	extNew, ok := byTitle["A Wizard of Earthsea"]
+	if !ok {
+		t.Fatalf("expected external scanned book 'A Wizard of Earthsea' in mismatches, got %+v", resp.Items)
+	}
+	if got := extNew.MismatchedFields; len(got) != 2 || got[0] != "title" || got[1] != "series" {
+		t.Errorf("A Wizard of Earthsea mismatchedFields = %v, want [title series]", got)
 	}
 }

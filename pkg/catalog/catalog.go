@@ -597,8 +597,7 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 		seriesID = &series.ID
 	}
 	var releaseDate *string
-	if book.Year > 0 {
-		d := fmt.Sprintf("%04d", book.Year)
+	if d := metadata.NormalizeReleaseDate(book.PublishDate, book.Year); d != "" {
 		releaseDate = &d
 	}
 

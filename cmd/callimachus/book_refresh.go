@@ -577,6 +577,11 @@ func (s *Server) enrichStagedBookDetails(ctx context.Context, details catalog.Bo
 	if strings.TrimSpace(details.Language) == "" && matched.Language != "" {
 		details.Language = matched.Language
 	}
+	if strings.TrimSpace(details.PublishDate) == "" {
+		if d := metadata.NormalizeReleaseDate(matched.PublishDate, matched.Year); d != "" {
+			details.PublishDate = d
+		}
+	}
 	if details.Year <= 0 {
 		if y := metadata.ReleaseYear(matched.PublishDate, matched.Year); y > 0 {
 			details.Year = y
