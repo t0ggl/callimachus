@@ -3,12 +3,15 @@ import {
   AlertCircle,
   BookOpen,
   CheckCircle2,
+  Copy,
+  Download,
   Eye,
   FileWarning,
   Filter,
   Loader2,
   RefreshCw,
   Search,
+  Trash2,
 } from 'lucide-react';
 import {
   Book,
@@ -26,7 +29,7 @@ interface EpubMetadataMismatchesViewProps {
   canRequest?: boolean;
 }
 
-type FieldFilter = 'ALL' | EPUBMismatchField;
+type FieldFilter = 'ALL' | 'duplicates' | EPUBMismatchField;
 
 const FIELD_LABELS: Record<EPUBMismatchField, string> = {
   title: 'Title',
@@ -44,6 +47,7 @@ const SOURCE_LABELS: Record<string, string> = {
 
 const FIELD_FILTERS: { id: FieldFilter; label: string }[] = [
   { id: 'ALL', label: 'All fields' },
+  { id: 'duplicates', label: 'Duplicates' },
   { id: 'title', label: 'Title' },
   { id: 'series', label: 'Series' },
   { id: 'seriesIndex', label: 'Series index' },
@@ -52,6 +56,15 @@ const FIELD_FILTERS: { id: FieldFilter; label: string }[] = [
 const focusRing = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300';
 const secondaryButton = `inline-flex items-center justify-center gap-1.5 min-h-11 sm:min-h-9 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed ${focusRing}`;
 const primaryButton = `inline-flex items-center justify-center gap-1.5 min-h-11 sm:min-h-9 rounded-md bg-blue-400 px-3 py-1.5 text-xs font-semibold text-zinc-950 transition-colors hover:bg-blue-300 disabled:opacity-50 disabled:cursor-not-allowed ${focusRing}`;
+const dangerButton = `inline-flex items-center justify-center gap-1.5 min-h-11 sm:min-h-9 rounded-md bg-rose-500 px-3 py-1.5 text-xs font-semibold text-zinc-950 transition-colors hover:bg-rose-400 disabled:opacity-50 disabled:cursor-not-allowed ${focusRing}`;
+
+function formatFileSize(bytes?: number): string {
+  if (!bytes || !Number.isFinite(bytes) || bytes <= 0) return '';
+  const k = 1024;
+  const units = ['B', 'KiB', 'MiB', 'GiB'];
+  const i = Math.max(0, Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(k))));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${units[i]}`;
+}
 
 function MismatchThumbnail({ coverUrl }: { coverUrl?: string }) {
   const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
@@ -118,6 +131,8 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [fieldFilter, setFieldFilter] = useState<FieldFilter>('ALL');
   const [applyingIds, setApplyingIds] = useState<string[]>([]);
+  const [resolvingIds, setResolvingIds] = useState<string[]>([]);
+  const [selectedKeepByBook, setSelectedKeepByBook] = useState<Record<string, string>>({});
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [modalState, setModalState] = useState<{
     book: Book;
@@ -190,6 +205,50 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
     }
   };
 
+  const handleResolveDuplicates = async (item: EPUBMetadataMismatchItem) => {
+    const keepAssetId = selectedKeepByBook[item.bookId];
+    if (!keepAssetId) return;
+    const removeAssetIds = item.files
+      .map((file) => file.assetId)
+      .filter((assetId) => assetId !== keepAssetId);
+    if (removeAssetIds.length === 0) return;
+
+    setResolvingIds((prev) => [...prev, item.bookId]);
+    setRowErrors((prev) => ({ ...prev, [item.bookId]: '' }));
+    setStatusMessage('');
+    try {
+      const response = await fetch(
+        `/api/activity/metadata-mismatches/${encodeURIComponent(item.bookId)}/resolve-duplicates`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keepAssetId, removeAssetIds }),
+        },
+      );
+      if (!response.ok) {
+        const message = response.headers.get('Content-Type')?.startsWith('text/plain')
+          ? (await response.text()).trim()
+          : '';
+        throw new Error(message || 'Unable to resolve duplicate EPUB files.');
+      }
+      setSelectedKeepByBook((prev) => {
+        const next = { ...prev };
+        delete next[item.bookId];
+        return next;
+      });
+      setStatusMessage(`Resolved duplicate EPUBs for ${item.title}.`);
+      onCatalogChanged?.();
+      await loadMismatches();
+    } catch (err) {
+      setRowErrors((prev) => ({
+        ...prev,
+        [item.bookId]: err instanceof Error ? err.message : 'Unable to resolve duplicate EPUB files.',
+      }));
+    } finally {
+      setResolvingIds((prev) => prev.filter((id) => id !== item.bookId));
+    }
+  };
+
   const handleOpenBook = async (item: EPUBMetadataMismatchItem, initialPanel?: 'repair') => {
     setOpeningBookId(item.bookId);
     setRowErrors((prev) => ({ ...prev, [item.bookId]: '' }));
@@ -220,7 +279,9 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
 
   const hasActiveFilters = searchQuery.trim() !== '' || fieldFilter !== 'ALL';
   const filteredItems = items.filter((item) => {
-    if (fieldFilter !== 'ALL' && !item.mismatchedFields.includes(fieldFilter)) {
+    if (fieldFilter === 'duplicates') {
+      if (!item.hasDuplicates) return false;
+    } else if (fieldFilter !== 'ALL' && !item.mismatchedFields.includes(fieldFilter)) {
       return false;
     }
     const query = searchQuery.trim().toLowerCase();
@@ -232,6 +293,8 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
       item.ideal.series,
       ...item.files.flatMap((file) => [
         file.filename,
+        file.relativePath,
+        file.seriesName,
         file.current.title,
         file.current.series,
       ]),
@@ -257,7 +320,7 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
             )}
           </div>
           <p className="text-xs text-zinc-400 mt-0.5">
-            Books whose current EPUB title, series name, or series index differs significantly from matched ideal metadata
+            Books whose current EPUB title, series name, or series index differs from ideal metadata, or that have duplicate EPUB files
           </p>
         </div>
 
@@ -322,7 +385,7 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
           <p className="text-sm font-medium text-zinc-200">No significant EPUB metadata mismatches</p>
           <p className="text-xs text-zinc-400 mt-1 max-w-md mx-auto">
             {scannedBooks > 0
-              ? `Checked ${scannedBooks} EPUB ${scannedBooks === 1 ? 'book' : 'books'}. Title, series name, and series index match their ideal metadata.`
+              ? `Checked ${scannedBooks} EPUB ${scannedBooks === 1 ? 'book' : 'books'}. Title, series name, and series index match their ideal metadata, and no duplicate EPUB files were found.`
               : 'Books with EPUB files and matched metadata will be compared automatically here.'}
           </p>
         </div>
@@ -334,7 +397,7 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
               <input
                 type="text"
                 aria-label="Filter metadata mismatches"
-                placeholder="Filter by title, author, or series…"
+                placeholder="Filter by title, author, series, or path…"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full pl-9 pr-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-md text-xs text-zinc-100 placeholder-zinc-500 focus:outline-hidden focus:border-zinc-700"
@@ -387,9 +450,16 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
               <ul aria-label="EPUB metadata mismatches" className="divide-y divide-zinc-800/80">
                 {filteredItems.map((item) => {
                   const busy = applyingIds.includes(item.bookId);
+                  const resolving = resolvingIds.includes(item.bookId);
                   const opening = openingBookId === item.bookId;
                   const rowError = rowErrors[item.bookId];
                   const sourceLabel = item.idealSource ? SOURCE_LABELS[item.idealSource] ?? item.idealSource : undefined;
+                  const isDuplicate = Boolean(item.hasDuplicates && item.files.length > 1);
+                  const selectedKeepId = selectedKeepByBook[item.bookId] ?? '';
+                  const keptFile = item.files.find((f) => f.assetId === selectedKeepId);
+                  const filesToRemove = keptFile
+                    ? item.files.filter((f) => f.assetId !== keptFile.assetId)
+                    : [];
 
                   return (
                     <li
@@ -410,6 +480,12 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
                               >
                                 {item.title}
                               </button>
+                              {isDuplicate && (
+                                <span className="inline-flex items-center gap-1 rounded-sm border border-rose-800/60 bg-rose-950/60 px-1.5 py-0.5 text-[11px] font-medium text-rose-300 tabular-nums">
+                                  <Copy className="w-3 h-3 shrink-0" aria-hidden="true" />
+                                  Duplicate EPUBs ({item.files.length})
+                                </span>
+                              )}
                               {item.mismatchedFields.map((field) => (
                                 <span
                                   key={field}
@@ -434,7 +510,8 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
                         <div className="flex flex-wrap items-center gap-2 shrink-0">
                           <button
                             type="button"
-                            disabled={busy || opening}
+                            disabled={busy || opening || resolving || isDuplicate}
+                            title={isDuplicate ? 'Resolve duplicate EPUB files before applying metadata' : undefined}
                             onClick={() => void handleApplyIdeal(item)}
                             aria-label={`Apply ideal metadata now to ${item.title}`}
                             className={primaryButton}
@@ -450,7 +527,7 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
                           </button>
                           <button
                             type="button"
-                            disabled={busy || opening}
+                            disabled={busy || opening || resolving}
                             onClick={() => void handleOpenBook(item, 'repair')}
                             aria-label={`Preview and edit metadata for ${item.title}`}
                             className={secondaryButton}
@@ -471,46 +548,223 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
                         </div>
                       )}
 
-                      <div className="space-y-2">
-                        {item.files.map((file) => (
-                          <div
-                            key={file.assetId}
-                            className="rounded-lg border border-zinc-800/80 bg-zinc-950/60 overflow-hidden"
-                          >
-                            <div className="px-3 py-1.5 border-b border-zinc-800/80 text-[11px] font-mono text-zinc-400 truncate" title={file.filename}>
-                              {file.filename}
-                            </div>
-                            <table className="w-full table-fixed text-left text-xs [overflow-wrap:anywhere]">
-                              <thead className="text-[11px] text-zinc-400 bg-zinc-950/40">
-                                <tr>
-                                  <th scope="col" className="w-28 sm:w-36 px-3 py-1.5 font-medium">Field</th>
-                                  <th scope="col" className="px-3 py-1.5 font-medium">Current EPUB</th>
-                                  <th scope="col" className="px-3 py-1.5 font-medium">Ideal Metadata</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-zinc-800/60">
-                                {file.mismatches.map((diff) => (
-                                  <tr key={diff.field} className="align-top">
-                                    <th scope="row" className="px-3 py-2 font-medium text-zinc-300">
-                                      {FIELD_LABELS[diff.field]}
-                                    </th>
-                                    <td className="px-3 py-2 text-zinc-300 tabular-nums">
-                                      {diff.current ? (
-                                        diff.current
-                                      ) : (
-                                        <span className="italic text-zinc-500">Missing</span>
-                                      )}
-                                    </td>
-                                    <td className="px-3 py-2 font-medium text-zinc-100 tabular-nums">
-                                      {diff.ideal}
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
+                      {isDuplicate ? (
+                        <div className="rounded-lg border border-rose-900/50 bg-zinc-950/70 p-3 space-y-3">
+                          <div className="space-y-1">
+                            <p className="text-xs font-medium text-rose-200">
+                              Resolve duplicate EPUB files before applying metadata changes
+                            </p>
+                            <p className="text-xs text-zinc-400">
+                              Choose the single EPUB copy to keep. Unselected copies and their exclusive OPF/cover companions will be deleted; unrelated files are preserved and empty folders removed.
+                            </p>
                           </div>
-                        ))}
-                      </div>
+
+                          <fieldset disabled={resolving} className="space-y-2">
+                            <legend className="sr-only">Choose EPUB copy to keep for {item.title}</legend>
+                            {item.files.map((file) => {
+                              const displayPath = file.relativePath || file.filename;
+                              const sizeLabel = formatFileSize(file.fileSizeBytes);
+                              const isSelected = selectedKeepId === file.assetId;
+                              const downloadBookId = file.bookId || item.bookId;
+
+                              return (
+                                <div
+                                  key={file.assetId}
+                                  className={`rounded-md border transition-colors ${
+                                    isSelected
+                                      ? 'border-blue-500/60 bg-blue-950/20'
+                                      : 'border-zinc-800 bg-zinc-900/60'
+                                  }`}
+                                >
+                                  <label className="flex items-start gap-2.5 p-2.5 cursor-pointer">
+                                    <input
+                                      type="radio"
+                                      name={`keep-epub-${item.bookId}`}
+                                      checked={isSelected}
+                                      onChange={() =>
+                                        setSelectedKeepByBook((prev) => ({
+                                          ...prev,
+                                          [item.bookId]: file.assetId,
+                                        }))
+                                      }
+                                      aria-label={`Keep ${displayPath}`}
+                                      className={`mt-0.5 shrink-0 accent-blue-400 ${focusRing}`}
+                                    />
+                                    <div className="min-w-0 flex-1 space-y-1">
+                                      <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <span className="font-mono text-xs text-zinc-100 break-all">
+                                          {displayPath}
+                                        </span>
+                                        <div className="flex items-center gap-2 shrink-0 text-[11px] text-zinc-400 tabular-nums">
+                                          {sizeLabel && <span>{sizeLabel}</span>}
+                                          <a
+                                            href={`/api/books/${encodeURIComponent(downloadBookId)}/files/${encodeURIComponent(file.assetId)}`}
+                                            download={file.filename}
+                                            onClick={(e) => e.stopPropagation()}
+                                            className={`inline-flex items-center gap-1 text-blue-300 hover:text-blue-200 underline underline-offset-2 ${focusRing}`}
+                                          >
+                                            <Download className="w-3 h-3" aria-hidden="true" />
+                                            Download
+                                          </a>
+                                        </div>
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-zinc-400">
+                                        {file.current.title && <span>Embedded title: {file.current.title}</span>}
+                                        {(file.current.series || file.seriesName) && (
+                                          <span>
+                                            Series: {file.current.series || file.seriesName}
+                                            {file.current.series && file.current.seriesIndex !== undefined
+                                              ? ` #${file.current.seriesIndex}`
+                                              : ''}
+                                          </span>
+                                        )}
+                                        {file.mismatches.length === 0 && (
+                                          <span className="text-emerald-300">Matches ideal metadata</span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </label>
+
+                                  {file.mismatches.length > 0 && (
+                                    <div className="border-t border-zinc-800/80">
+                                      <table className="w-full table-fixed text-left text-xs [overflow-wrap:anywhere]">
+                                        <thead className="text-[11px] text-zinc-400 bg-zinc-950/40">
+                                          <tr>
+                                            <th scope="col" className="w-28 sm:w-36 px-3 py-1.5 font-medium">Field</th>
+                                            <th scope="col" className="px-3 py-1.5 font-medium">Current EPUB</th>
+                                            <th scope="col" className="px-3 py-1.5 font-medium">Ideal Metadata</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-zinc-800/60">
+                                          {file.mismatches.map((diff) => (
+                                            <tr key={diff.field} className="align-top">
+                                              <th scope="row" className="px-3 py-2 font-medium text-zinc-300">
+                                                {FIELD_LABELS[diff.field]}
+                                              </th>
+                                              <td className="px-3 py-2 text-zinc-300 tabular-nums">
+                                                {diff.current ? (
+                                                  diff.current
+                                                ) : (
+                                                  <span className="italic text-zinc-500">Missing</span>
+                                                )}
+                                              </td>
+                                              <td className="px-3 py-2 font-medium text-zinc-100 tabular-nums">
+                                                {diff.ideal}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </fieldset>
+
+                          {keptFile ? (
+                            <div className="rounded-md border border-zinc-800 bg-zinc-900/80 p-3 space-y-2.5 text-xs">
+                              <div className="space-y-1">
+                                <p className="text-zinc-200">
+                                  <span className="font-semibold text-emerald-300">Keep:</span>{' '}
+                                  <span className="font-mono break-all">{keptFile.relativePath || keptFile.filename}</span>
+                                </p>
+                                {filesToRemove.map((rem) => (
+                                  <p key={rem.assetId} className="text-zinc-300">
+                                    <span className="font-semibold text-rose-300">Remove:</span>{' '}
+                                    <span className="font-mono break-all">{rem.relativePath || rem.filename}</span>
+                                  </p>
+                                ))}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                  type="button"
+                                  disabled={resolving}
+                                  onClick={() => void handleResolveDuplicates(item)}
+                                  className={dangerButton}
+                                >
+                                  {resolving ? (
+                                    <>
+                                      <Loader2 className="w-3.5 h-3.5 motion-safe:animate-spin" aria-hidden="true" />
+                                      Resolving…
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                                      Keep Selected & Remove Duplicates
+                                    </>
+                                  )}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={resolving}
+                                  onClick={() =>
+                                    setSelectedKeepByBook((prev) => {
+                                      const next = { ...prev };
+                                      delete next[item.bookId];
+                                      return next;
+                                    })
+                                  }
+                                  className={secondaryButton}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-xs text-zinc-400">
+                              Select the EPUB file to keep above to review and confirm duplicate removal.
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {item.files.map((file) => {
+                            const displayPath = file.relativePath || file.filename;
+                            return (
+                              <div
+                                key={file.assetId}
+                                className="rounded-lg border border-zinc-800/80 bg-zinc-950/60 overflow-hidden"
+                              >
+                                <div
+                                  className="px-3 py-1.5 border-b border-zinc-800/80 text-[11px] font-mono text-zinc-400 truncate"
+                                  title={displayPath}
+                                >
+                                  {displayPath}
+                                </div>
+                                <table className="w-full table-fixed text-left text-xs [overflow-wrap:anywhere]">
+                                  <thead className="text-[11px] text-zinc-400 bg-zinc-950/40">
+                                    <tr>
+                                      <th scope="col" className="w-28 sm:w-36 px-3 py-1.5 font-medium">Field</th>
+                                      <th scope="col" className="px-3 py-1.5 font-medium">Current EPUB</th>
+                                      <th scope="col" className="px-3 py-1.5 font-medium">Ideal Metadata</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-zinc-800/60">
+                                    {file.mismatches.map((diff) => (
+                                      <tr key={diff.field} className="align-top">
+                                        <th scope="row" className="px-3 py-2 font-medium text-zinc-300">
+                                          {FIELD_LABELS[diff.field]}
+                                        </th>
+                                        <td className="px-3 py-2 text-zinc-300 tabular-nums">
+                                          {diff.current ? (
+                                            diff.current
+                                          ) : (
+                                            <span className="italic text-zinc-500">Missing</span>
+                                          )}
+                                        </td>
+                                        <td className="px-3 py-2 font-medium text-zinc-100 tabular-nums">
+                                          {diff.ideal}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </li>
                   );
                 })}

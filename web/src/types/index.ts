@@ -117,10 +117,15 @@ export interface MetadataDiff {
 
 export interface MetadataPreview {
   preview: string;
+  hasDuplicates?: boolean;
   bookDiffs?: MetadataDiff[];
   files: {
     id: string;
+    bookId?: string;
     filename: string;
+    relativePath?: string;
+    targetPath?: string;
+    fileSizeBytes?: number;
     diffs: MetadataDiff[];
     libraryDiffs?: MetadataDiff[];
   }[];
@@ -143,13 +148,18 @@ export interface EPUBFieldMismatch {
 
 export interface EPUBMetadataMismatchFile {
   assetId: string;
+  bookId?: string;
   filename: string;
+  relativePath?: string;
+  fileSizeBytes?: number;
+  seriesName?: string;
   current: EPUBMetadataSnapshot;
   mismatches: EPUBFieldMismatch[];
 }
 
 export interface EPUBMetadataMismatchItem {
   bookId: string;
+  duplicateBookIds?: string[];
   title: string;
   authorName: string;
   coverUrl?: string;
@@ -157,11 +167,19 @@ export interface EPUBMetadataMismatchItem {
   idealSource?: string;
   files: EPUBMetadataMismatchFile[];
   mismatchedFields: EPUBMismatchField[];
+  hasDuplicates?: boolean;
 }
 
 export interface EPUBMetadataMismatchesResponse {
   items: EPUBMetadataMismatchItem[];
   scannedBooks: number;
+}
+
+export interface ResolveDuplicatesResponse {
+  bookId: string;
+  keptAssetId: string;
+  removedAssets: number;
+  deletedFiles: number;
 }
 
 export interface CoverCandidate {

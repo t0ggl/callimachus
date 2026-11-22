@@ -258,4 +258,89 @@ describe('EpubMetadataMismatchesView', () => {
     expect(await screen.findByText('No significant EPUB metadata mismatches')).toBeInTheDocument();
     expect(screen.getByText(/Checked 8 EPUB books/)).toBeInTheDocument();
   });
+
+  it('surfaces duplicate EPUBs across differing series names and resolves explicitly after user selection', async () => {
+    const user = userEvent.setup({ delay: null });
+    const onCatalogChanged = vi.fn();
+    const duplicateItem: EPUBMetadataMismatchItem = {
+      bookId: 'book-dup',
+      title: 'Altered Carbon',
+      authorName: 'Richard K. Morgan',
+      ideal: { title: 'Altered Carbon', series: 'Takeshi Kovacs', seriesIndex: 1 },
+      idealSource: 'match',
+      mismatchedFields: ['series'],
+      hasDuplicates: true,
+      files: [
+        {
+          assetId: 'asset-ac',
+          bookId: 'book-dup',
+          filename: 'Altered Carbon (2002) - Richard K. Morgan.epub',
+          relativePath: 'Richard K. Morgan/Altered Carbon/Altered Carbon (2002)/Altered Carbon (2002) - Richard K. Morgan.epub',
+          fileSizeBytes: 512 * 1024,
+          seriesName: 'Altered Carbon',
+          current: { title: 'Altered Carbon', series: 'Altered Carbon', seriesIndex: 1 },
+          mismatches: [{ field: 'series', current: 'Altered Carbon', ideal: 'Takeshi Kovacs' }],
+        },
+        {
+          assetId: 'asset-tk',
+          bookId: 'book-dup',
+          filename: 'Altered Carbon (2002) - Richard K. Morgan.epub',
+          relativePath: 'Richard K. Morgan/Takeshi Kovacs/Altered Carbon (2002)/Altered Carbon (2002) - Richard K. Morgan.epub',
+          fileSizeBytes: 640 * 1024,
+          seriesName: 'Takeshi Kovacs',
+          current: { title: 'Altered Carbon', series: 'Takeshi Kovacs', seriesIndex: 1 },
+          mismatches: [],
+        },
+      ],
+    };
+
+    let resolved = false;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/activity/metadata-mismatches') {
+        return Response.json({ items: resolved ? [] : [sampleMismatches[0], duplicateItem], scannedBooks: 10 });
+      }
+      if (url === '/api/activity/metadata-mismatches/book-dup/resolve-duplicates' && init?.method === 'POST') {
+        resolved = true;
+        return Response.json({ bookId: 'book-dup', keptAssetId: 'asset-tk', removedAssets: 1, deletedFiles: 3 });
+      }
+      throw new Error(`Unexpected fetch ${init?.method ?? 'GET'} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<EpubMetadataMismatchesView onCatalogChanged={onCatalogChanged} />);
+
+    // Filter to Duplicates only.
+    const fieldGroup = await screen.findByRole('group', { name: 'Filter by mismatched field' });
+    await user.click(within(fieldGroup).getByRole('button', { name: 'Duplicates' }));
+    expect(screen.queryByTestId('mismatch-book-1')).not.toBeInTheDocument();
+
+    const dupRow = within(screen.getByTestId('mismatch-book-dup'));
+    expect(dupRow.getByText('Duplicate EPUBs (2)')).toBeInTheDocument();
+    expect(dupRow.getByRole('button', { name: 'Apply ideal metadata now to Altered Carbon' })).toBeDisabled();
+    expect(dupRow.queryByRole('button', { name: /Keep Selected & Remove Duplicates/ })).not.toBeInTheDocument();
+
+    // Explicitly select the Takeshi Kovacs copy to keep.
+    await user.click(
+      dupRow.getByRole('radio', {
+        name: 'Keep Richard K. Morgan/Takeshi Kovacs/Altered Carbon (2002)/Altered Carbon (2002) - Richard K. Morgan.epub',
+      }),
+    );
+
+    const confirmBtn = dupRow.getByRole('button', { name: /Keep Selected & Remove Duplicates/ });
+    expect(confirmBtn).toBeEnabled();
+    await user.click(confirmBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText('No significant EPUB metadata mismatches')).toBeInTheDocument();
+    });
+    expect(screen.getByRole('status')).toHaveTextContent('Resolved duplicate EPUBs for Altered Carbon.');
+    expect(onCatalogChanged).toHaveBeenCalledOnce();
+
+    const resolveCall = fetchMock.mock.calls.find(([u]) => u === '/api/activity/metadata-mismatches/book-dup/resolve-duplicates');
+    expect(resolveCall).toBeDefined();
+    expect(JSON.parse(String(resolveCall?.[1]?.body))).toEqual({
+      keepAssetId: 'asset-tk',
+      removeAssetIds: ['asset-ac'],
+    });
+  });
 });
