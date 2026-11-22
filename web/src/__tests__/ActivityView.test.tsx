@@ -1,6 +1,7 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
+import { App } from '../App';
 import { ActivityView } from '../views/ActivityView';
 import { testConversionJobs, testDownloads } from './testFixtures';
 
@@ -268,4 +269,200 @@ it('hides Manual Search and Cancel/Remove controls for guests in ActivityView', 
   expect(screen.queryByRole('button', { name: /Manual Search/i })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /Cancel/i })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /Remove/i })).not.toBeInTheDocument();
+});
+
+it('keeps Fix Metadata open across SSE activity updates when details stayed open from in-progress download to completion', async () => {
+  const user = userEvent.setup({ delay: null });
+
+  class MockEventSource {
+    static instances: MockEventSource[] = [];
+    listeners: Record<string, ((e: MessageEvent) => void)[]> = {};
+    onopen: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+
+    constructor(public url: string) {
+      MockEventSource.instances.push(this);
+    }
+
+    addEventListener(type: string, callback: (e: MessageEvent) => void) {
+      this.listeners[type] ??= [];
+      this.listeners[type].push(callback);
+    }
+
+    emit(type: string, data: unknown) {
+      const event = { data: JSON.stringify(data) } as MessageEvent;
+      for (const listener of this.listeners[type] ?? []) listener(event);
+    }
+
+    close() {
+      this.listeners = {};
+    }
+  }
+
+  vi.stubGlobal('EventSource', MockEventSource);
+
+  const inProgressRequest = {
+    id: 1,
+    book_id: 'book-104',
+    title: 'Dune',
+    author: 'Frank Herbert',
+    username: 'admin',
+    format: 'epub',
+    status: 'downloading',
+    stage: 'downloading',
+    created_at: '2026-11-21T20:00:00Z',
+  };
+  const inProgressDownload = {
+    ...testDownloads[0],
+    id: 'dl-104',
+    bookId: 'book-104',
+    requestId: '1',
+    title: 'Dune',
+    category: 'callimachus-ebooks' as const,
+    status: 'downloading' as const,
+    progressPercent: 45,
+  };
+  const completedRequest = { ...inProgressRequest, status: 'available', stage: 'available' };
+  const completedDownload = { ...inProgressDownload, status: 'completed' as const, progressPercent: 100 };
+
+  let downloadCompleted = false;
+  let metadataFixed = false;
+
+  const bookBeforeComplete = {
+    id: 'book-104',
+    title: 'Dune',
+    authorId: 'author-1',
+    authorName: 'Frank Herbert',
+    state: 'Downloading',
+    formats: [],
+    editions: [],
+  };
+  const bookAfterComplete = {
+    ...bookBeforeComplete,
+    state: 'In library',
+    formats: ['EPUB'],
+    editions: [
+      {
+        id: 'ed-104',
+        bookId: 'book-104',
+        format: 'EPUB',
+        language: 'en',
+        assets: [
+          {
+            id: 'asset-104',
+            editionId: 'ed-104',
+            filename: 'Dune (1965) - Frank Herbert.epub',
+            format: 'EPUB',
+            fileSizeBytes: 512000,
+          },
+        ],
+      },
+    ],
+  };
+
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === '/api/auth/me') {
+      return Response.json({ id: 'admin-1', username: 'admin', email: 'admin@example.test', role: 'admin' });
+    }
+    if (url === '/api/books?id=book-104') {
+      const current = downloadCompleted
+        ? { ...bookAfterComplete, ...(metadataFixed ? { subtitle: 'Book One of Dune' } : {}) }
+        : bookBeforeComplete;
+      return Response.json([current]);
+    }
+    if (url === '/api/books') {
+      return Response.json(downloadCompleted ? [bookAfterComplete] : [bookBeforeComplete]);
+    }
+    if (url === '/api/authors' || url === '/api/series') return Response.json([]);
+    if (url === '/api/requests') {
+      return Response.json([downloadCompleted ? completedRequest : inProgressRequest]);
+    }
+    if (url === '/api/activity') {
+      return Response.json({
+        requests: [downloadCompleted ? completedRequest : inProgressRequest],
+        downloads: [downloadCompleted ? completedDownload : inProgressDownload],
+        conversionJobs: [],
+        logs: [],
+      });
+    }
+    if (url === '/api/settings') {
+      return Response.json({ qualityProfile: { allowedLanguages: ['en'] } });
+    }
+    if (url === '/api/books/book-104/metadata-candidates') {
+      return Response.json({
+        candidates: [{ title: 'Dune', subtitle: 'Book One of Dune', authors: ['Frank Herbert'], language: 'en' }],
+        defaultLanguage: 'en',
+        language: 'en',
+        availableLanguages: ['en'],
+      });
+    }
+    if (url === '/api/books/book-104/metadata-diff') {
+      return Response.json({
+        preview: 'preview-token-104',
+        files: [
+          {
+            id: 'asset-104',
+            filename: 'Dune (1965) - Frank Herbert.epub',
+            diffs: [{ field: 'title', fileValue: 'dune_raw', libraryValue: 'Dune', changed: true }],
+          },
+        ],
+      });
+    }
+    if (url === '/api/books/book-104/fix-metadata' && init?.method === 'POST') {
+      metadataFixed = true;
+      return Response.json({ updated: 1 });
+    }
+    throw new Error(`Unexpected fetch: ${init?.method ?? 'GET'} ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<App initialView="activity" />);
+
+  // 1. Open book details from the download/activity view while the download is in progress.
+  const rowButton = await screen.findByRole('button', { name: /Dune eBook · Downloading/ });
+  await user.click(rowButton);
+  const dialog = await screen.findByRole('dialog', { name: 'Details for Dune' });
+  expect(within(dialog).getByText('No files available.')).toBeVisible();
+
+  // 2. Leave book details open while SSE reports the download completing.
+  downloadCompleted = true;
+  const stream = MockEventSource.instances[0];
+  expect(stream).toBeDefined();
+  act(() => {
+    stream.emit('activity_snapshot', {
+      requests: [completedRequest],
+      downloads: [completedDownload],
+      conversionJobs: [],
+      logs: [],
+    });
+  });
+
+  // Wait for the completed EPUB file to load into the open modal.
+  expect(await within(dialog).findByText('Dune (1965) - Frank Herbert.epub')).toBeVisible();
+
+  // 3. Click Fix Metadata from More actions.
+  await user.click(within(dialog).getByRole('button', { name: 'More actions' }));
+  await user.click(within(dialog).getByRole('menuitem', { name: 'Fix Metadata' }));
+  expect(await within(dialog).findByRole('heading', { name: 'Fix Metadata' })).toBeVisible();
+  expect(await within(dialog).findByText('dune_raw')).toBeVisible();
+
+  // 4. Subsequent periodic SSE activity_snapshot ticks must NOT close Fix Metadata.
+  act(() => {
+    stream.emit('activity_snapshot', {
+      requests: [completedRequest],
+      downloads: [completedDownload],
+      conversionJobs: [],
+      logs: [],
+    });
+  });
+  expect(within(dialog).getByRole('heading', { name: 'Fix Metadata' })).toBeVisible();
+  expect(within(dialog).getByText('dune_raw')).toBeVisible();
+
+  // 5. Applying metadata keeps the completion confirmation visible even after book/catalog reload.
+  await user.click(within(dialog).getByRole('button', { name: 'Apply Metadata' }));
+  expect(await within(dialog).findByText('Metadata applied to the EPUB files.')).toBeVisible();
+
+  await user.click(within(dialog).getByRole('button', { name: 'Back to details' }));
+  expect(await within(dialog).findByText('Book One of Dune')).toBeVisible();
 });
