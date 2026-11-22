@@ -498,3 +498,64 @@ func TestDiscoverPagination(t *testing.T) {
 		}
 	}
 }
+
+func TestDiscoverFiltersCollectionsAcrossAllProviders(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	for _, query := range []string{
+		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','mock'),('google_books_api_key','mock')`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mt := testutil.NewMockTransportForTest(t)
+	mt.RegisterString("/search.json", http.StatusOK, `{"docs":[
+		{"key":"/works/OL1W","title":"The Stormlight Archive Series. 4 Books Collection Set. The Way of Kings, Words of Radiance, Oathbringer, Rhythm of War by Brandon Sanderson","author_name":["Brandon Sanderson"]},
+		{"key":"/works/OL2W","title":"Arcanum Unbounded: The Cosmere Collection","author_name":["Brandon Sanderson"]}
+	]}`, nil)
+	mt.RegisterHandler("/v1/graphql", func(r *http.Request) (*http.Response, error) {
+		var req struct{ Query string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(req.Query, "SearchBooks") {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":{"search":{"ids":[1,2,3]}}}`))}, nil
+		}
+		body := `{"data":{"books":[
+			{"id":1,"title":"The Way of Kings","contributions":[{"author":{"name":"Brandon Sanderson"}}]},
+			{"id":2,"title":"Brandon Sanderson's White Sand Omnibus","contributions":[{"author":{"name":"Brandon Sanderson"}}]},
+			{"id":3,"title":"Stormlight Archive","compilation":true,"contributions":[{"author":{"name":"Brandon Sanderson"}}]}
+		]}}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	mt.RegisterString("/books/v1/volumes", http.StatusOK, `{"items":[
+		{"volumeInfo":{"title":"Mistborn Trilogy Boxed Set","authors":["Brandon Sanderson"]}},
+		{"volumeInfo":{"title":"White Sand, Volume 1","authors":["Brandon Sanderson"]}},
+		{"volumeInfo":{"title":"The Box","subtitle":"Set in Victorian London","authors":["Ordinary Author"]}}
+	]}`, nil)
+
+	s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
+	w := httptest.NewRecorder()
+	s.handleDiscover(w, httptest.NewRequest("GET", "/api/discover?q=Brandon+Sanderson", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("discover returned %d: %s", w.Code, w.Body.String())
+	}
+	var matches []discoverTestMatch
+	if err := json.Unmarshal(w.Body.Bytes(), &matches); err != nil {
+		t.Fatal(err)
+	}
+	var titles []string
+	for _, m := range matches {
+		titles = append(titles, m.Title)
+	}
+	want := []string{
+		"The Way of Kings",
+		"Arcanum Unbounded: The Cosmere Collection",
+		"White Sand, Volume 1",
+		"The Box",
+	}
+	if !slices.Equal(titles, want) {
+		t.Fatalf("discover titles = %v, want %v", titles, want)
+	}
+}

@@ -275,6 +275,9 @@ func (p *OpenLibraryProvider) search(ctx context.Context, query string, page, li
 
 	var results []BookMetadata
 	for _, doc := range searchRes.Docs {
+		if IsCollectionTitle(doc.Title, doc.Subtitle) {
+			continue
+		}
 		meta := BookMetadata{
 			Title:         doc.Title,
 			Subtitle:      doc.Subtitle,

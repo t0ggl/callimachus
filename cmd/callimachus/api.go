@@ -339,6 +339,9 @@ func (s *Server) queryBooks(ctx context.Context, r *http.Request, id string) ([]
 			slog.Error("scan book failed")
 			continue
 		}
+		if id == "" && b.State == "" && metadata.IsNonSingleBookTitle(b.Title, b.Subtitle) {
+			continue
+		}
 		if seriesIdx.Valid {
 			val := seriesIdx.Float64
 			b.SeriesIndex = &val
@@ -446,12 +449,28 @@ func (s *Server) handleGetAuthors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bookCounts := make(map[string]int)
+	if countRows, err := s.db.QueryContext(r.Context(), `
+		SELECT b.author_id, b.title, COALESCE(b.subtitle, ''), `+bookAvailabilitySQL+`
+		FROM books b
+	`); err == nil {
+		defer countRows.Close()
+		for countRows.Next() {
+			var authorID, title, subtitle, state string
+			if err := countRows.Scan(&authorID, &title, &subtitle, &state); err != nil {
+				continue
+			}
+			if state == "" && metadata.IsNonSingleBookTitle(title, subtitle) {
+				continue
+			}
+			bookCounts[authorID]++
+		}
+	}
+
 	query := `
 		SELECT a.id, a.name, a.sort_name, COALESCE(a.photo_url, ''),
-		       COALESCE(a.biography, ''), COUNT(b.id), a.monitored
+		       COALESCE(a.biography, ''), a.monitored
 		FROM authors a
-		LEFT JOIN books b ON a.id = b.author_id
-		GROUP BY a.id, a.name, a.sort_name, a.photo_url, a.biography
 		ORDER BY a.sort_name ASC
 	`
 	rows, err := s.db.QueryContext(r.Context(), query)
@@ -465,9 +484,10 @@ func (s *Server) handleGetAuthors(w http.ResponseWriter, r *http.Request) {
 	authors := make([]APIAuthor, 0)
 	for rows.Next() {
 		var a APIAuthor
-		if err := rows.Scan(&a.ID, &a.Name, &a.SortName, &a.PhotoURL, &a.Biography, &a.BookCount, &a.Monitored); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.SortName, &a.PhotoURL, &a.Biography, &a.Monitored); err != nil {
 			continue
 		}
+		a.BookCount = bookCounts[a.ID]
 		authors = append(authors, a)
 	}
 

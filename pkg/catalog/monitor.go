@@ -213,7 +213,8 @@ func (m *Monitor) persist(ctx context.Context, kind, id, name string, monitored 
 		}
 	}
 	for _, b := range found {
-		if b.Title == "" || len(b.Authors) == 0 || b.Authors[0] == "" {
+		if b.Title == "" || len(b.Authors) == 0 || b.Authors[0] == "" ||
+			metadata.IsNonSingleBookTitle(b.Title, b.Subtitle) {
 			continue
 		}
 		if kind == "series" {
@@ -277,7 +278,7 @@ func (m *Monitor) persist(ctx context.Context, kind, id, name string, monitored 
 }
 
 func (m *Monitor) checkBooks(ctx context.Context, now time.Time, column, id string, force bool) error {
-	query := `SELECT b.id, COALESCE(b.release_date,'') FROM books b WHERE b.monitored=1
+	query := `SELECT b.id, b.title, COALESCE(b.subtitle,''), COALESCE(b.release_date,'') FROM books b WHERE b.monitored=1
 		AND NOT EXISTS(SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id WHERE e.book_id=b.id)
 		AND NOT EXISTS(SELECT 1 FROM hidden_library_review review WHERE review.book_id=b.id AND review.kept=0)`
 	var args []any
@@ -296,12 +297,12 @@ func (m *Monitor) checkBooks(ctx context.Context, now time.Time, column, id stri
 	today := now.UTC().Format(time.DateOnly)
 	var ids []string
 	for rows.Next() {
-		var id, releaseDate string
-		if err = rows.Scan(&id, &releaseDate); err != nil {
+		var id, title, subtitle, releaseDate string
+		if err = rows.Scan(&id, &title, &subtitle, &releaseDate); err != nil {
 			rows.Close()
 			return err
 		}
-		if metadata.IsFutureRelease(releaseDate, 0, today) {
+		if metadata.IsNonSingleBookTitle(title, subtitle) || metadata.IsFutureRelease(releaseDate, 0, today) {
 			continue
 		}
 		ids = append(ids, id)

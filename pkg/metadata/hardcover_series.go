@@ -8,8 +8,6 @@ import (
 	"unicode"
 )
 
-var seriesBundleTitle = regexp.MustCompile(`(?i)\b(?:books?|volumes?|vols\.?)\s*#?\s*\d+\s*(?:[-–—&]|\bto\b)\s*#?\s*\d+\b|\b(?:(?:\d+|two|three|four|five|six|seven|eight|nine|ten)[\s-]+book[\s-]+set|box(?:ed)?[\s-]+set|omnibus|collection(?:\s+set)?|anthology|complete\s+series)\b`)
-
 // SeriesBooks returns canonical volumes for one unambiguous Hardcover series.
 // Known local books can identify a renamed series or disambiguate a shared title.
 func (p *HardcoverProvider) SeriesBooks(ctx context.Context, title string, knownBooks ...BookMetadata) ([]BookMetadata, error) {
@@ -55,8 +53,7 @@ fragment SeriesBookFields on books {
 				membership = canonicalMembership
 			}
 		}
-		if seen[b.ID] || membership.Compilation || b.Compilation || b.isSeriesDerivative() ||
-			seriesBundleTitle.MatchString(b.Title) || seriesBundleTitle.MatchString(b.Subtitle) {
+		if seen[b.ID] || membership.Compilation || b.isCollection() || b.isSeriesDerivative() {
 			continue
 		}
 		english, known := hardcoverSeriesLanguage(b)

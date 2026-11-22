@@ -435,3 +435,72 @@ func TestMonitoringKeepsWitnessSeriesSeparate(t *testing.T) {
 		t.Fatalf("existing book, flags, or media changed: %d (%v)", count, err)
 	}
 }
+
+func TestMonitoringFiltersCollectionsOnPersistAndAvailabilityCheck(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	c := catalog.New(db)
+	author, err := c.GetOrCreateAuthor(ctx, "Brandon Sanderson")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pre-existing unowned omnibus row left from an older import must remain intact in SQLite
+	// without triggering automated acquisition searches.
+	if _, err := db.ExecContext(ctx, `INSERT INTO books(id,author_id,title,monitored) VALUES('legacy-omnibus',?,'Brandon Sanderson''s White Sand Omnibus',1)`, author.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var searched []string
+	m := &catalog.Monitor{
+		DB: db,
+		Discover: func(context.Context, string, string, []metadata.BookMetadata) ([]metadata.BookMetadata, error) {
+			return []metadata.BookMetadata{
+				{Title: "The Way of Kings", Authors: []string{"Brandon Sanderson"}, PublishDate: "2010-08-31"},
+				{Title: "Arcanum Unbounded: The Cosmere Collection", Authors: []string{"Brandon Sanderson"}, PublishDate: "2016-11-22"},
+				{Title: "The Stormlight Archive Series. 4 Books Collection Set. The Way of Kings, Words of Radiance, Oathbringer, Rhythm of War by Brandon Sanderson", Authors: []string{"Brandon Sanderson"}},
+				{Title: "Mistborn Trilogy Boxed Set", Authors: []string{"Brandon Sanderson"}},
+				{Title: "The Way of Kings", Subtitle: "Bonus Chapter", Authors: []string{"Brandon Sanderson"}},
+			}, nil
+		},
+		Search: func(_ context.Context, id string) error {
+			searched = append(searched, id)
+			return nil
+		},
+	}
+	if err := m.SetMonitored(ctx, "authors", author.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Tick(ctx, time.Date(2028, 5, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := db.QueryContext(ctx, `SELECT id, title FROM books ORDER BY title`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[string]string{}
+	for rows.Next() {
+		var id, title string
+		if err := rows.Scan(&id, &title); err != nil {
+			t.Fatal(err)
+		}
+		got[title] = id
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected only pre-existing row + 2 real books in DB, got %v", got)
+	}
+	for _, kept := range []string{"The Way of Kings", "Arcanum Unbounded: The Cosmere Collection", "Brandon Sanderson's White Sand Omnibus"} {
+		if got[kept] == "" {
+			t.Errorf("expected %q in books table, got %v", kept, got)
+		}
+	}
+	for _, id := range searched {
+		if id == "legacy-omnibus" {
+			t.Fatalf("pre-existing omnibus placeholder should not be searched, searched=%v", searched)
+		}
+	}
+	if len(searched) != 2 {
+		t.Fatalf("expected 2 real books searched, got %v", searched)
+	}
+}
