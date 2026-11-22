@@ -5,7 +5,7 @@ import { ManualSearch } from './ManualSearch';
 import { MetadataRepairPanel } from './MetadataRepairPanel';
 import { CoverFinderPanel } from './CoverFinderPanel';
 import { validateCoverFile } from '../utils/coverValidation';
-import { Book } from '../types';
+import { Book, MetadataCandidate } from '../types';
 
 export interface ResolveBookInput {
   bookId?: string;
@@ -77,6 +77,7 @@ interface BookDetailModalProps {
   onClose: () => void;
   activity?: React.ReactNode;
   initialPanel?: 'repair';
+  initialRepairCandidate?: MetadataCandidate;
   defaultLanguage?: string;
   isAdmin?: boolean;
   canManage?: boolean;
@@ -109,6 +110,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   onClose,
   activity,
   initialPanel,
+  initialRepairCandidate,
   defaultLanguage,
   isAdmin,
   canManage,
@@ -711,7 +713,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
 
         {/* Content body */}
         {repairing ? (
-          <MetadataRepairPanel key={currentBook.id} bookID={currentBook.id} defaultLanguage={defaultLanguage} onApplied={onMetadataApplied}
+          <MetadataRepairPanel key={currentBook.id} bookID={currentBook.id} defaultLanguage={defaultLanguage} initialCandidate={initialRepairCandidate} onApplied={onMetadataApplied}
             onBack={() => {
               setRepairBookID(undefined);
               requestAnimationFrame(() => actionsMenuTriggerRef.current?.focus());

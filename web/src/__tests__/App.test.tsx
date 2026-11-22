@@ -840,7 +840,7 @@ describe('App Integration', () => {
     expect(writeCalls).toEqual([]);
   });
 
-  it('allows admins to navigate to Metadata Mismatches under Activity and blocks non-admins', async () => {
+  it('allows admins to navigate to Metadata Mismatches as its own section and blocks non-admins', async () => {
     const user = userEvent.setup({ delay: null });
     const fetchMock = vi.mocked(global.fetch);
     const originalFetch = fetchMock.getMockImplementation()!;
@@ -875,26 +875,30 @@ describe('App Integration', () => {
     });
 
     const { unmount } = render(<App />);
-    const navBtn = await screen.findByTestId('nav-activity-mismatches');
+    const navBtn = await screen.findByTestId('nav-metadata-mismatches');
     await user.click(navBtn);
 
     expect(await screen.findByRole('heading', { name: 'EPUB Metadata Mismatches' })).toBeInTheDocument();
     expect(await screen.findByText('Wrong Title')).toBeInTheDocument();
     unmount();
 
-    // Non-admin user visiting #/activity/metadata-mismatches directly gets Access Denied and no sidebar entry.
-    window.location.hash = '#/activity/metadata-mismatches';
-    fetchMock.mockImplementation((url, options) => {
-      if (String(url).includes('/api/auth/me')) {
-        return Promise.resolve(
-          Response.json({ id: 'u-cur', username: 'curator', role: 'curator', email: 'curator@example.com' }),
-        );
-      }
-      return originalFetch(url, options);
-    });
+    // Non-admin user visiting #/metadata-mismatches or legacy #/activity/metadata-mismatches gets Access Denied and no sidebar entry.
+    for (const hash of ['#/metadata-mismatches', '#/activity/metadata-mismatches']) {
+      window.location.hash = hash;
+      fetchMock.mockImplementation((url, options) => {
+        if (String(url).includes('/api/auth/me')) {
+          return Promise.resolve(
+            Response.json({ id: 'u-cur', username: 'curator', role: 'curator', email: 'curator@example.com' }),
+          );
+        }
+        return originalFetch(url, options);
+      });
 
-    render(<App />);
-    expect(await screen.findByTestId('mismatches-access-denied')).toBeInTheDocument();
-    expect(screen.queryByTestId('nav-activity-mismatches')).not.toBeInTheDocument();
+      const rendered = render(<App />);
+      expect(await screen.findByTestId('mismatches-access-denied')).toBeInTheDocument();
+      expect(screen.queryByTestId('nav-metadata-mismatches')).not.toBeInTheDocument();
+      rendered.unmount();
+    }
+    window.location.hash = '';
   });
 });

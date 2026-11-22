@@ -107,7 +107,10 @@ describe('EpubMetadataMismatchesView', () => {
       />,
     );
 
-    const applyBtn = await screen.findByRole('button', { name: 'Apply ideal metadata to The Final Empire' });
+    const applyBtn = await screen.findByRole('button', { name: 'Apply ideal metadata now to The Final Empire' });
+    expect(applyBtn).toHaveTextContent('Apply Now');
+    const previewBtn = screen.getByRole('button', { name: 'Preview and edit metadata for The Final Empire' });
+    expect(previewBtn).toHaveTextContent('Preview & Edit');
     await user.click(applyBtn);
 
     await waitFor(() => {
@@ -137,15 +140,15 @@ describe('EpubMetadataMismatchesView', () => {
 
     render(<EpubMetadataMismatchesView />);
 
-    await user.click(await screen.findByRole('button', { name: 'Apply ideal metadata to The Final Empire' }));
+    await user.click(await screen.findByRole('button', { name: 'Apply ideal metadata now to The Final Empire' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('EPUB file is read-only.');
     expect(screen.getByTestId('mismatch-book-1')).toBeInTheDocument();
   });
 
-  it('opens Fix Metadata directly in BookDetailModal when requested', async () => {
+  it('opens Preview & Edit directly in BookDetailModal and pre-selects ideal metadata when it differs from catalog', async () => {
     const user = userEvent.setup({ delay: null });
-    const fetchMock = vi.fn(async (url: string) => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (url === '/api/activity/metadata-mismatches') {
         return Response.json({ items: [sampleMismatches[0]], scannedBooks: 4 });
       }
@@ -153,11 +156,9 @@ describe('EpubMetadataMismatchesView', () => {
         return Response.json([
           {
             id: 'book-1',
-            title: 'The Final Empire',
+            title: '01 - Mistborn [Retail]',
             authorId: 'a1',
             authorName: 'Brandon Sanderson',
-            seriesTitle: 'Mistborn',
-            seriesIndex: 1,
             formats: ['EPUB'],
             editions: [
               {
@@ -181,19 +182,62 @@ describe('EpubMetadataMismatchesView', () => {
       if (url === '/api/books/book-1/metadata-candidates') {
         return Response.json([]);
       }
-      if (url === '/api/books/book-1/metadata-diff') {
-        return Response.json({ preview: 'abc', files: [] });
+      if (url === '/api/books/book-1/metadata-diff' && init?.method === 'POST') {
+        return Response.json({
+          preview: 'ideal-preview-hash',
+          bookDiffs: [
+            { field: 'title', fileValue: '01 - Mistborn [Retail]', libraryValue: 'The Final Empire', changed: true },
+            { field: 'authors', fileValue: 'Brandon Sanderson', libraryValue: 'Brandon Sanderson', changed: false },
+          ],
+          files: [
+            {
+              id: 'asset-1',
+              filename: 'The Final Empire (2006) - Brandon Sanderson.epub',
+              diffs: [
+                { field: 'title', fileValue: '01 - Mistborn [Retail]', libraryValue: 'The Final Empire', changed: true },
+                { field: 'authors', fileValue: 'Brandon Sanderson', libraryValue: 'Brandon Sanderson', changed: false },
+                { field: 'subtitle', fileValue: '', libraryValue: '', changed: false },
+              ],
+            },
+          ],
+        });
       }
-      throw new Error(`Unexpected fetch ${url}`);
+      if (url === '/api/books/book-1/fix-metadata' && init?.method === 'POST') {
+        return Response.json({ updated: 1 });
+      }
+      throw new Error(`Unexpected fetch ${init?.method ?? 'GET'} ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
 
     render(<EpubMetadataMismatchesView />);
 
-    await user.click(await screen.findByRole('button', { name: 'Fix metadata for The Final Empire' }));
+    await user.click(await screen.findByRole('button', { name: 'Preview and edit metadata for The Final Empire' }));
 
-    const dialog = await screen.findByRole('dialog', { name: 'Details for The Final Empire' });
+    const dialog = await screen.findByRole('dialog', { name: 'Details for 01 - Mistborn [Retail]' });
     expect(within(dialog).getByRole('heading', { name: 'Fix Metadata' })).toBeInTheDocument();
+    const idealRadio = within(dialog).getByRole('radio', { name: /Use matched ideal metadata/ });
+    expect(idealRadio).toBeChecked();
+
+    // Preview displays both changed and unchanged fields that will be set, with accessible non-color cues.
+    expect(await within(dialog).findByText('Preview metadata to apply')).toBeInTheDocument();
+    expect(within(dialog).getAllByText('Changed').length).toBeGreaterThanOrEqual(2);
+    expect(within(dialog).getAllByText('Unchanged').length).toBeGreaterThanOrEqual(2);
+    expect(within(dialog).getAllByText('Brandon Sanderson').length).toBeGreaterThanOrEqual(2);
+    expect(within(dialog).queryByText('Subtitle')).not.toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Apply Metadata' }));
+    expect(await within(dialog).findByText('Metadata applied to the library and EPUB files.')).toBeInTheDocument();
+
+    const applyCall = fetchMock.mock.calls.find(([u]) => u === '/api/books/book-1/fix-metadata');
+    expect(applyCall).toBeDefined();
+    expect(JSON.parse(String(applyCall?.[1]?.body))).toEqual({
+      candidate: {
+        title: 'The Final Empire',
+        series: 'Mistborn',
+        series_index: 1,
+      },
+      preview: 'ideal-preview-hash',
+    });
   });
 
   it('renders empty state when no mismatches exist and error alert with retry when load fails', async () => {

@@ -37,10 +37,12 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
       return 'settings';
     }
     if (
+      window.location.hash === '#/metadata-mismatches' ||
+      window.location.pathname === '/metadata-mismatches' ||
       window.location.hash === '#/activity/metadata-mismatches' ||
       window.location.pathname === '/activity/metadata-mismatches'
     ) {
-      return 'activity-mismatches';
+      return 'metadata-mismatches';
     }
     return initialView;
   });
@@ -49,8 +51,11 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
       setEntityHash(window.location.hash);
       if (window.location.hash === '#/settings') {
         setCurrentView('settings');
-      } else if (window.location.hash === '#/activity/metadata-mismatches') {
-        setCurrentView('activity-mismatches');
+      } else if (
+        window.location.hash === '#/metadata-mismatches' ||
+        window.location.hash === '#/activity/metadata-mismatches'
+      ) {
+        setCurrentView('metadata-mismatches');
       }
       setSelectedBook(null);
       setSelectedSeries(null);
@@ -312,8 +317,8 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
 
   const navigateTo = useCallback((v: NavView) => {
     window.location.hash = '';
-    if ((v === 'settings' || v === 'activity-mismatches') && !isAdmin) {
-      setCurrentView(v === 'activity-mismatches' ? 'activity' : 'catalog');
+    if ((v === 'settings' || v === 'metadata-mismatches') && !isAdmin) {
+      setCurrentView('catalog');
       return;
     }
     setCurrentView(v);
@@ -477,7 +482,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
           />
         )}
 
-        {!match && currentView === 'activity-mismatches' && (
+        {!match && currentView === 'metadata-mismatches' && (
           isAdmin ? (
             <EpubMetadataMismatchesView
               canManage={canManage}
@@ -493,10 +498,10 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
               </p>
               <button
                 type="button"
-                onClick={() => navigateTo('activity')}
+                onClick={() => navigateTo('catalog')}
                 className="px-4 py-2 rounded-md bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-100"
               >
-                Return to Activity
+                Return to Library
               </button>
             </div>
           ) : (

@@ -307,16 +307,14 @@ func (s *Server) handleApplyEPUBIdealMetadata(w http.ResponseWriter, r *http.Req
 
 	var candidate *epub.Metadata
 	if hasIdeal && strings.TrimSpace(ideal.Title) != "" {
-		target := book.Clone()
-		target.Title = strings.TrimSpace(ideal.Title)
-		target.Series = strings.TrimSpace(ideal.Series)
-		if target.Series == "" {
-			target.SeriesIndex = nil
-		} else {
-			target.SeriesIndex = ideal.SeriesIndex
+		idealCandidate := epub.Metadata{
+			Title:       strings.TrimSpace(ideal.Title),
+			Series:      strings.TrimSpace(ideal.Series),
+			SeriesIndex: ideal.SeriesIndex,
 		}
+		target := repairTarget(book, &idealCandidate)
 		if target.Title != book.Title || target.Series != book.Series || !equalFloatPtr(target.SeriesIndex, book.SeriesIndex) {
-			candidate = &target
+			candidate = &idealCandidate
 		}
 	}
 
@@ -347,12 +345,7 @@ func (s *Server) handleApplyEPUBIdealMetadata(w http.ResponseWriter, r *http.Req
 
 	for i := range files {
 		file := &files[i]
-		file.target = file.library.Clone()
-		if candidate != nil {
-			file.target.Title = candidate.Title
-			file.target.Series = candidate.Series
-			file.target.SeriesIndex = candidate.SeriesIndex
-		}
+		file.target = repairTarget(file.library, candidate)
 		rel, err := repairRelativePath(root, rootPath, file.path)
 		if err != nil {
 			slog.WarnContext(ctx, "ideal metadata apply could not access an EPUB", "book", id, "asset", file.id, "file", filepath.Base(file.path), "error", err)
