@@ -17,6 +17,7 @@ import (
 	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/downloaders"
+	"github.com/t0ggl/callimachus/pkg/epub"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
@@ -389,9 +390,10 @@ func TestStagingImportEnrichmentPersistsAndDisplaysSynopsis(t *testing.T) {
 	if err := os.MkdirAll(stagingDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(stagingDir, "Piranesi.epub"), []byte("minimal placeholder"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	createTestEPUBFile(t, filepath.Join(stagingDir, "Piranesi.epub"), epub.Metadata{
+		Title:   "Piranesi [Scene]",
+		Authors: []string{"Clarke, S."},
+	})
 
 	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{
 		DB:             s.db,

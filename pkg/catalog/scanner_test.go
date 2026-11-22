@@ -242,9 +242,13 @@ func TestCatalog_IngestBook_EndToEnd(t *testing.T) {
 	srcDir := t.TempDir()
 
 	srcMedia := filepath.Join(srcDir, "synthetic_novel.epub")
-	if err := os.WriteFile(srcMedia, []byte("synthetic full novel content"), 0644); err != nil {
-		t.Fatalf("write src media: %v", err)
-	}
+	writeTestEPUB(t, srcMedia, `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Raw Novel</dc:title>
+    <dc:creator>Raw Author</dc:creator>
+  </metadata>
+</package>`)
 
 	idx := 3.5
 	book := BookDetails{

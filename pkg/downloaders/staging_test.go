@@ -1,6 +1,8 @@
 package downloaders_test
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -13,10 +15,75 @@ import (
 	"github.com/t0ggl/callimachus/pkg/converter"
 	"github.com/t0ggl/callimachus/pkg/database"
 	"github.com/t0ggl/callimachus/pkg/downloaders"
+	"github.com/t0ggl/callimachus/pkg/epub"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
 
 func setupTestDB(t *testing.T) *database.DB { t.Helper(); return testutil.NewTestDB(t) }
+
+func writeStagingTestEPUB(t *testing.T, path string, meta epub.Metadata) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	mw, err := zw.CreateHeader(&zip.FileHeader{Name: "mimetype", Method: zip.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = mw.Write([]byte("application/epub+zip"))
+	cw, _ := zw.Create("META-INF/container.xml")
+	_, _ = cw.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>`))
+	var opf strings.Builder
+	opf.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="uid" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:identifier id="uid">urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</dc:identifier>
+`)
+	fmt.Fprintf(&opf, "    <dc:title>%s</dc:title>\n", meta.Title)
+	for _, a := range meta.Authors {
+		fmt.Fprintf(&opf, "    <dc:creator opf:role=\"aut\">%s</dc:creator>\n", a)
+	}
+	if meta.PublishDate != "" {
+		fmt.Fprintf(&opf, "    <dc:date>%s</dc:date>\n", meta.PublishDate)
+	}
+	if meta.Publisher != "" {
+		fmt.Fprintf(&opf, "    <dc:publisher>%s</dc:publisher>\n", meta.Publisher)
+	}
+	if meta.ISBN13 != "" {
+		fmt.Fprintf(&opf, "    <dc:identifier opf:scheme=\"ISBN\">%s</dc:identifier>\n", meta.ISBN13)
+	}
+	if meta.Description != "" {
+		fmt.Fprintf(&opf, "    <dc:description>%s</dc:description>\n", meta.Description)
+	}
+	if meta.Language != "" {
+		fmt.Fprintf(&opf, "    <dc:language>%s</dc:language>\n", meta.Language)
+	}
+	if meta.Series != "" {
+		fmt.Fprintf(&opf, "    <meta name=\"calibre:series\" content=\"%s\"/>\n", meta.Series)
+	}
+	if meta.SeriesIndex != nil {
+		fmt.Fprintf(&opf, "    <meta name=\"calibre:series_index\" content=\"%g\"/>\n", *meta.SeriesIndex)
+	}
+	opf.WriteString(`  </metadata>
+  <manifest><item id="ch1" href="chapter1.xhtml" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="ch1"/></spine>
+</package>`)
+	ow, _ := zw.Create("OEBPS/content.opf")
+	_, _ = ow.Write([]byte(opf.String()))
+	xw, _ := zw.Create("OEBPS/chapter1.xhtml")
+	_, _ = xw.Write([]byte(`<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Chapter content</p></body></html>`))
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestStagingMonitor_EBookIngestionLifecycle(t *testing.T) {
 	logs := testutil.CaptureLogs(t)
@@ -30,11 +97,12 @@ func TestStagingMonitor_EBookIngestionLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create dummy synthetic ebook file in staging
+	// Create valid synthetic ebook file in staging
 	ebookPayload := filepath.Join(stagingDir, "Synthetic Author - Synthetic Test Book (2024).epub")
-	if err := os.WriteFile(ebookPayload, []byte("dummy epub payload content"), 0644); err != nil {
-		t.Fatalf("failed to write dummy epub: %v", err)
-	}
+	writeStagingTestEPUB(t, ebookPayload, epub.Metadata{
+		Title:   "Synthetic Test Book",
+		Authors: []string{"Synthetic Author"},
+	})
 
 	// Insert queued item
 	_, err := db.ExecContext(ctx, `
@@ -334,7 +402,9 @@ func TestStagingEbookConversion(t *testing.T) {
 			root := t.TempDir()
 			library := t.TempDir()
 			source := filepath.Join(root, "Author - Book."+tc.source)
-			if err := os.WriteFile(source, []byte("source"), 0644); err != nil {
+			if tc.source == "epub" {
+				writeStagingTestEPUB(t, source, epub.Metadata{Title: "Book", Authors: []string{"Author"}})
+			} else if err := os.WriteFile(source, []byte("source"), 0644); err != nil {
 				t.Fatal(err)
 			}
 			q := converter.NewQueue(db)
@@ -490,9 +560,10 @@ func TestStagingMonitor_EnrichMetadataPersistsSynopsisOnNewImport(t *testing.T) 
 	if err := os.MkdirAll(stagingDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(stagingDir, "Fresh Import.epub"), []byte("dummy epub"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	writeStagingTestEPUB(t, filepath.Join(stagingDir, "Fresh Import.epub"), epub.Metadata{
+		Title:   "Raw Import",
+		Authors: []string{"Raw Author"},
+	})
 
 	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{
 		DB:            db,
@@ -515,5 +586,241 @@ func TestStagingMonitor_EnrichMetadataPersistsSynopsisOnNewImport(t *testing.T) 
 	}
 	if synopsis != "Enriched description from metadata provider." || subtitle != "An Enriched Subtitle" {
 		t.Fatalf("expected enriched synopsis/subtitle, got (%q, %q)", synopsis, subtitle)
+	}
+}
+
+func TestStagingMonitor_AutoFixesSelectedBookEPUBMetadata(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := setupTestDB(t)
+	libraryRoot := t.TempDir()
+	completedRoot := t.TempDir()
+
+	wrongIdx := 9.0
+	selectedIdx := 2.5
+
+	// Seed a selected book + request + edition + ideal metadata in SQLite.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, username, email, role) VALUES ('u1', 'reader', 'reader@example.com', 'requester');
+		INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'Brandon Sanderson', 'Sanderson, Brandon');
+		INSERT INTO series (id, title, author_id) VALUES ('s1', 'The Stormlight Archive', 'a1');
+		INSERT INTO books (id, author_id, series_id, series_index, title, subtitle, release_date, synopsis)
+		VALUES ('b1', 'a1', 's1', 2.5, 'Edgedancer', 'A Stormlight Novella', '2016-11-22', 'Lift travels to Yeddaw.');
+		INSERT INTO book_editions (id, book_id, format, isbn13, publisher, publication_date, language)
+		VALUES ('e1', 'b1', 'epub', '9781250166548', 'Tor Books', '2016-11-22', 'en');
+		INSERT INTO book_requests (id, user_id, book_id, title, author, format, status, year)
+		VALUES (1, 'u1', 'b1', 'Edgedancer', 'Brandon Sanderson', 'epub', 'downloading', 2016);
+	`); err != nil {
+		t.Fatalf("seed selected book: %v", err)
+	}
+	cat := catalog.New(db)
+	if err := cat.SaveIdealMetadata(ctx, "b1", "Edgedancer", "The Stormlight Archive", &selectedIdx, catalog.IdealSourceMatch); err != nil {
+		t.Fatalf("SaveIdealMetadata: %v", err)
+	}
+
+	releaseDir := filepath.Join(completedRoot, "Stormlight.2.5.Edgedancer.Retail.EPUB")
+	downloadedEPUB := filepath.Join(releaseDir, "dirty_download.epub")
+	writeStagingTestEPUB(t, downloadedEPUB, epub.Metadata{
+		Title:       "02.5 - Stormlight Novella [Retail]",
+		Authors:     []string{"Sanderson, B."},
+		Series:      "Wrong Series",
+		SeriesIndex: &wrongIdx,
+		PublishDate: "1999",
+		Description: "Raw messy scene blurb.",
+		Language:    "en",
+	})
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO download_queue (id, request_id, edition_id, download_client_task_id, title, protocol, status, staging_path)
+		VALUES ('dq-selected', 1, 'e1', 'guid-1', 'Stormlight.2.5.Edgedancer.Retail.EPUB', 'torrent', 'downloading', ?);
+	`, releaseDir); err != nil {
+		t.Fatalf("seed download_queue: %v", err)
+	}
+
+	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{
+		DB:            db,
+		Catalog:       cat,
+		LibraryRoot:   libraryRoot,
+		CompletedRoot: completedRoot,
+	})
+	if err := sm.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+
+	var status, filePath string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM download_queue WHERE id = 'dq-selected'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "completed" {
+		t.Fatalf("download_queue status = %q, want completed", status)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT file_path FROM media_assets WHERE edition_id = 'e1'`).Scan(&filePath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := epub.Validate(filePath); err != nil {
+		t.Fatalf("imported EPUB failed Validate: %v", err)
+	}
+	imported, err := epub.OpenNative(filePath)
+	if err != nil {
+		t.Fatalf("OpenNative imported EPUB: %v", err)
+	}
+	got := imported.Metadata()
+	if got.Title != "Edgedancer" {
+		t.Errorf("title = %q, want Edgedancer", got.Title)
+	}
+	if got.Subtitle != "A Stormlight Novella" {
+		t.Errorf("subtitle = %q, want A Stormlight Novella", got.Subtitle)
+	}
+	if len(got.Authors) != 1 || got.Authors[0] != "Brandon Sanderson" {
+		t.Errorf("authors = %v, want [Brandon Sanderson]", got.Authors)
+	}
+	if got.Series != "The Stormlight Archive" {
+		t.Errorf("series = %q, want The Stormlight Archive", got.Series)
+	}
+	if got.SeriesIndex == nil || *got.SeriesIndex != 2.5 {
+		t.Errorf("seriesIndex = %v, want 2.5", got.SeriesIndex)
+	}
+	if got.PublishDate != "2016-11-22" {
+		t.Errorf("publishDate = %q, want 2016-11-22", got.PublishDate)
+	}
+	if got.Publisher != "Tor Books" {
+		t.Errorf("publisher = %q, want Tor Books", got.Publisher)
+	}
+	if got.ISBN13 != "9781250166548" {
+		t.Errorf("isbn13 = %q, want 9781250166548", got.ISBN13)
+	}
+	if got.Description != "Lift travels to Yeddaw." {
+		t.Errorf("description = %q", got.Description)
+	}
+
+	// Verify a subsequent corrupt download for the same selected book fails safely,
+	// preserving both the prior library EPUB and the staged source file.
+	priorBytes, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corruptDir := filepath.Join(completedRoot, "Stormlight.2.5.Edgedancer.Corrupt.EPUB")
+	if err := os.MkdirAll(corruptDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	corruptSrc := filepath.Join(corruptDir, "corrupt.epub")
+	corruptPayload := []byte("not a valid epub archive")
+	if err := os.WriteFile(corruptSrc, corruptPayload, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO download_queue (id, request_id, edition_id, download_client_task_id, title, protocol, status, staging_path)
+		VALUES ('dq-corrupt', 1, 'e1', 'guid-2', 'Stormlight.2.5.Edgedancer.Corrupt.EPUB', 'torrent', 'downloading', ?);
+	`, corruptDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce corrupt: %v", err)
+	}
+	var corruptStatus string
+	var corruptErr *string
+	if err := db.QueryRowContext(ctx, `SELECT status, error_message FROM download_queue WHERE id = 'dq-corrupt'`).Scan(&corruptStatus, &corruptErr); err != nil {
+		t.Fatal(err)
+	}
+	if corruptStatus != "queued" || corruptErr == nil || *corruptErr == "" {
+		t.Fatalf("corrupt download queue = (%q, %v), want retryable queued with error", corruptStatus, corruptErr)
+	}
+	afterPriorBytes, err := os.ReadFile(filePath)
+	if err != nil || !bytes.Equal(priorBytes, afterPriorBytes) {
+		t.Fatalf("prior library EPUB altered by failed corrupt import (err=%v)", err)
+	}
+	afterCorruptSrc, err := os.ReadFile(corruptSrc)
+	if err != nil || !bytes.Equal(corruptPayload, afterCorruptSrc) {
+		t.Fatalf("staged corrupt source altered on failure (err=%v)", err)
+	}
+}
+
+func TestStagingMonitor_ConvertedEbookAutoFixesSelectedEPUBMetadata(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := setupTestDB(t)
+	libraryRoot := t.TempDir()
+	completedRoot := t.TempDir()
+
+	selectedIdx := 1.0
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, username, email, role) VALUES ('u1', 'reader', 'reader@example.com', 'requester');
+		INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'Frank Herbert', 'Herbert, Frank');
+		INSERT INTO series (id, title, author_id) VALUES ('s1', 'Dune Chronicles', 'a1');
+		INSERT INTO books (id, author_id, series_id, series_index, title, release_date, synopsis)
+		VALUES ('b1', 'a1', 's1', 1.0, 'Dune', '1965', 'Desert planet Arrakis.');
+		INSERT INTO book_requests (id, user_id, book_id, title, author, format, status, year)
+		VALUES (1, 'u1', 'b1', 'Dune', 'Frank Herbert', 'epub', 'downloading', 1965);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	cat := catalog.New(db)
+	if err := cat.SaveIdealMetadata(ctx, "b1", "Dune", "Dune Chronicles", &selectedIdx, catalog.IdealSourceMatch); err != nil {
+		t.Fatal(err)
+	}
+
+	mobiPath := filepath.Join(completedRoot, "Dune.MOBI.Release.mobi")
+	if err := os.WriteFile(mobiPath, []byte("mock mobi payload"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO download_queue (id, request_id, download_client_task_id, title, protocol, status, staging_path)
+		VALUES ('dq-conv', 1, 'guid-conv', 'Dune.MOBI.Release', 'torrent', 'downloading', ?);
+	`, mobiPath); err != nil {
+		t.Fatal(err)
+	}
+
+	q := converter.NewQueue(db)
+	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{
+		DB:            db,
+		Catalog:       cat,
+		Converter:     q,
+		LibraryRoot:   libraryRoot,
+		CompletedRoot: completedRoot,
+		QualityProfile: func(context.Context) (downloaders.QualityProfile, error) {
+			return downloaders.QualityProfile{ConvertEbooks: true, EbookTargetFormat: "epub"}, nil
+		},
+	})
+	if err := sm.PollOnce(ctx); err != nil {
+		t.Fatalf("PollOnce: %v", err)
+	}
+
+	// Mock ebook-convert emitting a valid EPUB with dirty embedded metadata.
+	wrongIdx := 4.0
+	runner := converter.NewMockRunner()
+	runner.SetDefaultHandler(func(context.Context, converter.RunOptions) error { t.Fatal("unexpected subprocess"); return nil })
+	runner.RegisterHandler("ebook-convert", func(_ context.Context, opt converter.RunOptions) error {
+		writeStagingTestEPUB(t, opt.Args[1], epub.Metadata{
+			Title:       "Dune [MOBI Convert]",
+			Authors:     []string{"Herbert, F."},
+			Series:      "Wrong Dune Series",
+			SeriesIndex: &wrongIdx,
+		})
+		return nil
+	})
+	worker := converter.NewWorker(q, runner, converter.WorkerConfig{WorkerID: "ebook-meta-test", WorkDir: t.TempDir()})
+	processed, err := worker.RunOnce(ctx)
+	if !processed || err != nil {
+		t.Fatalf("worker.RunOnce: processed=%v err=%v", processed, err)
+	}
+
+	var filePath string
+	if err := db.QueryRowContext(ctx, `SELECT m.file_path FROM media_assets m JOIN book_editions e ON e.id=m.edition_id WHERE e.book_id='b1'`).Scan(&filePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := epub.Validate(filePath); err != nil {
+		t.Fatalf("converted EPUB failed Validate: %v", err)
+	}
+	converted, err := epub.OpenNative(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := converted.Metadata()
+	if got.Title != "Dune" || got.Series != "Dune Chronicles" || got.SeriesIndex == nil || *got.SeriesIndex != 1.0 {
+		t.Fatalf("converted EPUB metadata = %+v, want Dune / Dune Chronicles #1", got)
+	}
+	if len(got.Authors) != 1 || got.Authors[0] != "Frank Herbert" {
+		t.Fatalf("converted EPUB authors = %v, want [Frank Herbert]", got.Authors)
 	}
 }

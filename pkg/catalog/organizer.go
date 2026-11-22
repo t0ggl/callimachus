@@ -3,12 +3,16 @@
 package catalog
 
 import (
+	"archive/zip"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -39,6 +43,7 @@ type BookDetails struct {
 	Series      string            `json:"series,omitempty"`
 	SeriesIndex *float64          `json:"series_index,omitempty"`
 	Year        int               `json:"year,omitempty"`
+	PublishDate string            `json:"publish_date,omitempty"`
 	Publisher   string            `json:"publisher,omitempty"`
 	Description string            `json:"description,omitempty"`
 	ISBN13      string            `json:"isbn13,omitempty"`
@@ -136,19 +141,34 @@ func OrganizeBook(libraryRoot string, book BookDetails, mediaSrcPath string, cov
 		return nil, fmt.Errorf("create title directory %s: %w", titleDir, err)
 	}
 
-	// Prepare sidecars before replacing an existing media file.
+	// Prepare sidecars and any EPUB metadata rewrite before replacing an existing media file.
 	staging, err := os.MkdirTemp(titleDir, ".callimachus-stage-")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(staging)
 
+	publishSrcPath := mediaSrcPath
+	removeOriginalSrc := false
+	if strings.EqualFold(ext, ".epub") {
+		stagedEPUB := filepath.Join(staging, "book.epub")
+		rewritten, err := stageUpdatedEPUB(mediaSrcPath, stagedEPUB, srcInfo, book)
+		if err != nil {
+			return nil, fmt.Errorf("update epub metadata: %w", err)
+		}
+		if rewritten {
+			publishSrcPath = stagedEPUB
+			srcAbs, absErr := filepath.Abs(mediaSrcPath)
+			removeOriginalSrc = absErr != nil || filepath.Clean(srcAbs) != filepath.Clean(mediaPath)
+		}
+	}
+
 	// Generate Calibre-compatible companion .opf sidecar
 	opfPath := filepath.Join(titleDir, basename+".opf")
 	meta := epub.Metadata{
 		Title:       book.Title,
 		Subtitle:    book.Subtitle,
-		Authors:     []string{book.Author},
+		Authors:     splitBookAuthors(book.Author),
 		SortAuthor:  metadata.NormalizeAuthor(book.Author),
 		Series:      book.Series,
 		SeriesIndex: book.SeriesIndex,
@@ -158,8 +178,8 @@ func OrganizeBook(libraryRoot string, book BookDetails, mediaSrcPath string, cov
 		Language:    book.Language,
 		Identifiers: make(map[string]string),
 	}
-	if book.Year > 0 {
-		meta.PublishDate = fmt.Sprintf("%04d", book.Year)
+	if publishDate := metadata.NormalizeReleaseDate(book.PublishDate, book.Year); publishDate != "" {
+		meta.PublishDate = publishDate
 	}
 	for k, v := range book.Identifiers {
 		meta.Identifiers[k] = v
@@ -178,15 +198,20 @@ func OrganizeBook(libraryRoot string, book BookDetails, mediaSrcPath string, cov
 	// Handle companion cover image
 	coverPath := filepath.Join(titleDir, basename+".jpg")
 	var finalCoverPath string
-	if ensureCover(mediaSrcPath, coverPath, coverData) {
+	if ensureCover(publishSrcPath, coverPath, coverData) {
 		finalCoverPath = coverPath
 	}
 
 	if err := AtomicMove(filepath.Join(staging, "metadata.opf"), opfPath); err != nil {
 		return nil, err
 	}
-	if err := AtomicMove(mediaSrcPath, mediaPath); err != nil {
+	if err := AtomicMove(publishSrcPath, mediaPath); err != nil {
 		return nil, fmt.Errorf("atomic move media file: %w", err)
+	}
+	if removeOriginalSrc {
+		if err := os.Remove(mediaSrcPath); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("remove source media after epub rewrite: %w", err)
+		}
 	}
 	slog.Debug("library media organized", "cover_written", finalCoverPath != "")
 	return &OrganizedResult{
@@ -196,6 +221,160 @@ func OrganizeBook(libraryRoot string, book BookDetails, mediaSrcPath string, cov
 		CoverPath:    finalCoverPath,
 		Basename:     basename,
 	}, nil
+}
+
+func splitBookAuthors(author string) []string {
+	author = strings.TrimSpace(author)
+	if author == "" {
+		return nil
+	}
+	if norm := metadata.NormalizeAuthor(author); norm != "" {
+		author = norm
+	}
+	return strings.Split(author, " & ")
+}
+
+func stageUpdatedEPUB(srcPath, stagedPath string, srcInfo os.FileInfo, book BookDetails) (bool, error) {
+	if !srcInfo.Mode().IsRegular() {
+		return false, fmt.Errorf("source EPUB is not a regular file")
+	}
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return false, fmt.Errorf("open source EPUB: %w", err)
+	}
+	defer src.Close()
+
+	openedInfo, err := src.Stat()
+	if err != nil || !os.SameFile(srcInfo, openedInfo) {
+		return false, fmt.Errorf("verify source EPUB: %w", cmp.Or(err, os.ErrInvalid))
+	}
+
+	archive, err := epub.OpenNativeReader(src, openedInfo.Size())
+	if err != nil {
+		return false, fmt.Errorf("read source EPUB: %w", err)
+	}
+
+	target, changed := mergeImportEPUBMetadata(archive.Metadata(), book)
+	if !changed {
+		return false, nil
+	}
+
+	perm := openedInfo.Mode().Perm()
+	if perm == 0 {
+		perm = 0644
+	}
+	out, err := os.OpenFile(stagedPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return false, fmt.Errorf("create staged EPUB: %w", err)
+	}
+	writeErr := archive.WriteArchive(out, target)
+	if writeErr == nil {
+		writeErr = out.Chmod(perm)
+	}
+	if writeErr == nil {
+		writeErr = out.Sync()
+	}
+	var writtenInfo os.FileInfo
+	var statErr error
+	if writeErr == nil {
+		writtenInfo, statErr = out.Stat()
+	}
+	if writeErr == nil && statErr == nil {
+		writeErr = verifyStagedEPUB(out, writtenInfo.Size())
+	}
+	closeErr := out.Close()
+	if err := errors.Join(writeErr, statErr, closeErr); err != nil {
+		_ = os.Remove(stagedPath)
+		return false, err
+	}
+	return true, nil
+}
+
+func verifyStagedEPUB(r io.ReaderAt, size int64) error {
+	zr, err := zip.NewReader(r, size)
+	if err != nil {
+		return fmt.Errorf("verify staged EPUB zip: %w", err)
+	}
+	if len(zr.File) == 0 || zr.File[0].Name != "mimetype" || zr.File[0].Method != zip.Store {
+		return fmt.Errorf("verify staged EPUB: missing uncompressed mimetype first entry")
+	}
+	rc, err := zr.File[0].Open()
+	if err != nil {
+		return fmt.Errorf("verify staged EPUB mimetype: %w", err)
+	}
+	mime, readErr := io.ReadAll(io.LimitReader(rc, 64))
+	_ = rc.Close()
+	if readErr != nil || string(mime) != "application/epub+zip" {
+		return fmt.Errorf("verify staged EPUB: invalid mimetype")
+	}
+	if _, err := epub.OpenNativeReader(r, size); err != nil {
+		return fmt.Errorf("verify staged EPUB package: %w", err)
+	}
+	return nil
+}
+
+func mergeImportEPUBMetadata(current epub.Metadata, book BookDetails) (epub.Metadata, bool) {
+	target := current.Clone()
+
+	if title := strings.TrimSpace(book.Title); title != "" {
+		target.Title = title
+	}
+	if subtitle := strings.TrimSpace(book.Subtitle); subtitle != "" {
+		target.Subtitle = subtitle
+	}
+	if author := strings.TrimSpace(book.Author); author != "" &&
+		(!strings.EqualFold(author, "Unknown Author") || len(current.Authors) == 0) {
+		target.Authors = splitBookAuthors(author)
+	}
+	if series := strings.TrimSpace(book.Series); series != "" {
+		if !strings.EqualFold(series, current.Series) {
+			target.SeriesIndex = nil
+		}
+		target.Series = series
+		if book.SeriesIndex != nil && !math.IsNaN(*book.SeriesIndex) && !math.IsInf(*book.SeriesIndex, 0) {
+			idx := *book.SeriesIndex
+			target.SeriesIndex = &idx
+		}
+	}
+	if publishDate := metadata.NormalizeReleaseDate(book.PublishDate, book.Year); publishDate != "" {
+		if merged := metadata.MergeReleaseDate(current.PublishDate, publishDate); merged != "" {
+			target.PublishDate = merged
+		} else {
+			target.PublishDate = publishDate
+		}
+	}
+	if publisher := strings.TrimSpace(book.Publisher); publisher != "" {
+		target.Publisher = publisher
+	}
+	if lang := cmp.Or(metadata.NormalizeLanguage(book.Language), strings.TrimSpace(book.Language)); lang != "" {
+		target.Language = lang
+	}
+	if isbn := cmp.Or(metadata.NormalizeISBN13(book.ISBN13), strings.TrimSpace(book.ISBN13)); isbn != "" {
+		target.ISBN13 = isbn
+	}
+	if desc := metadata.CleanDescription(book.Description); desc != "" {
+		target.Description = desc
+	}
+
+	return target, epubMetadataChanged(current, target)
+}
+
+func epubMetadataChanged(a, b epub.Metadata) bool {
+	if a.Title != b.Title ||
+		a.Subtitle != b.Subtitle ||
+		!slices.Equal(a.Authors, b.Authors) ||
+		a.Series != b.Series ||
+		a.PublishDate != b.PublishDate ||
+		a.Publisher != b.Publisher ||
+		a.Language != b.Language ||
+		a.ISBN13 != b.ISBN13 ||
+		a.Description != b.Description {
+		return true
+	}
+	if (a.SeriesIndex == nil) != (b.SeriesIndex == nil) {
+		return true
+	}
+	return a.SeriesIndex != nil && *a.SeriesIndex != *b.SeriesIndex
 }
 
 // AtomicMove moves a file from src to dst atomically.
