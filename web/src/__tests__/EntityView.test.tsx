@@ -6,7 +6,7 @@ import type { Book } from '../types';
 
 afterEach(() => vi.unstubAllGlobals());
 it.each([
-  { kind: 'authors', name: 'An Author', label: 'Author', list: 'Books' },
+  { kind: 'authors', name: 'An Author', label: 'Author', list: 'Sequence' },
   { kind: 'series', name: 'Sequence', label: 'Series', list: 'Reading Order' },
 ] as const)('renders $label books, saves monitoring, queues checks and opens book details', async ({ kind, name, label, list }) => {
   const user = userEvent.setup({ delay: null });
@@ -172,5 +172,148 @@ it('resolves unpersisted series books for details, inline Download, and inline M
   expect(within(guestDialog).queryByRole('button', { name: 'Show Download Options' })).not.toBeInTheDocument();
   expect(within(guestDialog).queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
   expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(2);
+});
+
+it('groups author books by series with standalone books separate and preserves details, actions, and navigation', async () => {
+  const user = userEvent.setup({ delay: null });
+  const detailBook: Book = {
+    id: 'mist-2',
+    title: 'Well of Ascension',
+    subtitle: 'Second Volume',
+    authorId: 'a-bs',
+    authorName: 'Brandon Sanderson',
+    seriesId: 'ser-mist',
+    seriesTitle: 'Mistborn',
+    seriesIndex: 2,
+    releaseDate: '2007-08-21',
+    state: 'In library',
+    formats: ['EPUB'],
+    editions: [],
+  };
+
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === '/api/catalog/entity?kind=authors&name=Brandon%20Sanderson') {
+      return Response.json({
+        monitored: true,
+        books: [
+          // Intentionally intermingled order matching SQL ORDER BY series_index, release_date
+          { id: 'sa-1', title: 'The Way of Kings', authorName: 'Brandon Sanderson', seriesId: 'ser-sa', seriesTitle: 'Stormlight Archive', seriesIndex: 1, releaseDate: '2010-08-31', state: 'In library', formats: ['EPUB', 'M4B'], monitored: false },
+          { id: 'mist-2', title: 'Well of Ascension', subtitle: 'Second Volume', authorName: 'Brandon Sanderson', seriesId: 'ser-mist', seriesTitle: 'Mistborn', seriesIndex: 2, releaseDate: '2007-08-21', state: 'In library', formats: ['EPUB'], monitored: false },
+          { id: 'solo-late', title: 'Tress of the Emerald Sea', authorName: 'Brandon Sanderson', seriesTitle: '   ', releaseDate: '2023-01-10', state: 'Not in library', formats: [], monitored: false },
+          { id: 'mist-0', title: 'The Eleventh Metal', authorName: 'Brandon Sanderson', seriesId: 'ser-mist', seriesTitle: 'Mistborn', seriesIndex: 0, releaseDate: '2011-01-01', state: 'In library', formats: ['EPUB'], monitored: false },
+          { id: 'mist-unnumbered', title: 'Mistborn Companion', authorName: 'Brandon Sanderson', seriesTitle: 'mistborn', releaseDate: '2016-11-22', state: 'Scheduled', formats: [], monitored: false },
+          { id: 'solo-early', title: 'Elantris', authorName: 'Brandon Sanderson', releaseDate: '2005-04-21', state: 'In library', formats: ['M4B'], monitored: false },
+          { id: 'solo-nodate', title: 'Undated Novella', authorName: 'Brandon Sanderson', releaseDate: '', state: 'Not in library', formats: [], monitored: false },
+          { id: 'mist-1', title: 'The Final Empire', authorName: 'Brandon Sanderson', seriesId: 'ser-mist', seriesTitle: 'Mistborn', seriesIndex: 1, releaseDate: '2006-07-17', state: 'In library', formats: ['EPUB'], monitored: false },
+          { id: 'sa-2.5', title: 'Edgedancer', authorName: 'Brandon Sanderson', seriesId: 'ser-sa', seriesTitle: 'Stormlight Archive', seriesIndex: 2.5, releaseDate: '2016-11-22', state: 'Not in library', formats: [], monitored: false },
+        ],
+      });
+    }
+    if (url === '/api/books?id=mist-2') {
+      return Response.json([detailBook]);
+    }
+    if (url === '/api/books/mist-unnumbered/monitor' && init?.method === 'PUT') {
+      return Response.json({ id: 'mist-unnumbered', monitored: true });
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<EntityView kind="authors" name="Brandon Sanderson" canManage canRequest />);
+
+  // Series groups sorted alphabetically, followed by Standalone Books
+  const groupHeadings = await screen.findAllByRole('heading', { level: 3 });
+  expect(groupHeadings.map((h) => h.textContent)).toEqual([
+    'Mistborn',
+    'Stormlight Archive',
+    'Standalone Books',
+  ]);
+
+  // Series headings link to their series view with seriesId preserved
+  expect(within(groupHeadings[0]).getByRole('link', { name: 'Mistborn' })).toHaveAttribute('href', '#/series/Mistborn?id=ser-mist');
+  expect(within(groupHeadings[1]).getByRole('link', { name: 'Stormlight Archive' })).toHaveAttribute('href', '#/series/Stormlight%20Archive?id=ser-sa');
+  expect(within(groupHeadings[2]).queryByRole('link')).not.toBeInTheDocument();
+
+  // Mistborn reading order: Book 0 -> Book 1 -> Book 2 -> unnumbered companion (merged case-insensitively)
+  const mistbornList = screen.getByRole('list', { name: 'Mistborn' });
+  const mistbornItems = within(mistbornList).getAllByRole('listitem');
+  expect(mistbornItems.map((li) => within(li).getAllByRole('button')[0].textContent)).toEqual([
+    'The Eleventh Metal',
+    'The Final Empire',
+    'Well of Ascension',
+    'Mistborn Companion',
+  ]);
+  expect(mistbornItems[0]).toHaveTextContent('Book 0');
+  expect(mistbornItems[2]).toHaveTextContent('Second Volume');
+  expect(mistbornItems[2]).toHaveTextContent('2007-08-21');
+  expect(mistbornItems[2]).toHaveTextContent('EPUB');
+  expect(mistbornItems[2]).toHaveTextContent('In library');
+  expect(screen.getByText('3 of 4 in library')).toBeInTheDocument();
+
+  // Stormlight Archive reading order: Book 1 -> Book 2.5
+  const stormlightList = screen.getByRole('list', { name: 'Stormlight Archive' });
+  const stormlightItems = within(stormlightList).getAllByRole('listitem');
+  expect(stormlightItems.map((li) => within(li).getAllByRole('button')[0].textContent)).toEqual([
+    'The Way of Kings',
+    'Edgedancer',
+  ]);
+  expect(stormlightItems[1]).toHaveTextContent('Book 2.5');
+  expect(screen.getByText('1 of 2 in library')).toBeInTheDocument();
+
+  // Standalone Books ordered by releaseDate ascending with unknown dates last
+  const standaloneList = screen.getByRole('list', { name: 'Standalone Books' });
+  const standaloneItems = within(standaloneList).getAllByRole('listitem');
+  expect(standaloneItems.map((li) => within(li).getAllByRole('button')[0].textContent)).toEqual([
+    'Elantris',
+    'Tress of the Emerald Sea',
+    'Undated Novella',
+  ]);
+  expect(standaloneItems[2]).toHaveTextContent('Release date unknown');
+  expect(screen.getByText('1 of 3 in library')).toBeInTheDocument();
+
+  // Inline Monitor on a reordered series book updates that exact entry
+  await user.click(within(mistbornItems[3]).getByRole('button', { name: 'Monitor' }));
+  await waitFor(() => {
+    expect(within(mistbornItems[3]).getByRole('button', { name: 'Monitoring' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  // Clicking a reordered book opens its BookDetailModal
+  await user.click(within(mistbornItems[2]).getByRole('button', { name: 'Well of Ascension' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Details for Well of Ascension' });
+  expect(within(dialog).getByText('Second Volume')).toBeInTheDocument();
+  await user.click(within(dialog).getByRole('button', { name: 'Close details' }));
+});
+
+it('omits standalone section when all author books belong to series and omits series sections when all are standalone', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      monitored: false,
+      books: [
+        { id: 'b1', title: 'Lone Novel', authorName: 'Solo Author', releaseDate: '2021-01-01', state: 'In library', formats: ['EPUB'] },
+      ],
+    }),
+  }));
+
+  const { unmount } = render(<EntityView kind="authors" name="Solo Author" canManage={false} />);
+  const headings = await screen.findAllByRole('heading', { level: 3 });
+  expect(headings.map((h) => h.textContent)).toEqual(['Standalone Books']);
+  expect(screen.getByRole('list', { name: 'Standalone Books' })).toHaveTextContent('Lone Novel');
+  unmount();
+
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      monitored: false,
+      books: [
+        { id: 'b2', title: 'Series Book', authorName: 'Series Author', seriesId: 's1', seriesTitle: 'Only Series', seriesIndex: 1, releaseDate: '2022-01-01', state: 'In library', formats: ['EPUB'] },
+      ],
+    }),
+  }));
+
+  render(<EntityView kind="authors" name="Series Author" canManage={false} />);
+  const seriesHeadings = await screen.findAllByRole('heading', { level: 3 });
+  expect(seriesHeadings.map((h) => h.textContent)).toEqual(['Only Series']);
+  expect(screen.queryByRole('heading', { name: 'Standalone Books' })).not.toBeInTheDocument();
 });
 

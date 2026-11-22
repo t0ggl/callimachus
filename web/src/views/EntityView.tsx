@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { ArrowLeft, Bell, Calendar, Check, Download, Layers, RefreshCw, Search, User } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { ArrowLeft, Bell, BookOpen, Calendar, Check, Download, Layers, RefreshCw, Search, User } from 'lucide-react';
 import { BookDetailModal } from '../components/BookDetailModal';
 import { EntityLink } from '../components/EntityLink';
 import { ManualSearch } from '../components/ManualSearch';
@@ -8,6 +8,103 @@ import type { Book } from '../types';
 
 type EntityBook = Pick<Book, 'id' | 'title' | 'subtitle' | 'authorName' | 'seriesTitle' | 'seriesId' | 'coverUrl' | 'formats' | 'releaseDate' | 'seriesIndex' | 'synopsis' | 'state' | 'monitored'>;
 type Data = { monitored: boolean; photoUrl?: string; books: EntityBook[] };
+type IndexedEntityBook = { book: EntityBook; index: number };
+type AuthorBookGroup = {
+  key: string;
+  kind: 'series' | 'standalone';
+  title: string;
+  seriesId?: string;
+  items: IndexedEntityBook[];
+};
+
+function compareReleaseDate(a?: string, b?: string): number {
+  const ad = a?.trim() ?? '';
+  const bd = b?.trim() ?? '';
+  if (ad === bd) return 0;
+  if (!ad) return 1;
+  if (!bd) return -1;
+  return ad.localeCompare(bd);
+}
+
+function compareAuthorGroupItems(a: IndexedEntityBook, b: IndexedEntityBook, isSeriesGroup: boolean): number {
+  if (isSeriesGroup) {
+    const aHasIdx = a.book.seriesIndex != null && Number.isFinite(a.book.seriesIndex);
+    const bHasIdx = b.book.seriesIndex != null && Number.isFinite(b.book.seriesIndex);
+    if (aHasIdx && bHasIdx && a.book.seriesIndex! !== b.book.seriesIndex!) {
+      return a.book.seriesIndex! - b.book.seriesIndex!;
+    }
+    if (aHasIdx !== bHasIdx) return aHasIdx ? -1 : 1;
+  }
+  const dateCmp = compareReleaseDate(a.book.releaseDate, b.book.releaseDate);
+  if (dateCmp !== 0) return dateCmp;
+  const titleCmp = a.book.title.localeCompare(b.book.title, undefined, { sensitivity: 'base' });
+  if (titleCmp !== 0) return titleCmp;
+  return a.index - b.index;
+}
+
+function groupAuthorBooks(books: EntityBook[]): AuthorBookGroup[] {
+  const uniqueSeriesIdByTitle = new Map<string, string | null>();
+  for (const book of books) {
+    const title = book.seriesTitle?.trim();
+    const seriesId = book.seriesId?.trim();
+    if (!title || !seriesId) continue;
+    const lower = title.toLowerCase();
+    if (!uniqueSeriesIdByTitle.has(lower)) {
+      uniqueSeriesIdByTitle.set(lower, seriesId);
+    } else if (uniqueSeriesIdByTitle.get(lower) !== seriesId) {
+      uniqueSeriesIdByTitle.set(lower, null);
+    }
+  }
+
+  const seriesMap = new Map<string, AuthorBookGroup>();
+  const standalone: IndexedEntityBook[] = [];
+
+  books.forEach((book, index) => {
+    const title = book.seriesTitle?.trim() ?? '';
+    if (!title) {
+      standalone.push({ book, index });
+      return;
+    }
+    const lower = title.toLowerCase();
+    const resolvedId = book.seriesId?.trim() || uniqueSeriesIdByTitle.get(lower) || undefined;
+    const key = resolvedId ? `id:${resolvedId}` : `title:${lower}`;
+    const existing = seriesMap.get(key);
+    if (existing) {
+      existing.items.push({ book, index });
+      if (!existing.seriesId && resolvedId) existing.seriesId = resolvedId;
+    } else {
+      seriesMap.set(key, {
+        key,
+        kind: 'series',
+        title,
+        seriesId: resolvedId,
+        items: [{ book, index }],
+      });
+    }
+  });
+
+  const groups = Array.from(seriesMap.values())
+    .map((group) => ({
+      ...group,
+      items: [...group.items].sort((a, b) => compareAuthorGroupItems(a, b, true)),
+    }))
+    .sort((a, b) => {
+      const titleCmp = a.title.localeCompare(b.title, undefined, { sensitivity: 'base' });
+      return titleCmp !== 0 ? titleCmp : a.key.localeCompare(b.key);
+    });
+
+  if (standalone.length > 0) {
+    standalone.sort((a, b) => compareAuthorGroupItems(a, b, false));
+    groups.push({
+      key: 'standalone',
+      kind: 'standalone',
+      title: 'Standalone Books',
+      items: standalone,
+    });
+  }
+
+  return groups;
+}
 
 const button = 'inline-flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50';
 const badge = 'inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-xs font-medium';
@@ -104,7 +201,8 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
     finally { setBusy(false); }
   }
   const isSeries = kind === 'series';
-  const books = Array.isArray(data?.books) ? data.books : [];
+  const books = useMemo(() => (Array.isArray(data?.books) ? data.books : []), [data]);
+  const authorGroups = useMemo(() => (isSeries ? [] : groupAuthorBooks(books)), [isSeries, books]);
   const representativeCover = books.find(book => book.coverUrl);
   const ownedCount = books.filter(book => book.state === 'In library').length;
   const heading = isSeries ? 'Reading Order' : 'Books';
@@ -206,6 +304,74 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
     }
   };
 
+  const renderBookItem = (book: EntityBook, index: number) => {
+    const itemKey = `${book.title}-${book.seriesIndex ?? 'u'}-${index}`;
+    const state = book.state ?? 'Not in library';
+    const hasFiles = state === 'In library';
+    const stateColor = hasFiles ? availableBadge : state === 'Not in library' || state === 'Scheduled' ? neutralBadge : blueBadge;
+    const rowBusy = rowBusyKey === itemKey;
+    return (
+      <li key={itemKey} className="flex items-start gap-3 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3.5 focus-within:border-zinc-700 hover:border-zinc-700 sm:gap-4">
+        <SeriesBookCover coverUrl={book.coverUrl} title={book.title} />
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {book.seriesIndex != null && <span className={`${badge} ${purpleBadge} font-mono`}>Book {book.seriesIndex}</span>}
+            <button
+              type="button"
+              disabled={rowBusy}
+              className="min-w-0 rounded-sm text-left text-sm font-semibold text-zinc-100 underline decoration-zinc-600 underline-offset-2 wrap-break-word hover:text-blue-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
+              onClick={() => handleOpenEntityBook(book, index)}
+            >
+              {book.title}
+            </button>
+          </div>
+          {book.subtitle && <p className="text-xs text-zinc-400">{book.subtitle}</p>}
+          {isSeries && (
+            <p className="text-xs text-zinc-400">by <EntityLink kind="authors" name={book.authorName} /></p>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400">
+              <Calendar size={14} aria-hidden="true" /> {book.releaseDate || 'Release date unknown'}
+            </span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {book.formats.length ? book.formats.map(format => (
+                <span key={format} className={`${badge} ${format === 'M4B' ? purpleBadge : blueBadge} font-mono`}>{format}</span>
+              )) : <span className={`${badge} ${neutralBadge}`}>No files</span>}
+              <span className={`${badge} ${stateColor}`}>{hasFiles && <Check size={12} aria-hidden="true" />}{state}</span>
+              {allowRequest && state === 'Not in library' && (
+                <button
+                  type="button"
+                  disabled={rowBusy}
+                  onClick={() => void handleDownloadBook(book, index, itemKey)}
+                  className="inline-flex items-center gap-1 rounded-sm border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
+                >
+                  <Download size={12} aria-hidden="true" />
+                  Download
+                </button>
+              )}
+              {canManage && state === 'Scheduled' && (
+                <button
+                  type="button"
+                  disabled={rowBusy}
+                  aria-pressed={Boolean(book.monitored)}
+                  onClick={() => void handleToggleBookMonitor(book, index, itemKey)}
+                  className={`inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50 ${
+                    book.monitored
+                      ? 'border-blue-700/80 bg-blue-950/80 text-blue-200 hover:bg-blue-900/70'
+                      : 'border-zinc-700 bg-zinc-800 text-zinc-100 hover:bg-zinc-700'
+                  }`}
+                >
+                  <Bell size={12} aria-hidden="true" />
+                  {book.monitored ? 'Monitoring' : 'Monitor'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </li>
+    );
+  };
+
   return (
     <section className="mx-auto max-w-5xl space-y-6" aria-labelledby="entity-heading">
       <a href="#" className="inline-flex items-center gap-2 rounded-sm text-sm text-zinc-300 hover:text-zinc-100 focus-visible:outline-2 focus-visible:outline-blue-300">
@@ -279,77 +445,45 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
           </p>
         )}
         {data && books.length > 0 && (
-          <ol aria-labelledby="entity-books" className="space-y-3">
-            {books.map((book, index) => {
-              const itemKey = `${book.title}-${book.seriesIndex ?? 'u'}-${index}`;
-              const state = book.state ?? 'Not in library';
-              const hasFiles = state === 'In library';
-              const stateColor = hasFiles ? availableBadge : state === 'Not in library' || state === 'Scheduled' ? neutralBadge : blueBadge;
-              const rowBusy = rowBusyKey === itemKey;
-              return (
-                <li key={itemKey} className="flex items-start gap-3 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3.5 focus-within:border-zinc-700 hover:border-zinc-700 sm:gap-4">
-                  <SeriesBookCover coverUrl={book.coverUrl} title={book.title} />
-                  <div className="min-w-0 flex-1 space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {book.seriesIndex != null && <span className={`${badge} ${purpleBadge} font-mono`}>Book {book.seriesIndex}</span>}
-                      <button
-                        type="button"
-                        disabled={rowBusy}
-                        className="min-w-0 rounded-sm text-left text-sm font-semibold text-zinc-100 underline decoration-zinc-600 underline-offset-2 wrap-break-word hover:text-blue-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
-                        onClick={() => handleOpenEntityBook(book, index)}
-                      >
-                        {book.title}
-                      </button>
-                    </div>
-                    {book.subtitle && <p className="text-xs text-zinc-400">{book.subtitle}</p>}
-                    {isSeries ? (
-                      <p className="text-xs text-zinc-400">by <EntityLink kind="authors" name={book.authorName} /></p>
-                    ) : book.seriesTitle && (
-                      <p className="text-xs text-zinc-400"><EntityLink kind="series" name={book.seriesTitle} id={book.seriesId} /></p>
-                    )}
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400">
-                        <Calendar size={14} aria-hidden="true" /> {book.releaseDate || 'Release date unknown'}
-                      </span>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {book.formats.length ? book.formats.map(format => (
-                          <span key={format} className={`${badge} ${format === 'M4B' ? purpleBadge : blueBadge} font-mono`}>{format}</span>
-                        )) : <span className={`${badge} ${neutralBadge}`}>No files</span>}
-                        <span className={`${badge} ${stateColor}`}>{hasFiles && <Check size={12} aria-hidden="true" />}{state}</span>
-                        {allowRequest && state === 'Not in library' && (
-                          <button
-                            type="button"
-                            disabled={rowBusy}
-                            onClick={() => void handleDownloadBook(book, index, itemKey)}
-                            className="inline-flex items-center gap-1 rounded-sm border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
-                          >
-                            <Download size={12} aria-hidden="true" />
-                            Download
-                          </button>
+          isSeries ? (
+            <ol aria-labelledby="entity-books" className="space-y-3">
+              {books.map((book, index) => renderBookItem(book, index))}
+            </ol>
+          ) : (
+            <div className="space-y-7 pt-1">
+              {authorGroups.map((group, groupIndex) => {
+                const groupHeadingId = `entity-group-${groupIndex}`;
+                const groupOwned = group.items.filter(({ book }) => book.state === 'In library').length;
+                const ListTag = group.kind === 'series' ? 'ol' : 'ul';
+                return (
+                  <section key={group.key} aria-labelledby={groupHeadingId} className="space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800/80 pb-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        {group.kind === 'series' ? (
+                          <Layers size={15} aria-hidden="true" className="shrink-0 text-purple-300" />
+                        ) : (
+                          <BookOpen size={15} aria-hidden="true" className="shrink-0 text-zinc-400" />
                         )}
-                        {canManage && state === 'Scheduled' && (
-                          <button
-                            type="button"
-                            disabled={rowBusy}
-                            aria-pressed={Boolean(book.monitored)}
-                            onClick={() => void handleToggleBookMonitor(book, index, itemKey)}
-                            className={`inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50 ${
-                              book.monitored
-                                ? 'border-blue-700/80 bg-blue-950/80 text-blue-200 hover:bg-blue-900/70'
-                                : 'border-zinc-700 bg-zinc-800 text-zinc-100 hover:bg-zinc-700'
-                            }`}
-                          >
-                            <Bell size={12} aria-hidden="true" />
-                            {book.monitored ? 'Monitoring' : 'Monitor'}
-                          </button>
-                        )}
+                        <h3 id={groupHeadingId} className="min-w-0 wrap-break-word text-sm font-semibold text-zinc-100">
+                          {group.kind === 'series' ? (
+                            <EntityLink kind="series" name={group.title} id={group.seriesId} />
+                          ) : (
+                            group.title
+                          )}
+                        </h3>
                       </div>
+                      <span className="shrink-0 text-xs tabular-nums text-zinc-400">
+                        {groupOwned} of {group.items.length} in library
+                      </span>
                     </div>
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
+                    <ListTag aria-labelledby={groupHeadingId} className="space-y-3">
+                      {group.items.map(({ book, index }) => renderBookItem(book, index))}
+                    </ListTag>
+                  </section>
+                );
+              })}
+            </div>
+          )
         )}
       </div>
       {selectedBook && <BookDetailModal book={selectedBook} isAdmin={isAdmin} canManage={canManage} canRequest={allowRequest}
@@ -366,6 +500,8 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
                     subtitle: updated.subtitle,
                     releaseDate: updated.releaseDate,
                     synopsis: updated.synopsis,
+                    seriesId: updated.seriesId,
+                    seriesTitle: updated.seriesTitle,
                     seriesIndex: updated.seriesIndex,
                     monitored: updated.monitored,
                     coverUrl: updated.coverUrl ?? item.coverUrl,
