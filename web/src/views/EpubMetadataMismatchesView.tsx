@@ -3,18 +3,19 @@ import {
   AlertCircle,
   BookOpen,
   CheckCircle2,
+  Eye,
   FileWarning,
   Filter,
   Loader2,
   RefreshCw,
   Search,
-  Wrench,
 } from 'lucide-react';
 import {
   Book,
   EPUBMetadataMismatchItem,
   EPUBMetadataMismatchesResponse,
   EPUBMismatchField,
+  MetadataCandidate,
 } from '../types';
 import { BookDetailModal } from '../components/BookDetailModal';
 
@@ -75,6 +76,34 @@ function MismatchThumbnail({ coverUrl }: { coverUrl?: string }) {
   );
 }
 
+function buildIdealCandidate(item: EPUBMetadataMismatchItem, book: Book): MetadataCandidate | undefined {
+  const idealTitle = item.ideal.title?.trim() ?? '';
+  if (!idealTitle) return undefined;
+  const idealSeries = item.ideal.series?.trim() ?? '';
+  const idealIndex = idealSeries ? item.ideal.seriesIndex : undefined;
+
+  const bookTitle = book.title?.trim() ?? '';
+  const bookSeries = book.seriesTitle?.trim() ?? '';
+  const bookIndex = bookSeries ? book.seriesIndex : undefined;
+
+  const titleDiffers = idealTitle !== bookTitle;
+  const seriesDiffers = idealSeries !== '' && idealSeries !== bookSeries;
+  const indexDiffers =
+    idealSeries !== '' &&
+    idealIndex !== undefined &&
+    (bookIndex === undefined || Math.abs(idealIndex - bookIndex) > 1e-6);
+
+  if (!titleDiffers && !seriesDiffers && !indexDiffers) {
+    return undefined;
+  }
+  return {
+    title: idealTitle,
+    subtitle: item.ideal.subtitle || undefined,
+    series: idealSeries || undefined,
+    series_index: idealIndex,
+  };
+}
+
 export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProps> = ({
   onCatalogChanged,
   onCountChanged,
@@ -90,7 +119,11 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
   const [fieldFilter, setFieldFilter] = useState<FieldFilter>('ALL');
   const [applyingIds, setApplyingIds] = useState<string[]>([]);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
-  const [modalState, setModalState] = useState<{ book: Book; initialPanel?: 'repair' } | null>(null);
+  const [modalState, setModalState] = useState<{
+    book: Book;
+    initialPanel?: 'repair';
+    initialRepairCandidate?: MetadataCandidate;
+  } | null>(null);
   const [openingBookId, setOpeningBookId] = useState<string | null>(null);
 
   const loadMismatches = useCallback(async (signal?: AbortSignal) => {
@@ -170,7 +203,11 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
       if (!found) {
         throw new Error('This book is no longer in the catalog. Refresh the list.');
       }
-      setModalState({ book: found, initialPanel });
+      setModalState({
+        book: found,
+        initialPanel,
+        initialRepairCandidate: initialPanel === 'repair' ? buildIdealCandidate(item, found) : undefined,
+      });
     } catch (err) {
       setRowErrors((prev) => ({
         ...prev,
@@ -399,7 +436,7 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
                             type="button"
                             disabled={busy || opening}
                             onClick={() => void handleApplyIdeal(item)}
-                            aria-label={`Apply ideal metadata to ${item.title}`}
+                            aria-label={`Apply ideal metadata now to ${item.title}`}
                             className={primaryButton}
                           >
                             {busy ? (
@@ -408,18 +445,18 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
                                 Applying…
                               </>
                             ) : (
-                              'Apply Ideal'
+                              'Apply Now'
                             )}
                           </button>
                           <button
                             type="button"
                             disabled={busy || opening}
                             onClick={() => void handleOpenBook(item, 'repair')}
-                            aria-label={`Fix metadata for ${item.title}`}
+                            aria-label={`Preview and edit metadata for ${item.title}`}
                             className={secondaryButton}
                           >
-                            <Wrench className="w-3.5 h-3.5" aria-hidden="true" />
-                            Fix Metadata
+                            <Eye className="w-3.5 h-3.5" aria-hidden="true" />
+                            Preview & Edit
                           </button>
                         </div>
                       </div>
@@ -487,6 +524,7 @@ export const EpubMetadataMismatchesView: React.FC<EpubMetadataMismatchesViewProp
         <BookDetailModal
           book={modalState.book}
           initialPanel={modalState.initialPanel}
+          initialRepairCandidate={modalState.initialRepairCandidate}
           isAdmin={true}
           canManage={canManage}
           canRequest={canRequest}

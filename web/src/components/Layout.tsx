@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { UserProfile } from '../types';
 
-export type NavView = 'catalog' | 'activity' | 'activity-mismatches' | 'settings';
+export type NavView = 'catalog' | 'activity' | 'metadata-mismatches' | 'settings';
 
 interface LayoutProps {
   currentView: NavView;
@@ -62,22 +62,37 @@ export const Layout: React.FC<LayoutProps> = ({
     return () => controller.abort();
   }, [hasSession]);
 
-  const navItems = [
+  const navItems: {
+    id: NavView;
+    label: string;
+    icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean }>;
+    badge?: string;
+    badgeTone?: 'info' | 'warning';
+    shortcut?: string;
+  }[] = [
     {
-      id: 'catalog' as NavView,
+      id: 'catalog',
       label: 'Library',
       icon: Library,
       shortcut: '1',
     },
     {
-      id: 'activity' as NavView,
+      id: 'activity',
       label: 'Activity',
       icon: Activity,
       badge: activeAcquisitionsCount > 0 ? `${activeAcquisitionsCount}` : undefined,
+      badgeTone: 'info',
       shortcut: '2',
     },
     ...(isAdmin
       ? [
+          {
+            id: 'metadata-mismatches' as NavView,
+            label: 'Metadata Mismatches',
+            icon: FileWarning,
+            badge: metadataMismatchesCount > 0 ? `${metadataMismatchesCount}` : undefined,
+            badgeTone: 'warning' as const,
+          },
           {
             id: 'settings' as NavView,
             label: 'Settings',
@@ -121,59 +136,37 @@ export const Layout: React.FC<LayoutProps> = ({
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = currentView === item.id;
-              const isMismatchesActive = currentView === 'activity-mismatches';
+              const badgeClasses =
+                item.badgeTone === 'warning'
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                  : 'bg-blue-500/20 text-blue-300 border border-blue-500/30';
               return (
-                <React.Fragment key={item.id}>
-                  <button
-                    type="button"
-                    onClick={() => onNavigate(item.id)}
-                    data-testid={`nav-${item.id}`}
-                    aria-current={isActive ? 'page' : undefined}
-                    className={`flex flex-1 items-center justify-center gap-1 min-h-11 px-1 md:w-full md:min-h-0 md:justify-between md:px-3 md:py-2 rounded-md text-xs font-medium transition-colors duration-150 ${
-                      isActive
-                        ? 'bg-blue-600/15 text-blue-400 border border-blue-600/30'
-                        : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60 border border-transparent'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <Icon className={`hidden md:block w-4 h-4 ${isActive ? 'text-blue-400' : 'text-zinc-400'}`} />
-                      <span>{item.label}</span>
-                    </div>
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onNavigate(item.id)}
+                  data-testid={`nav-${item.id}`}
+                  aria-current={isActive ? 'page' : undefined}
+                  className={`flex flex-1 items-center justify-center gap-1.5 min-h-11 px-2 py-1.5 text-center md:w-full md:min-h-0 md:justify-between md:px-3 md:py-2 md:text-left rounded-md text-xs font-medium transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 ${
+                    isActive
+                      ? 'bg-blue-600/15 text-blue-400 border border-blue-600/30'
+                      : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60 border border-transparent'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Icon
+                      className={`hidden md:block w-4 h-4 shrink-0 ${isActive ? 'text-blue-400' : 'text-zinc-400'}`}
+                      aria-hidden={true}
+                    />
+                    <span className="md:truncate">{item.label}</span>
+                  </div>
 
-                    {item.badge && (
-                      <span className="text-[10px] font-mono font-semibold tabular-nums px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
-                        {item.badge}
-                      </span>
-                    )}
-                  </button>
-
-                  {item.id === 'activity' && isAdmin && (
-                    <button
-                      type="button"
-                      onClick={() => onNavigate('activity-mismatches')}
-                      data-testid="nav-activity-mismatches"
-                      aria-current={isMismatchesActive ? 'page' : undefined}
-                      className={`order-last basis-full md:order-none md:w-full flex items-center justify-center md:justify-between gap-2 min-h-10 md:min-h-0 px-3 py-1.5 md:pl-8 md:pr-3 rounded-md text-xs font-medium transition-colors duration-150 ${
-                        isMismatchesActive
-                          ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
-                          : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60 border border-transparent'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <FileWarning
-                          className={`w-3.5 h-3.5 shrink-0 ${isMismatchesActive ? 'text-amber-300' : 'text-zinc-400'}`}
-                          aria-hidden="true"
-                        />
-                        <span className="truncate">Metadata Mismatches</span>
-                      </div>
-                      {metadataMismatchesCount > 0 && (
-                        <span className="text-[10px] font-mono font-semibold tabular-nums px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                          {metadataMismatchesCount}
-                        </span>
-                      )}
-                    </button>
+                  {item.badge && (
+                    <span className={`shrink-0 text-[10px] font-mono font-semibold tabular-nums px-1.5 py-0.5 rounded-full ${badgeClasses}`}>
+                      {item.badge}
+                    </span>
                   )}
-                </React.Fragment>
+                </button>
               );
             })}
           </nav>

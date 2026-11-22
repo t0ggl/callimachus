@@ -60,10 +60,19 @@ it('searches, previews the selected candidate and applies only on confirmation',
         preview: selected ? 'candidate-preview' : 'library-preview',
         ...(selected ? { bookDiffs: [
           { field: 'title', fileValue: 'Library title', libraryValue: candidate.title, changed: true },
+          { field: 'authors', fileValue: 'Library author', libraryValue: 'Library author', changed: false },
         ] } : {}),
         files: [{
           id: 'e1', filename: 'Book.epub',
-          diffs: [{ field: 'title', fileValue: 'Old EPUB title', libraryValue: selected ? candidate.title : 'Library title', changed: true }],
+          diffs: [
+            { field: 'title', fileValue: 'Old EPUB title', libraryValue: selected ? candidate.title : 'Library title', changed: true },
+            { field: 'language', fileValue: 'en', libraryValue: 'en', changed: false },
+            { field: 'subtitle', fileValue: '', libraryValue: '', changed: false },
+          ],
+          ...(selected ? { libraryDiffs: [
+            { field: 'publisher', fileValue: 'Old Press', libraryValue: 'Example Press', changed: true },
+            { field: 'language', fileValue: 'en', libraryValue: 'en', changed: false },
+          ] } : {}),
         }],
       });
     }
@@ -81,6 +90,13 @@ it('searches, previews the selected candidate and applies only on confirmation',
   await user.click(screen.getByRole('menuitem', { name: 'Fix Metadata' }));
   expect(await screen.findByText('Old EPUB title')).toBeVisible();
   expect(screen.getByText('Library title')).toBeVisible();
+  // Shows unchanged non-empty fields alongside changed fields with accessible non-color cues.
+  expect(screen.getByText('1 of 2 fields changing')).toBeVisible();
+  const titleRow = screen.getByRole('row', { name: /Title.*Changed/ });
+  expect(titleRow).toHaveAttribute('data-changed', 'true');
+  const langRow = screen.getByRole('row', { name: /Language.*Unchanged/ });
+  expect(langRow).toHaveAttribute('data-changed', 'false');
+  expect(screen.queryByRole('row', { name: /Subtitle/ })).not.toBeInTheDocument();
   expect(await screen.findByRole('radio', { name: /Suggested title/ })).toBeVisible();
   const input = screen.getByRole('searchbox', { name: 'Search metadata by title' });
   await user.type(input, 'Missing');

@@ -569,3 +569,116 @@ func TestEPUBProvenanceDistinction_DownloadImportFixesExternalScanReports(t *tes
 		t.Errorf("A Wizard of Earthsea mismatchedFields = %v, want [title series]", got)
 	}
 }
+
+func TestEPUBIdealApplyMatchesRepairPreviewTarget(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	libRoot := t.TempDir()
+
+	idx1 := 1.0
+	idx9 := 9.0
+	epubPath := filepath.Join(libRoot, "Brandon Sanderson", "Mistborn", "The Final Empire (2006)", "The Final Empire (2006) - Brandon Sanderson.epub")
+	createTestEPUBFile(t, epubPath, epub.Metadata{
+		Title:       "01 - Mistborn [Retail]",
+		Authors:     []string{"Brandon Sanderson"},
+		Series:      "Mistborn Trilogy",
+		SeriesIndex: &idx9,
+		PublishDate: "2006",
+		Publisher:   "Tor",
+		Language:    "en",
+	})
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'Brandon Sanderson', 'Sanderson, Brandon');
+		INSERT INTO series (id, title, author_id) VALUES ('s-old', 'Mistborn Trilogy', 'a1');
+		INSERT INTO books (id, author_id, series_id, series_index, title, release_date, synopsis)
+		VALUES ('b1', 'a1', 's-old', 9.0, '01 - Mistborn [Retail]', '2006', 'Preserved synopsis.');
+		INSERT INTO book_editions (id, book_id, format, publisher, language, publication_date)
+		VALUES ('e1', 'b1', 'epub', 'Tor', 'en', '2006');
+		INSERT INTO media_assets (id, edition_id, file_path, file_size)
+		VALUES ('m1', 'e1', ?, 100);
+	`, epubPath); err != nil {
+		t.Fatalf("seed db: %v", err)
+	}
+
+	cat := catalog.New(db)
+	if err := cat.SaveIdealMetadata(ctx, "b1", "The Final Empire", "Mistborn", &idx1, catalog.IdealSourceMatch); err != nil {
+		t.Fatalf("SaveIdealMetadata: %v", err)
+	}
+
+	srv := &Server{
+		db:            db,
+		baseOverrides: config.Overrides{LibraryRoot: libRoot},
+	}
+
+	// 1. Request metadata-diff preview with the matched ideal candidate.
+	idealCandidate := epub.Metadata{
+		Title:       "The Final Empire",
+		Series:      "Mistborn",
+		SeriesIndex: &idx1,
+	}
+	body, err := json.Marshal(repairRequest{Candidate: &idealCandidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previewReq := httptest.NewRequest(http.MethodPost, "/api/books/b1/metadata-diff", bytes.NewReader(body))
+	previewReq.SetPathValue("id", "b1")
+	previewReq.Header.Set("Content-Type", "application/json")
+	previewRec := httptest.NewRecorder()
+	srv.handleBookMetadata(previewRec, previewReq)
+	if previewRec.Code != http.StatusOK {
+		t.Fatalf("metadata-diff status = %d, body = %s", previewRec.Code, previewRec.Body.String())
+	}
+	var preview repairPreview
+	if err := json.Unmarshal(previewRec.Body.Bytes(), &preview); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	if len(preview.Files) != 1 {
+		t.Fatalf("expected 1 file in preview, got %d", len(preview.Files))
+	}
+	previewValues := make(map[string]metadataDiff, len(preview.Files[0].Diffs))
+	for _, d := range preview.Files[0].Diffs {
+		previewValues[d.Field] = d
+	}
+
+	// 2. Apply ideal metadata via the mismatches endpoint.
+	applyReq := httptest.NewRequest(http.MethodPost, "/api/activity/metadata-mismatches/b1/apply", nil)
+	applyReq.SetPathValue("id", "b1")
+	applyRec := httptest.NewRecorder()
+	srv.handleApplyEPUBIdealMetadata(applyRec, applyReq)
+	if applyRec.Code != http.StatusOK {
+		t.Fatalf("apply ideal status = %d, body = %s", applyRec.Code, applyRec.Body.String())
+	}
+
+	// 3. Verify the applied EPUB metadata matches every single field from the preview (both changed and unchanged).
+	repaired, err := epub.OpenNative(epubPath)
+	if err != nil {
+		t.Fatalf("OpenNative after apply: %v", err)
+	}
+	actual := repaired.Metadata()
+	afterDiffs := compareMetadata(actual, epub.Metadata{
+		Title:       previewValues["title"].LibraryValue,
+		Subtitle:    previewValues["subtitle"].LibraryValue,
+		Authors:     strings.Split(previewValues["authors"].LibraryValue, " & "),
+		Series:      previewValues["series"].LibraryValue,
+		SeriesIndex: &idx1,
+		PublishDate: previewValues["releaseDate"].LibraryValue,
+		Publisher:   previewValues["publisher"].LibraryValue,
+		Language:    previewValues["language"].LibraryValue,
+		ISBN13:      previewValues["isbn13"].LibraryValue,
+		Description: previewValues["description"].LibraryValue,
+	})
+	for _, diff := range afterDiffs {
+		if diff.Changed {
+			t.Errorf("applied EPUB field %q = %q, preview promised %q", diff.Field, diff.FileValue, diff.LibraryValue)
+		}
+	}
+	if !previewValues["title"].Changed || !previewValues["series"].Changed || !previewValues["seriesIndex"].Changed ||
+		!previewValues["publisher"].Changed || !previewValues["description"].Changed {
+		t.Errorf("expected title/series/seriesIndex/publisher/description marked changed in preview: %+v", previewValues)
+	}
+	if previewValues["authors"].Changed || previewValues["releaseDate"].Changed || previewValues["language"].Changed {
+		t.Errorf("expected unchanged fields marked changed=false in preview: %+v", previewValues)
+	}
+}
