@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       platforms:
@@ -20,7 +18,6 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   ci:
@@ -32,9 +29,38 @@ jobs:
     needs: ci
     name: Build & Push Container Image
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    outputs:
+      release-tag: ${{ steps.release.outputs.tag }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Choose next release version
+        id: release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          latest=$(git tag --sort=-version:refname | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ && !found++ { print }')
+          if ! git merge-base --is-ancestor "$latest" HEAD; then
+            exit 0
+          fi
+          changed=$(git diff --name-only "$latest" HEAD)
+          if [[ -z "$changed" ]]; then
+            exit 0
+          fi
+
+          code_changes=$(git diff --name-only "$latest" HEAD -- \
+            ':(glob)cmd/**/*.go' ':(glob)internal/**/*.go' ':(glob)pkg/**/*.go' ':(glob)pkg/**/*.sql' ':(glob)web/src/**' 'web/index.html' 'web/embed.go' ':(exclude,glob)**/*_test.go' ':(exclude,glob)web/src/**/*.test.*' ':(exclude,glob)web/src/**/*.spec.*' ':(exclude,glob)web/src/**/__tests__/**')
+          series=${latest%.*}
+          if [[ -n "$code_changes" ]]; then
+            minor=${series##*.}
+            echo "tag=${series%.*}.$((10#$minor + 1)).0" >> "$GITHUB_OUTPUT"
+          else
+            patch=${latest##*.}
+            echo "tag=$series.$((10#$patch + 1))" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
@@ -46,6 +72,7 @@ jobs:
           buildkitd-flags: ${{ runner.environment == 'self-hosted' && '--oci-worker-snapshotter=native' || '' }}
 
       - name: Log in to GitHub Container Registry
+        if: steps.release.outputs.tag != '' || github.event_name == 'workflow_dispatch'
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
@@ -58,10 +85,10 @@ jobs:
         with:
           images: ghcr.io/t0ggl/callimachus
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ steps.release.outputs.tag != '' }}
+            type=semver,pattern={{version}},value=${{ steps.release.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release.outputs.tag }}
+            type=semver,pattern={{major}},value=${{ steps.release.outputs.tag }}
             type=sha,format=short
             type=ref,event=branch
 
@@ -70,9 +97,29 @@ jobs:
         with:
           context: .
           platforms: ${{ inputs.platforms || 'linux/amd64,linux/arm64' }}
-          push: true
+          push: ${{ steps.release.outputs.tag != '' || github.event_name == 'workflow_dispatch' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             COMMIT_TAG=${{ github.sha }}
-            BUILD_VERSION=${{ github.ref_name }}
+            BUILD_VERSION=${{ steps.release.outputs.tag || github.ref_name }}
+
+  create-release:
+    name: Create GitHub Release
+    needs: build-and-push
+    if: needs.build-and-push.outputs.release-tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.build-and-push.outputs.release-tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            exit 0
+          fi
+          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --title "$RELEASE_TAG" --generate-notes
