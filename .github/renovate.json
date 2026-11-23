@@ -6,6 +6,11 @@
   "ignorePresets": [
     "docker:pinDigests"
   ],
+  "dockerfile": {
+    "fileMatch": [
+      "(^|/)Dockerfile(\\.[^/]+)?$"
+    ]
+  },
   "prHourlyLimit": 4,
   "automerge": true,
   "labels": [

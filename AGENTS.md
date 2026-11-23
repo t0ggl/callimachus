@@ -42,14 +42,16 @@ Welcome to the **Callimachus** project codebase. These guidelines govern all sub
    - **Eliminate Artificial Sleep & UI Delays:**
      - Avoid arbitrary `time.Sleep()` durations in concurrency and worker lifecycle tests; coordinate using channels, sync primitives, or small poll intervals (<=100ms).
      - In frontend Vitest suites, always initialize user events with `userEvent.setup({ delay: null })` to prevent synthetic typing delays from inflating test execution time.
+   - **Canonical Build & Test Commands (`Makefile`):**
+     - All build, dependency install, SAST, and test steps live in `Makefile` and nowhere else. `Dockerfile`, GitHub Actions workflows, and local verification must invoke `Makefile` targets (`make test`, `make test-backend`, `make test-frontend`, `make sast`, `make build`) rather than duplicating raw tool commands.
    - **Mandatory Slow-Outlier Audit Before Merging:**
-     - Before merging any branch or opening a pull request, run `go test -v ./...` and `npm test` to audit test execution durations.
+     - Before merging any branch or opening a pull request, run `make test-backend` and `make test-frontend` (or `make test`) to audit test execution durations.
      - Investigate slow outliers: use individual tests taking > 500ms or packages taking > 2.5s as investigation signals, not automatic failures. Consider the work performed, host load, compilation/startup overhead, and race instrumentation when judging whether a duration is suspicious.
      - Fix unjustified delays, unnecessary repeated setup, unmocked external work, and other avoidable bottlenecks before merging. Record the reason for legitimately slower tests rather than weakening their coverage to meet a timing threshold.
      - Do not impose a fixed aggregate time limit on the repository test suite; its duration depends on suite size, hardware, and execution mode.
    - **Static Application Security Testing (SAST):**
-     - Semgrep OSS SAST runs automatically in CI (`.github/workflows/ci.yml`) and locally via `make sast` or `./scripts/sast.sh` (also included in `make test`).
-     - Run `./scripts/sast.sh` before opening a pull request and resolve findings rather than bypassing them; only suppress verified false positives with inline `nosemgrep:` comments explaining the rationale.
+     - Semgrep OSS SAST runs automatically in CI (`.github/workflows/ci.yml`) and locally via `make sast` (also included in `make test`).
+     - Run `make sast` before opening a pull request and resolve findings rather than bypassing them; only suppress verified false positives with inline `nosemgrep:` comments explaining the rationale.
 
 6. **Authentication & Multi-User:**
    - Primary: OIDC (Authentik, Authelia, Keycloak) with role mapping (Admin, Curator, User/Requester, Guest), configured **exclusively** via `CALLIMACHUS_OIDC_*` environment variables (`CALLIMACHUS_OIDC_ISSUER_URL`, `CALLIMACHUS_OIDC_CLIENT_ID`, `CALLIMACHUS_OIDC_CLIENT_SECRET`, `CALLIMACHUS_OIDC_REDIRECT_URL`, `CALLIMACHUS_OIDC_SCOPES`, `CALLIMACHUS_OIDC_ADMIN_GROUPS`, `CALLIMACHUS_OIDC_CURATOR_GROUPS`, `CALLIMACHUS_OIDC_DEFAULT_ROLE`, `CALLIMACHUS_OIDC_ENABLED`).

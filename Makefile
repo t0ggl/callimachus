@@ -1,14 +1,15 @@
 BIN_DIR ?= bin
-BUILD_VERSION ?= dev
+VERSION ?= dev
+BUILD_VERSION ?= $(VERSION)
 COMMIT_TAG ?= none
-TARGETOS ?= $(GOOS)
-TARGETARCH ?= $(GOARCH)
+export GOOS ?= $(TARGETOS)
+export GOARCH ?= $(TARGETARCH)
 LDFLAGS := -w -s -X main.version=$(BUILD_VERSION) -X main.commit=$(COMMIT_TAG)
 
-.PHONY: test sast test-backend test-frontend install-frontend build build-frontend build-backend
+.PHONY: test sast test-backend test-frontend install-frontend install-backend build build-frontend build-backend
 
 test: sast
-	$(MAKE) test-backend test-frontend
+	$(MAKE) install-backend test-backend install-frontend test-frontend
 
 sast:
 	./scripts/sast.sh
@@ -17,18 +18,22 @@ test-backend:
 	go vet ./...
 	go test -v -race -timeout 5m ./...
 
-test-frontend: install-frontend
-	cd web && npm test
+test-frontend:
+	npm --prefix web test
 
 install-frontend:
-	cd web && npm ci
+	npm --prefix web ci
 
-build: build-frontend
+install-backend:
+	go mod download
+
+build: install-frontend install-backend
+	$(MAKE) build-frontend
 	$(MAKE) build-backend
 
-build-frontend: install-frontend
-	cd web && npm run build
+build-frontend:
+	npm --prefix web run build
 
 build-backend:
-	CGO_ENABLED=0 GOOS=$(TARGETOS) GOARCH=$(TARGETARCH) go build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/callimachus ./cmd/callimachus
-	CGO_ENABLED=0 GOOS=$(TARGETOS) GOARCH=$(TARGETARCH) go build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/callimachus-worker ./cmd/callimachus-worker
+	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/callimachus ./cmd/callimachus
+	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/callimachus-worker ./cmd/callimachus-worker
