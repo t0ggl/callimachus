@@ -7,8 +7,8 @@
     "docker:pinDigests"
   ],
   "dockerfile": {
-    "fileMatch": [
-      "(^|/)Dockerfile(\\.[^/]+)?$"
+    "managerFilePatterns": [
+      "/(^|/)Dockerfile(\\.[^/]+)?$/"
     ]
   },
   "prHourlyLimit": 4,
