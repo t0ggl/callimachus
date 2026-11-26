@@ -126,7 +126,7 @@ it('opens reading order from discovery with series details, covers, formats, and
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 });
 
-it('opens series monitoring from the modal button and closes the modal', async () => {
+it('opens the full series page from the modal button and closes the modal', async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn().mockResolvedValue({
@@ -139,9 +139,10 @@ it('opens series monitoring from the modal button and closes the modal', async (
   const originalUrl = window.location.href;
   render(<SeriesDetailModal title="Earth" onClose={onClose} />);
 
-  const button = await screen.findByRole('button', { name: 'Manage monitoring' });
+  const button = await screen.findByRole('button', { name: 'Series page' });
   expect(button).toHaveAttribute('type', 'button');
-  expect(screen.queryByRole('link', { name: 'Manage monitoring' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('link', { name: 'Series page' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Monitor Series' })).not.toBeInTheDocument();
 
   try {
     await user.click(button);
@@ -150,6 +151,69 @@ it('opens series monitoring from the modal button and closes the modal', async (
   } finally {
     window.history.replaceState(null, '', originalUrl);
   }
+});
+
+it('toggles series monitoring directly from SeriesDetailModal without navigating away', async () => {
+  const user = userEvent.setup({ delay: null });
+  const onClose = vi.fn();
+  const onSeriesUpdated = vi.fn();
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.startsWith('/api/series/books?')) {
+      return Response.json({
+        id: 'ser-hdm',
+        title: 'His Dark Materials',
+        authors: ['Philip Pullman'],
+        monitored: false,
+        total_books: 3,
+        owned_count: 0,
+        complete: true,
+        books: [],
+      });
+    }
+    if (url.startsWith('/api/catalog/entity?') && init?.method === 'PUT') {
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`Unexpected fetch ${url} (${init?.method ?? 'GET'})`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(
+    <SeriesDetailModal
+      title="His Dark Materials"
+      hardcoverID={42}
+      canManage
+      onClose={onClose}
+      onSeriesUpdated={onSeriesUpdated}
+    />
+  );
+
+  const monitorBtn = await screen.findByRole('button', { name: 'Monitor Series' });
+  expect(monitorBtn).toHaveAttribute('aria-pressed', 'false');
+  expect(screen.getByText('Series Unmonitored')).toBeInTheDocument();
+
+  await user.click(monitorBtn);
+
+  await waitFor(() => {
+    expect(screen.getByRole('button', { name: 'Monitoring' })).toHaveAttribute('aria-pressed', 'true');
+  });
+  expect(screen.getByText('Series Monitored')).toBeInTheDocument();
+  expect(onSeriesUpdated).toHaveBeenCalledWith(true);
+  expect(onClose).not.toHaveBeenCalled();
+
+  const putCall = fetchMock.mock.calls.find(([u, init]) => String(u).startsWith('/api/catalog/entity?') && init?.method === 'PUT');
+  expect(putCall).toBeDefined();
+  expect(String(putCall?.[0])).toContain('kind=series');
+  expect(String(putCall?.[0])).toContain('name=His+Dark+Materials');
+  expect(String(putCall?.[0])).toContain('id=ser-hdm');
+  expect(putCall?.[1]?.body).toBe('{"monitored":true}');
+
+  // Toggling off works in place too
+  await user.click(screen.getByRole('button', { name: 'Monitoring' }));
+  await waitFor(() => {
+    expect(screen.getByRole('button', { name: 'Monitor Series' })).toHaveAttribute('aria-pressed', 'false');
+  });
+  expect(screen.getByText('Series Unmonitored')).toBeInTheDocument();
+  expect(onSeriesUpdated).toHaveBeenLastCalledWith(false);
 });
 
 it('handles missing metadata gracefully and supports Escape, backdrop, and footer close', async () => {

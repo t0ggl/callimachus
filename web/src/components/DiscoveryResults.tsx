@@ -1,6 +1,6 @@
 import { EntityLink } from './EntityLink';
 import { useState, useEffect, useRef } from 'react';
-import { Check, Plus, Loader2, BookOpen, AlertCircle, CheckCircle2, Search } from 'lucide-react';
+import { Check, Plus, Loader2, BookOpen, AlertCircle, CheckCircle2, Search, Layers } from 'lucide-react';
 import { RequestMetadata, RequestType, SeriesSelection } from '../types';
 import { SeriesBadge } from './SeriesBadge';
 import { SeriesDetailModal } from './SeriesDetailModal';
@@ -30,8 +30,20 @@ type Match = {
   request_status?: string;
 };
 
+type SeriesMatch = {
+  title: string;
+  authors?: string[];
+  books_count?: number;
+  cover_url?: string;
+  hardcover_series_id?: number;
+  library_series_id?: string;
+  monitored?: boolean;
+  owned_count?: number;
+};
+
 type DiscoverPageResponse = {
   results: Match[];
+  series: SeriesMatch[];
   page: number;
   hasMore: boolean;
   nextPage?: number;
@@ -39,10 +51,16 @@ type DiscoverPageResponse = {
 
 function parseDiscoverResponse(data: unknown, requestedPage: number): DiscoverPageResponse {
   if (Array.isArray(data)) {
-    return { results: data as Match[], page: requestedPage, hasMore: false };
+    return { results: data as Match[], series: [], page: requestedPage, hasMore: false };
   }
   if (data && typeof data === 'object' && Array.isArray((data as { results?: unknown }).results)) {
-    const obj = data as { results: Match[]; page?: number; hasMore?: boolean; nextPage?: number };
+    const obj = data as {
+      results: Match[];
+      series?: SeriesMatch[];
+      page?: number;
+      hasMore?: boolean;
+      nextPage?: number;
+    };
     const hasMore = Boolean(obj.hasMore);
     const page = typeof obj.page === 'number' && obj.page >= 1 ? obj.page : requestedPage;
     const nextPage = hasMore
@@ -50,9 +68,15 @@ function parseDiscoverResponse(data: unknown, requestedPage: number): DiscoverPa
         ? obj.nextPage
         : page + 1
       : undefined;
-    return { results: obj.results, page, hasMore, nextPage };
+    return {
+      results: obj.results,
+      series: Array.isArray(obj.series) ? obj.series : [],
+      page,
+      hasMore,
+      nextPage,
+    };
   }
-  return { results: [], page: requestedPage, hasMore: false };
+  return { results: [], series: [], page: requestedPage, hasMore: false };
 }
 
 function matchIdentityKeys(m: Match): string[] {
@@ -118,13 +142,17 @@ interface Props {
   ) => Promise<void>;
 }
 
-function DiscoveryCover({ coverUrl, title }: { coverUrl?: string; title: string }) {
+function DiscoveryCover({ coverUrl, title, isSeries = false }: { coverUrl?: string; title: string; isSeries?: boolean }) {
   const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
   const broken = Boolean(coverUrl) && brokenUrl === coverUrl;
 
   return (
     <div className="w-12 sm:w-14 shrink-0">
-      <div className="aspect-[2/3] w-full rounded-md overflow-hidden bg-zinc-900 border border-zinc-800 shadow-xs">
+      <div
+        className={`aspect-[2/3] w-full rounded-md overflow-hidden bg-zinc-900 shadow-xs ${
+          isSeries ? 'border border-purple-700/60' : 'border border-zinc-800'
+        }`}
+      >
         {coverUrl && !broken ? (
           <img
             src={coverUrl}
@@ -135,9 +163,15 @@ function DiscoveryCover({ coverUrl, title }: { coverUrl?: string; title: string 
         ) : (
           <div
             aria-label="No cover available"
-            className="w-full h-full flex items-center justify-center text-zinc-500 bg-zinc-950"
+            className={`w-full h-full flex items-center justify-center ${
+              isSeries ? 'text-purple-400 bg-purple-950/30' : 'text-zinc-500 bg-zinc-950'
+            }`}
           >
-            <BookOpen className="w-5 h-5 stroke-1" aria-hidden="true" />
+            {isSeries ? (
+              <Layers className="w-5 h-5 stroke-[1.5]" aria-hidden="true" />
+            ) : (
+              <BookOpen className="w-5 h-5 stroke-1" aria-hidden="true" />
+            )}
           </div>
         )}
       </div>
@@ -151,6 +185,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
   const [selectedFormat, setSelectedFormat] = useState<RequestType>();
   const format = selectedFormat ?? defaultSearchFormat;
   const [matches, setMatches] = useState<Match[]>([]);
+  const [seriesMatches, setSeriesMatches] = useState<SeriesMatch[]>([]);
   const [visibleCount, setVisibleCount] = useState(INITIAL_RESULT_LIMIT);
   const [hasMore, setHasMore] = useState(false);
   const [nextPage, setNextPage] = useState<number | undefined>(undefined);
@@ -173,6 +208,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
     loadMoreControllerRef.current?.abort();
     loadMoreControllerRef.current = null;
     setMatches([]);
+    setSeriesMatches([]);
     setVisibleCount(INITIAL_RESULT_LIMIT);
     setHasMore(false);
     setNextPage(undefined);
@@ -196,6 +232,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
         const parsed = parseDiscoverResponse(data, 1);
         if (current) {
           setMatches(parsed.results);
+          setSeriesMatches(parsed.series);
           setHasMore(parsed.hasMore);
           setNextPage(parsed.nextPage);
           setSearched(true);
@@ -354,6 +391,17 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
           canRequest={allowRequest}
           isAdmin={isAdmin}
           onClose={() => setSelectedSeries(null)}
+          onSeriesUpdated={(monitored) => {
+            setSeriesMatches((prev) =>
+              prev.map((item) => {
+                const sameId =
+                  (selectedSeries.id && item.library_series_id === selectedSeries.id) ||
+                  (selectedSeries.hardcoverID && item.hardcover_series_id === selectedSeries.hardcoverID);
+                const sameTitle = item.title.toLowerCase() === selectedSeries.title.toLowerCase();
+                return sameId || sameTitle ? { ...item, monitored } : item;
+              }),
+            );
+          }}
           onOpenBook={
             onOpenBook
               ? (id) => {
@@ -447,8 +495,110 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
         </div>
       )}
 
+      {seriesMatches.length > 0 && (
+        <section className="space-y-2" aria-label="Series results">
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-purple-300">
+            <Layers className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            <span>Series</span>
+            <span className="font-mono font-normal tabular-nums text-zinc-400">
+              ({seriesMatches.length})
+            </span>
+          </div>
+          <ul className="space-y-2.5" aria-label="Series discovery results">
+            {seriesMatches.map((s, idx) => {
+              const authors = s.authors ?? [];
+              const countLabel =
+                s.owned_count && s.owned_count > 0 && s.books_count && s.books_count > 0
+                  ? `${s.owned_count} / ${s.books_count} in library`
+                  : s.books_count && s.books_count > 0
+                    ? `${s.books_count} ${s.books_count === 1 ? 'book' : 'books'}`
+                    : s.owned_count && s.owned_count > 0
+                      ? `${s.owned_count} in library`
+                      : '';
+              return (
+                <li
+                  key={`${s.hardcover_series_id ?? s.library_series_id ?? s.title}-${idx}`}
+                  className="bg-purple-950/15 border border-purple-800/40 hover:border-purple-700/60 rounded-lg p-3 flex items-center justify-between gap-3 sm:gap-4 transition-colors duration-150"
+                >
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    <DiscoveryCover coverUrl={s.cover_url} title={s.title} isSeries />
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-sm font-semibold text-zinc-100 leading-snug break-words">
+                          {s.title}
+                        </h3>
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm text-[10px] font-semibold uppercase tracking-wide bg-purple-950/80 text-purple-300 border border-purple-800/60 shrink-0">
+                          <Layers className="w-3 h-3" aria-hidden="true" />
+                          Series
+                        </span>
+                        {s.monitored && (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[10px] font-medium bg-blue-950/80 text-blue-300 border border-blue-800/60 shrink-0">
+                            Monitored
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-zinc-400 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                        {authors.length > 0 ? (
+                          <span>
+                            {authors.map((name, aIdx) => (
+                              <span key={name}>
+                                {aIdx > 0 && ', '}
+                                <EntityLink kind="authors" name={name} />
+                              </span>
+                            ))}
+                          </span>
+                        ) : (
+                          <span className="text-zinc-400">Author unknown</span>
+                        )}
+                        {countLabel && (
+                          <>
+                            <span className="text-zinc-600" aria-hidden="true">
+                              ·
+                            </span>
+                            <span className="font-mono text-[11px] text-zinc-300 tabular-nums">
+                              {countLabel}
+                            </span>
+                          </>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSelectedSeries({
+                        title: s.title,
+                        id: s.library_series_id,
+                        author: authors[0],
+                        hardcoverID: s.hardcover_series_id,
+                      })
+                    }
+                    aria-label={`View series ${s.title}`}
+                    className="shrink-0 self-center inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-purple-600/20 hover:bg-purple-600/30 active:bg-purple-600/40 text-purple-200 border border-purple-500/40 transition-colors whitespace-nowrap focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-400"
+                  >
+                    <Layers aria-hidden="true" className="w-3.5 h-3.5 shrink-0" />
+                    <span>View Series</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+
       {matches.length > 0 && (
-        <ul className="space-y-2.5" aria-label="Book discovery results">
+        <div className="space-y-2">
+          {seriesMatches.length > 0 && (
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+              <BookOpen className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>Books</span>
+              <span className="font-mono font-normal tabular-nums text-zinc-400">
+                ({visibleMatches.length}
+                {hasMore ? '+' : visibleMatches.length < matches.length ? ` of ${matches.length}` : ''})
+              </span>
+            </div>
+          )}
+          <ul className="space-y-2.5" aria-label="Book discovery results">
           {visibleMatches.map((m, i) => {
             const authors = m.authors ?? [];
             const itemKey = `${m.title}\0${authors.join(', ')}`;
@@ -576,7 +726,8 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
               </li>
             );
           })}
-        </ul>
+          </ul>
+        </div>
       )}
       {!busy && matches.length > 0 && canViewMore && (
         <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
@@ -596,7 +747,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
         </div>
       )}
 
-      {searched && !matches.length && !busy && !error && (
+      {searched && !matches.length && !seriesMatches.length && !busy && !error && (
         <div className="py-8 px-4 text-center border border-dashed border-zinc-800 rounded-lg bg-zinc-950/40">
           <Search className="w-6 h-6 text-zinc-500 mx-auto mb-2" aria-hidden="true" />
           <p className="text-xs font-medium text-zinc-300">

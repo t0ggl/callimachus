@@ -559,3 +559,124 @@ func TestDiscoverFiltersCollectionsAcrossAllProviders(t *testing.T) {
 		t.Fatalf("discover titles = %v, want %v", titles, want)
 	}
 }
+
+func TestDiscoverSurfacesSeriesAndFiltersSeriesOmnibus(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	for _, query := range []string{
+		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','mock')`,
+		`INSERT INTO authors(id,name,sort_name) VALUES('a-pp','Philip Pullman','Pullman, Philip')`,
+		`INSERT INTO series(id,title,hardcover_id,total_books,monitored) VALUES('s-hdm','His Dark Materials',42,3,1)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b-gc','a-pp','The Golden Compass','s-hdm',1)`,
+		`INSERT INTO book_editions(id,book_id,format) VALUES('e-gc','b-gc','epub')`,
+		`INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES('m-gc','e-gc','gc.epub',1)`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mt := testutil.NewMockTransportForTest(t)
+	mt.RegisterString("/search.json", http.StatusOK, `{"docs":[
+		{"key":"/works/OL-HDM","title":"His Dark Materials","author_name":["Philip Pullman"],"cover_i":99},
+		{"key":"/works/OL-SK","title":"The Subtle Knife","author_name":["Philip Pullman"]}
+	]}`, nil)
+	mt.RegisterHandler("/v1/graphql", func(r *http.Request) (*http.Response, error) {
+		var req struct{ Query string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		var body string
+		switch {
+		case strings.Contains(req.Query, "SearchSeriesDetails"):
+			body = `{"data":{"series":[
+				{"id":42,"name":"His Dark Materials","books_count":3,"author":{"name":"Philip Pullman"},
+				 "book_series":[{"book":{"image":{"url":"https://covers.example/hdm.jpg"}}}]}
+			]}}`
+		case strings.Contains(req.Query, "SearchSeries"):
+			body = `{"data":{"search":{"ids":[42]}}}`
+		case strings.Contains(req.Query, "SearchBooks"):
+			body = `{"data":{"search":{"ids":[101,102]}}}`
+		default:
+			body = `{"data":{"books":[
+				{"id":101,"title":"The Golden Compass","contributions":[{"author":{"name":"Philip Pullman"}}],
+				 "book_series":[{"series_position":1,"series":{"id":42,"name":"His Dark Materials","books_count":3}}]},
+				{"id":102,"title":"The Subtle Knife","contributions":[{"author":{"name":"Philip Pullman"}}],
+				 "book_series":[{"series_position":2,"series":{"id":42,"name":"His Dark Materials","books_count":3}}]}
+			]}}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+
+	s := &Server{db: db, prowlarrHTTPClient: mt.Client()}
+	w := httptest.NewRecorder()
+	s.handleDiscover(w, httptest.NewRequest("GET", "/api/discover?q=His+Dark+Materials&page=1&limit=10", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("discover returned %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Results []discoverTestMatch   `json:"results"`
+		Series  []discoverSeriesMatch `json:"series"`
+		Page    int                   `json:"page"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Series) != 1 {
+		t.Fatalf("expected 1 series match, got %+v", resp.Series)
+	}
+	ser := resp.Series[0]
+	if ser.Title != "His Dark Materials" || ser.HardcoverSeriesID != 42 || ser.BooksCount != 3 ||
+		ser.LibrarySeriesID != "s-hdm" || !ser.Monitored || ser.OwnedCount != 1 || ser.CoverURL != "https://covers.example/hdm.jpg" {
+		t.Fatalf("unexpected series match: %+v", ser)
+	}
+	var bookTitles []string
+	for _, b := range resp.Results {
+		bookTitles = append(bookTitles, b.Title)
+	}
+	wantBooks := []string{"The Golden Compass", "The Subtle Knife"}
+	if !slices.Equal(bookTitles, wantBooks) {
+		t.Fatalf("expected omnibus 'His Dark Materials' to be filtered from book results; got %v, want %v", bookTitles, wantBooks)
+	}
+
+	// Verify real Book 1 sharing the series title (e.g. "Dune" Book 1 in "Dune") is preserved alongside the series.
+	mt2 := testutil.NewMockTransportForTest(t)
+	mt2.RegisterString("/search.json", http.StatusOK, `{"docs":[{"key":"/works/OL-DUNE","title":"Dune","author_name":["Frank Herbert"]}]}`, nil)
+	mt2.RegisterHandler("/v1/graphql", func(r *http.Request) (*http.Response, error) {
+		var req struct{ Query string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		var body string
+		switch {
+		case strings.Contains(req.Query, "SearchSeriesDetails"):
+			body = `{"data":{"series":[{"id":77,"name":"Dune","books_count":6,"author":{"name":"Frank Herbert"}}]}}`
+		case strings.Contains(req.Query, "SearchSeries"):
+			body = `{"data":{"search":{"ids":[77]}}}`
+		case strings.Contains(req.Query, "SearchBooks"):
+			body = `{"data":{"search":{"ids":[201]}}}`
+		default:
+			body = `{"data":{"books":[{"id":201,"title":"Dune","contributions":[{"author":{"name":"Frank Herbert"}}],"book_series":[{"series_position":1,"series":{"id":77,"name":"Dune","books_count":6}}]}]}}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	s2 := &Server{db: db, prowlarrHTTPClient: mt2.Client()}
+	w2 := httptest.NewRecorder()
+	s2.handleDiscover(w2, httptest.NewRequest("GET", "/api/discover?q=Dune&page=1&limit=10", nil))
+	if w2.Code != http.StatusOK {
+		t.Fatalf("dune discover returned %d: %s", w2.Code, w2.Body.String())
+	}
+	var resp2 struct {
+		Results []discoverTestMatch   `json:"results"`
+		Series  []discoverSeriesMatch `json:"series"`
+	}
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp2); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp2.Series) != 1 || resp2.Series[0].Title != "Dune" {
+		t.Fatalf("expected Dune series match, got %+v", resp2.Series)
+	}
+	if len(resp2.Results) != 1 || resp2.Results[0].Title != "Dune" {
+		t.Fatalf("expected Book 1 Dune to remain in book results, got %+v", resp2.Results)
+	}
+}

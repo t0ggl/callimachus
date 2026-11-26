@@ -8,9 +8,10 @@ import {
   Calendar,
   Check,
   Info,
-  SlidersHorizontal,
+  ArrowUpRight,
   Download,
   Bell,
+  Loader2,
 } from 'lucide-react';
 import { EntityLink, entityURL } from './EntityLink';
 import { BookDetailModal, resolveCatalogBook, type ResolveBookInput } from './BookDetailModal';
@@ -51,6 +52,7 @@ interface SeriesDetailModalProps extends SeriesSelection {
   onClose: () => void;
   onOpenBook?: (bookId: string) => void;
   onBookDeleted?: () => void;
+  onSeriesUpdated?: (monitored: boolean) => void;
   canManage?: boolean;
   canRequest?: boolean;
   isAdmin?: boolean;
@@ -91,6 +93,7 @@ export function SeriesDetailModal({
   onClose,
   onOpenBook,
   onBookDeleted,
+  onSeriesUpdated,
   canManage = false,
   canRequest,
   isAdmin,
@@ -101,6 +104,7 @@ export function SeriesDetailModal({
   const [error, setError] = useState('');
   const [actionError, setActionError] = useState('');
   const [busyIndex, setBusyIndex] = useState<number | null>(null);
+  const [seriesMonitorBusy, setSeriesMonitorBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
   const [detailBook, setDetailBook] = useState<Book | null>(null);
@@ -300,6 +304,40 @@ export function SeriesDetailModal({
     }
   };
 
+  const handleToggleSeriesMonitor = async () => {
+    if (!data || seriesMonitorBusy) return;
+    setSeriesMonitorBusy(true);
+    setActionError('');
+    try {
+      const next = !data.monitored;
+      const params = new URLSearchParams({ kind: 'series', name: displayTitle });
+      const resolvedId = data.id ?? id;
+      const resolvedAuthor = author || seriesAuthors[0];
+      const resolvedHardcoverID = hardcoverID ?? books.find((b) => b.hardcover_series_id)?.hardcover_series_id;
+      if (resolvedId) params.set('id', resolvedId);
+      if (resolvedAuthor) params.set('author', resolvedAuthor);
+      if (resolvedHardcoverID) params.set('hardcover_id', String(resolvedHardcoverID));
+      const res = await fetch(`/api/catalog/entity?${params}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ monitored: next }),
+      });
+      if (!res.ok) {
+        throw new Error(
+          res.status === 409
+            ? 'Multiple series share this title. Open the series page to select the right one.'
+            : 'Unable to update series monitoring. Check permissions and retry.'
+        );
+      }
+      setData((prev) => (prev ? { ...prev, monitored: next } : prev));
+      onSeriesUpdated?.(next);
+    } catch (e) {
+      setActionError((e as Error).message);
+    } finally {
+      setSeriesMonitorBusy(false);
+    }
+  };
+
   return (
     <>
     <div
@@ -420,25 +458,53 @@ export function SeriesDetailModal({
                     )}
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      let destination = entityURL('series', displayTitle, data?.id ?? id);
-                      if (!data?.id && !id && (author || hardcoverID)) {
-                        const params = new URLSearchParams();
-                        if (author) params.set('author', author);
-                        if (hardcoverID) params.set('hardcover_id', String(hardcoverID));
-                        destination += `?${params}`;
-                      }
-                      window.location.hash = destination;
-                      onClose();
-                    }}
-                    className="inline-flex items-center gap-2 px-3 py-2 text-xs font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
-                  >
-                    <SlidersHorizontal className="w-4 h-4" aria-hidden="true" />
-                    Manage monitoring
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {canManage && (
+                      <button
+                        type="button"
+                        disabled={seriesMonitorBusy}
+                        aria-pressed={Boolean(data.monitored)}
+                        onClick={() => void handleToggleSeriesMonitor()}
+                        className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md border transition-colors focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:opacity-50 ${
+                          data.monitored
+                            ? 'bg-blue-950/80 hover:bg-blue-900/70 text-blue-200 border-blue-700/80'
+                            : 'bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white border-blue-500/40'
+                        }`}
+                      >
+                        {seriesMonitorBusy ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Bell className="w-3.5 h-3.5" aria-hidden="true" />
+                        )}
+                        {data.monitored ? 'Monitoring' : 'Monitor Series'}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        let destination = entityURL('series', displayTitle, data?.id ?? id);
+                        if (!data?.id && !id && (author || hardcoverID)) {
+                          const params = new URLSearchParams();
+                          if (author) params.set('author', author);
+                          if (hardcoverID) params.set('hardcover_id', String(hardcoverID));
+                          destination += `?${params}`;
+                        }
+                        window.location.hash = destination;
+                        onClose();
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
+                    >
+                      Series page
+                      <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
+                    </button>
+                  </div>
                 </div>
+
+                {actionError && (
+                  <p role="alert" className="rounded-lg border border-red-900/60 bg-red-950/30 px-3.5 py-2 text-xs text-red-200">
+                    {actionError}
+                  </p>
+                )}
 
                 {data.description?.trim() ? (
                   <div className="bg-zinc-950/50 p-3.5 rounded-lg border border-zinc-800/80 text-xs text-zinc-300 leading-relaxed max-w-[75ch]">
@@ -467,12 +533,6 @@ export function SeriesDetailModal({
                     ({books.length})
                   </span>
                 </h3>
-
-                {actionError && (
-                  <p role="alert" className="rounded-lg border border-red-900/60 bg-red-950/30 px-3.5 py-2 text-xs text-red-200">
-                    {actionError}
-                  </p>
-                )}
 
                 {books.length === 0 ? (
                   <div className="py-10 text-center border border-dashed border-zinc-800 rounded-lg">

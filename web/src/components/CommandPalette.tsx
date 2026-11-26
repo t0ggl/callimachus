@@ -408,7 +408,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
                       <div className="flex items-center gap-2 shrink-0 ml-3">
                         {item.badge && (
-                          <span className="text-[11px] font-mono px-2 py-0.5 rounded-sm bg-zinc-800 border border-zinc-700/80 text-zinc-300">
+                          <span
+                            className={`text-[11px] font-mono px-2 py-0.5 rounded-sm border ${
+                              item.type === 'series'
+                                ? 'bg-purple-950/80 border-purple-800/60 text-purple-300'
+                                : 'bg-zinc-800 border-zinc-700/80 text-zinc-300'
+                            }`}
+                          >
                             {item.badge}
                           </span>
                         )}

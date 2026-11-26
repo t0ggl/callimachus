@@ -448,4 +448,79 @@ describe('book discovery', () => {
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
   });
+
+  it('differentiates series from books in discovery results and opens SeriesDetailModal to monitor directly', async () => {
+    const user = userEvent.setup({ delay: null });
+    const add = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (String(url).startsWith('/api/discover?')) {
+          return Response.json({
+            series: [
+              {
+                title: 'His Dark Materials',
+                authors: ['Philip Pullman'],
+                books_count: 3,
+                hardcover_series_id: 42,
+              },
+            ],
+            results: [
+              {
+                title: 'The Golden Compass',
+                authors: ['Philip Pullman'],
+                year: 1995,
+                series: 'His Dark Materials',
+                series_index: 1,
+                series_total: 3,
+                hardcover_series_id: 42,
+              },
+            ],
+            page: 1,
+            hasMore: false,
+          });
+        }
+        if (String(url).startsWith('/api/series/books?')) {
+          return Response.json({
+            title: 'His Dark Materials',
+            authors: ['Philip Pullman'],
+            monitored: false,
+            total_books: 3,
+            owned_count: 0,
+            complete: true,
+            books: [
+              { title: 'The Golden Compass', authors: ['Philip Pullman'], series_index: 1, state: 'Not in library', formats: [] },
+            ],
+          });
+        }
+        if (String(url).startsWith('/api/catalog/entity?') && init?.method === 'PUT') {
+          return new Response(null, { status: 204 });
+        }
+        throw new Error(`Unexpected fetch ${url}`);
+      }),
+    );
+
+    render(<DiscoveryResults query="His Dark Materials" canManage canRequest onSubmitRequest={add} />);
+
+    const seriesList = await screen.findByRole('list', { name: 'Series discovery results' });
+    const bookList = screen.getByRole('list', { name: 'Book discovery results' });
+
+    expect(within(seriesList).getByRole('heading', { name: 'His Dark Materials' })).toBeInTheDocument();
+    expect(within(seriesList).getByText('Series')).toBeInTheDocument();
+    expect(within(seriesList).getByText('3 books')).toBeInTheDocument();
+    expect(within(seriesList).queryByRole('button', { name: /Add His Dark Materials/i })).not.toBeInTheDocument();
+
+    expect(within(bookList).getByRole('heading', { name: 'The Golden Compass' })).toBeInTheDocument();
+    expect(within(bookList).getByRole('button', { name: 'Add The Golden Compass' })).toBeInTheDocument();
+
+    await user.click(within(seriesList).getByRole('button', { name: 'View series His Dark Materials' }));
+    const dialog = await screen.findByRole('dialog');
+    const monitorBtn = await within(dialog).findByRole('button', { name: 'Monitor Series' });
+    await user.click(monitorBtn);
+    expect(await within(dialog).findByRole('button', { name: 'Monitoring' })).toBeInTheDocument();
+
+    await user.click(within(dialog).getByTestId('close-series-detail'));
+    expect(within(seriesList).getByText('Monitored')).toBeInTheDocument();
+    expect(add).not.toHaveBeenCalled();
+  });
 });
