@@ -125,13 +125,65 @@ var unsafeFormats = map[string]bool{
 	"apk": true, "jar": true, "bin": true, "txt": true,
 }
 
-// EvaluateRelease evaluates a candidate release against the quality profile.
-// It returns (accepted bool, reason string).
-func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string) {
+// EvaluationIssue describes a single quality profile criterion that rejected a release.
+type EvaluationIssue struct {
+	Criterion string
+	Reason    string
+}
+
+// DetectReleaseFormat returns the normalized, lowercased format for a release
+// from its explicit Format field, parsed release metadata, or filename extension.
+func DetectReleaseFormat(release ReleaseCandidate) string {
+	format := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(release.Format), "."))
+	if format == "" && release.Title != "" {
+		parsed := metadata.ParseRelease(release.Title)
+		if parsed.Format != "" {
+			format = strings.ToLower(parsed.Format)
+		} else if mExt := reFileExtension.FindStringSubmatch(release.Title); len(mExt) > 1 {
+			format = strings.ToLower(mExt[1])
+		}
+	}
+	return format
+}
+
+// AllowedEbookPreferences returns the user's preferred ebook formats in priority order,
+// filtered to formats allowed by the profile.
+func (p QualityProfile) AllowedEbookPreferences() []string {
+	allowedSet := make(map[string]bool, len(p.AllowedFormats))
+	for _, af := range p.AllowedFormats {
+		if norm := NormalizeFormat(af); norm != "" {
+			allowedSet[norm] = true
+		}
+	}
+	seen := make(map[string]bool, len(p.EbookFormatPreferences))
+	out := make([]string, 0, len(p.EbookFormatPreferences))
+	for _, pref := range p.EbookFormatPreferences {
+		norm := NormalizeFormat(pref)
+		if norm == "" || seen[norm] {
+			continue
+		}
+		if len(allowedSet) > 0 && !allowedSet[norm] {
+			continue
+		}
+		seen[norm] = true
+		out = append(out, norm)
+	}
+	return out
+}
+
+// EvaluateReleaseIssues evaluates a candidate release against all quality profile
+// criteria and returns every criterion that caused a rejection.
+func (p QualityProfile) EvaluateReleaseIssues(release ReleaseCandidate) []EvaluationIssue {
+	var issues []EvaluationIssue
+
 	// 1. Check RejectPatterns
 	for _, pattern := range p.RejectPatterns {
 		if pattern != nil && (pattern.MatchString(release.Title) || pattern.MatchString(release.Format)) {
-			return false, fmt.Sprintf("title matches reject pattern %q", pattern.String())
+			issues = append(issues, EvaluationIssue{
+				Criterion: "pattern",
+				Reason:    fmt.Sprintf("title matches reject pattern %q", pattern.String()),
+			})
+			break
 		}
 	}
 
@@ -154,57 +206,54 @@ func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string)
 		}
 	}
 
-	detectedLang := ""
+	langReason := ""
 	if release.Language != "" {
 		clean := strings.ToLower(strings.TrimSpace(release.Language))
+		detectedLang := clean
 		if code := metadata.NormalizeLanguage(clean); code != "" {
 			detectedLang = code
 		} else if code, ok := languageCodeMap[clean]; ok {
 			detectedLang = code
-		} else {
-			detectedLang = clean
 		}
 		if !allowedLangSet[detectedLang] && !allowedLangSet[clean] {
-			return false, fmt.Sprintf("language %q not allowed by quality profile", release.Language)
+			langReason = fmt.Sprintf("language %q not allowed by quality profile", release.Language)
 		}
 	}
 
 	// Check language parsed or tagged in title
-	if release.Title != "" {
+	if langReason == "" && release.Title != "" {
 		parsed := metadata.ParseRelease(release.Title)
 		if parsed.Language != "" && parsed.Language != "en" {
 			pCode := parsed.Language
 			if !allowedLangSet[pCode] {
-				return false, fmt.Sprintf("language %q not allowed by quality profile", pCode)
+				langReason = fmt.Sprintf("language %q not allowed by quality profile", pCode)
 			}
 		}
 
-		// Also check all explicit language tags in title
-		matches := reTitleLanguageTags.FindAllStringSubmatch(release.Title, -1)
-		for _, m := range matches {
-			if len(m) > 1 {
-				tag := strings.ToLower(m[1])
-				code, ok := languageCodeMap[tag]
-				if !ok {
-					code = tag
-				}
-				if !allowedLangSet[code] && !allowedLangSet[tag] {
-					return false, fmt.Sprintf("language %q detected in title not allowed by quality profile", tag)
+		if langReason == "" {
+			matches := reTitleLanguageTags.FindAllStringSubmatch(release.Title, -1)
+			for _, m := range matches {
+				if len(m) > 1 {
+					tag := strings.ToLower(m[1])
+					code, ok := languageCodeMap[tag]
+					if !ok {
+						code = tag
+					}
+					if !allowedLangSet[code] && !allowedLangSet[tag] {
+						langReason = fmt.Sprintf("language %q detected in title not allowed by quality profile", tag)
+						break
+					}
 				}
 			}
 		}
+	}
+	if langReason != "" {
+		issues = append(issues, EvaluationIssue{Criterion: "language", Reason: langReason})
 	}
 
 	// 3. Evaluate Format
-	format := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(release.Format), "."))
-	if format == "" && release.Title != "" {
-		parsed := metadata.ParseRelease(release.Title)
-		if parsed.Format != "" {
-			format = strings.ToLower(parsed.Format)
-		} else if mExt := reFileExtension.FindStringSubmatch(release.Title); len(mExt) > 1 {
-			format = strings.ToLower(mExt[1])
-		}
-	}
+	format := DetectReleaseFormat(release)
+	formatReason := ""
 
 	// Reject known unsafe / non-book formats by default
 	if unsafeFormats[format] {
@@ -216,24 +265,28 @@ func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string)
 			}
 		}
 		if !allowed {
-			return false, fmt.Sprintf("format %q not allowed by quality profile", format)
+			formatReason = fmt.Sprintf("format %q not allowed by quality profile", format)
 		}
 	}
 
-	if len(p.AllowedFormats) > 0 && format != "m4b" && format != "mp3" {
+	if formatReason == "" && len(p.AllowedFormats) > 0 && format != "m4b" && format != "mp3" {
 		if format == "" {
-			return false, "release format could not be determined"
-		}
-		allowed := false
-		for _, af := range p.AllowedFormats {
-			if strings.EqualFold(strings.TrimPrefix(af, "."), format) {
-				allowed = true
-				break
+			formatReason = "release format could not be determined"
+		} else {
+			allowed := false
+			for _, af := range p.AllowedFormats {
+				if strings.EqualFold(strings.TrimPrefix(af, "."), format) {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				formatReason = fmt.Sprintf("format %q not allowed by quality profile", format)
 			}
 		}
-		if !allowed {
-			return false, fmt.Sprintf("format %q not allowed by quality profile", format)
-		}
+	}
+	if formatReason != "" {
+		issues = append(issues, EvaluationIssue{Criterion: "format", Reason: formatReason})
 	}
 
 	// Audio can be identified by format, an explicit flag, or a Torznab audio category.
@@ -244,17 +297,40 @@ func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string)
 		}
 	}
 	if !isAudio && p.MaxEbookSizeBytes > 0 && release.Size > p.MaxEbookSizeBytes {
-		return false, fmt.Sprintf("eBook release size %d bytes exceeds maximum %d bytes", release.Size, p.MaxEbookSizeBytes)
+		issues = append(issues, EvaluationIssue{
+			Criterion: "size",
+			Reason:    fmt.Sprintf("eBook release size %d bytes exceeds maximum %d bytes", release.Size, p.MaxEbookSizeBytes),
+		})
 	}
 
 	// 4. Evaluate audiobook size independently of the ebook limit
 	if isAudio && p.MaxAudiobookSizeMB > 0 && release.Size > 0 {
 		maxBytes := int64(p.MaxAudiobookSizeMB) * 1024 * 1024
 		if release.Size > maxBytes {
-			return false, fmt.Sprintf("audiobook release size %d bytes exceeds maximum %d MB", release.Size, p.MaxAudiobookSizeMB)
+			issues = append(issues, EvaluationIssue{
+				Criterion: "size",
+				Reason:    fmt.Sprintf("audiobook release size %d bytes exceeds maximum %d MB", release.Size, p.MaxAudiobookSizeMB),
+			})
 		}
 	}
 
+	// 5. Reject multi-book collections, box sets, omnibuses, and series ranges
+	if release.Title != "" && metadata.IsMultiBookRelease(release.Title) {
+		issues = append(issues, EvaluationIssue{
+			Criterion: "multi-book",
+			Reason:    "release appears to contain multiple books",
+		})
+	}
+
+	return issues
+}
+
+// EvaluateRelease evaluates a candidate release against the quality profile.
+// It returns (accepted bool, reason string).
+func (p QualityProfile) EvaluateRelease(release ReleaseCandidate) (bool, string) {
+	if issues := p.EvaluateReleaseIssues(release); len(issues) > 0 {
+		return false, issues[0].Reason
+	}
 	return true, ""
 }
 
