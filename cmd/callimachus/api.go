@@ -42,6 +42,16 @@ type APIBookEdition struct {
 	Assets    []APIMediaAsset `json:"assets"`
 }
 
+// bookSeriesMembershipsSQL uses the outer book alias b. Keep the primary first.
+const bookSeriesMembershipsSQL = `CAST((SELECT json_group_array(json_object(
+	'seriesId', id, 'title', title, 'index', series_index, 'indexDisplay', series_index_display,
+	'isPrimary', json(CASE is_primary WHEN 1 THEN 'true' ELSE 'false' END)
+)) FROM (
+	SELECT s.id, s.title, bs.series_index, bs.series_index_display, bs.is_primary
+	FROM book_series bs JOIN series s ON s.id = bs.series_id
+	WHERE bs.book_id = b.id ORDER BY bs.is_primary DESC, s.title COLLATE NOCASE, s.id
+)) AS BLOB)`
+
 type APIBook struct {
 	Monitored          bool             `json:"monitored"`
 	AudiobookMonitored bool             `json:"audiobookMonitored"`
@@ -55,6 +65,7 @@ type APIBook struct {
 	SeriesID           string           `json:"seriesId,omitempty"`
 	SeriesTitle        string           `json:"seriesTitle,omitempty"`
 	SeriesIndex        *float64         `json:"seriesIndex,omitempty"`
+	SeriesMemberships  json.RawMessage  `json:"seriesMemberships"`
 	SeriesIndexDisplay string           `json:"seriesIndexDisplay,omitempty"`
 	ReleaseDate        string           `json:"releaseDate,omitempty"`
 	Synopsis           string           `json:"synopsis,omitempty"`
@@ -245,6 +256,7 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/books/{id}/metadata-diff", adminOnly(http.HandlerFunc(s.handleBookMetadata)))
 	mux.Handle("GET /api/books/{id}/metadata-candidates", adminOnly(http.HandlerFunc(s.handleMetadataCandidates)))
 	mux.Handle("POST /api/books/{id}/fix-metadata", adminOnly(http.HandlerFunc(s.handleFixMetadata)))
+	mux.Handle("PUT /api/books/{id}/additional-series", adminOnly(http.HandlerFunc(s.handleAdditionalSeries)))
 	mux.Handle("DELETE /api/books/{id}", adminOnly(http.HandlerFunc(s.handleDeleteBook)))
 	mux.Handle("GET /api/settings", adminOnly(http.HandlerFunc(s.handleGetSettings)))
 	mux.Handle("PUT /api/settings", adminOnly(http.HandlerFunc(s.handleUpdateSettings)))
@@ -308,7 +320,7 @@ var errBookAssetsQuery = fmt.Errorf("book assets query failed")
 func (s *Server) queryBooks(ctx context.Context, r *http.Request, id string) ([]APIBook, error) {
 	query := `
 		SELECT b.id, b.title, COALESCE(b.subtitle, ''), b.author_id, COALESCE(a.name, ''),
-		       COALESCE(b.series_id, ''), COALESCE(s.title, ''), b.series_index,
+		       COALESCE(b.series_id, ''), COALESCE(s.title, ''), b.series_index, COALESCE(b.series_index_display, ''), ` + bookSeriesMembershipsSQL + `,
 		       COALESCE(b.release_date, ''),
 		       COALESCE(b.synopsis, ''), b.ebook_monitored, COALESCE(b.audiobook_monitored, b.ebook_monitored), ` + bookAvailabilitySQL + `
 		FROM books b
@@ -334,7 +346,7 @@ func (s *Server) queryBooks(ctx context.Context, r *http.Request, id string) ([]
 		var seriesIdx sql.NullFloat64
 		if err := rows.Scan(
 			&b.ID, &b.Title, &b.Subtitle, &b.AuthorID, &b.AuthorName,
-			&b.SeriesID, &b.SeriesTitle, &seriesIdx,
+			&b.SeriesID, &b.SeriesTitle, &seriesIdx, &b.SeriesIndexDisplay, &b.SeriesMemberships,
 			&b.ReleaseDate, &b.Synopsis, &b.Monitored, &b.AudiobookMonitored, &b.State,
 		); err != nil {
 			slog.Error("scan book failed")
@@ -347,7 +359,7 @@ func (s *Server) queryBooks(ctx context.Context, r *http.Request, id string) ([]
 			val := seriesIdx.Float64
 			b.SeriesIndex = &val
 		}
-		b.SeriesIndexDisplay = catalog.SeriesIndexLabel(b.SeriesIndex)
+		b.SeriesIndexDisplay = cmp.Or(b.SeriesIndexDisplay, catalog.SeriesIndexLabel(b.SeriesIndex))
 		b.ReleaseDate = cmp.Or(metadata.NormalizeReleaseDate(b.ReleaseDate, 0), b.ReleaseDate)
 		b.State = bookAvailability(b.State, b.ReleaseDate, 0, today)
 		b.Formats = make([]string, 0)
@@ -361,6 +373,13 @@ func (s *Server) queryBooks(ctx context.Context, r *http.Request, id string) ([]
 
 	for i := range books {
 		bookMap[books[i].ID] = &books[i]
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
 	}
 
 	// Query editions if books exist

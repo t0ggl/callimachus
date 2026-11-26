@@ -85,7 +85,7 @@ func (m *Monitor) SetMonitoring(ctx context.Context, kind, id string, ebook, aud
 				continue
 			}
 			_, err = tx.ExecContext(ctx, `UPDATE books SET `+format.column+`=1, availability_checked_at=NULL, updated_at=CURRENT_TIMESTAMP
-				WHERE series_id=? AND `+format.column+` IS NOT 1 AND NOT EXISTS (
+				WHERE id IN (SELECT book_id FROM book_series WHERE series_id=?) AND `+format.column+` IS NOT 1 AND NOT EXISTS (
 					SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id
 					WHERE e.book_id=books.id AND (e.format IN ('m4b','mp3'))=?
 				)`, id, format.audio)
@@ -269,11 +269,18 @@ func (m *Monitor) persist(ctx context.Context, kind, id, name string, ebook, aud
 		if err != nil {
 			return err
 		}
-		book := &database.Book{AuthorID: author.ID, Title: b.Title, SeriesIndex: b.SeriesIndex, Synopsis: &b.Description, Monitored: ebook, AudiobookMonitored: audiobook, MonitorEitherFormat: kind == "authors" && ebook}
-		if kind == "series" {
+		primary := metadata.SeriesMembership{Title: b.Series, Index: b.SeriesIndex, HardcoverID: b.HardcoverSeriesID}
+		if b.ContextualSeries {
+			primary = metadata.SeriesMembership{}
+			if b.PrimarySeries != nil {
+				primary = *b.PrimarySeries
+			}
+		}
+		book := &database.Book{AuthorID: author.ID, Title: b.Title, SeriesIndex: primary.Index, Synopsis: &b.Description, Monitored: ebook, AudiobookMonitored: audiobook, MonitorEitherFormat: kind == "authors" && ebook}
+		if kind == "series" && !b.ContextualSeries {
 			book.SeriesID = &id
 		} else {
-			series, err := c.GetOrCreateSeries(ctx, b.Series, author.ID, b.HardcoverSeriesID)
+			series, err := c.GetOrCreateSeries(ctx, primary.Title, author.ID, primary.HardcoverID)
 			if err != nil {
 				return err
 			}
@@ -288,11 +295,23 @@ func (m *Monitor) persist(ctx context.Context, kind, id, name string, ebook, aud
 		if err != nil {
 			return err
 		}
-		idealSeries := b.Series
-		if kind == "series" {
-			idealSeries = name
+		if book.SeriesID != nil {
+			if err := c.SaveObservedSeries(ctx, saved.ID, *book.SeriesID, primary.Index); err != nil {
+				return err
+			}
 		}
-		if err = c.SaveIdealMetadata(ctx, saved.ID, b.Title, idealSeries, b.SeriesIndex, IdealSourceMatch); err != nil {
+		if kind == "series" {
+			if err := c.SaveObservedSeries(ctx, saved.ID, id, b.SeriesIndex); err != nil {
+				return err
+			}
+		}
+		if err = c.SaveSeriesMemberships(ctx, saved.ID, author.ID, b.SeriesMemberships, IdealSourceMatch); err != nil {
+			return err
+		}
+		if saved.SeriesID == nil || book.SeriesID == nil || *saved.SeriesID != *book.SeriesID {
+			primary.Title, primary.Index = "", nil
+		}
+		if err = c.SaveIdealMetadata(ctx, saved.ID, b.Title, primary.Title, primary.Index, IdealSourceMatch); err != nil {
 			return err
 		}
 		// Announcement dates can move. Preserve monitoring while updating a known date without dropping precision for the same period.
@@ -323,7 +342,11 @@ func (m *Monitor) checkBooks(ctx context.Context, now time.Time, column, id stri
 		AND NOT EXISTS(SELECT 1 FROM hidden_library_review review WHERE review.book_id=b.id AND review.kept=0)`
 	var args []any
 	if column != "" {
-		query += " AND b." + column + "=?"
+		if column == "series_id" {
+			query += " AND b.id IN (SELECT book_id FROM book_series WHERE series_id=?)"
+		} else {
+			query += " AND b.author_id=?"
+		}
 		args = append(args, id)
 	}
 	if !force {

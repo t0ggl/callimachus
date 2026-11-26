@@ -43,7 +43,6 @@ type refreshBookRecord struct {
 	subtitle    string
 	authorID    string
 	authorName  string
-	seriesID    string
 	seriesTitle string
 	seriesIndex *float64
 	releaseDate string
@@ -105,14 +104,14 @@ func (s *Server) loadRefreshBookRecord(ctx context.Context, bookID string) (*ref
 	var seriesIdx sql.NullFloat64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT b.id, b.title, COALESCE(b.subtitle, ''), b.author_id, COALESCE(a.name, ''),
-		       COALESCE(b.series_id, ''), COALESCE(s.title, ''), b.series_index,
+		       COALESCE(s.title, ''), b.series_index,
 		       COALESCE(b.release_date, ''), COALESCE(b.synopsis, ''), COALESCE(b.genres, '[]')
 		FROM books b
 		LEFT JOIN authors a ON a.id = b.author_id
 		LEFT JOIN series s ON s.id = b.series_id
 		WHERE b.id = ?`, bookID).Scan(
 		&rec.id, &rec.title, &rec.subtitle, &rec.authorID, &rec.authorName,
-		&rec.seriesID, &rec.seriesTitle, &seriesIdx,
+		&rec.seriesTitle, &seriesIdx,
 		&rec.releaseDate, &rec.synopsis, &rec.genres,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -410,16 +409,24 @@ func (s *Server) refreshBookMetadataByID(ctx context.Context, bookID string) err
 		nextReleaseDate = cmp.Or(metadata.MergeReleaseDate(rec.releaseDate, candDate), rec.releaseDate)
 	}
 
+	// Fetch the current primary inside the write transaction. A curator can
+	// move the book while the provider request above is in flight.
 	var seriesID *string
-	if rec.seriesID != "" {
-		sid := rec.seriesID
-		seriesID = &sid
+	var nextSeriesTitle string
+	var nextSeriesIndex *float64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT b.series_id, COALESCE(s.title, ''), b.series_index, b.author_id
+		FROM books b LEFT JOIN series s ON s.id = b.series_id WHERE b.id = ?`, bookID).
+		Scan(&seriesID, &nextSeriesTitle, &nextSeriesIndex, &rec.authorID); err != nil {
+		return fmt.Errorf("load current series: %w", err)
 	}
-	nextSeriesTitle := rec.seriesTitle
-	nextSeriesIndex := rec.seriesIndex
 
 	candSeries := metadata.SanitizeTitle(matched.Series)
-	if seriesID == nil && candSeries != "" {
+	locked, err := catalog.CanonicalSeriesLocked(ctx, tx, bookID)
+	if err != nil {
+		return err
+	}
+	if !locked && seriesID == nil && candSeries != "" {
 		resolvedSeries, sErr := catalog.ResolveSeries(ctx, tx, candSeries, rec.authorID, matched.HardcoverSeriesID)
 		if sErr != nil {
 			return fmt.Errorf("resolve refreshed series: %w", sErr)
@@ -430,7 +437,7 @@ func (s *Server) refreshBookMetadataByID(ctx context.Context, bookID string) err
 			nextSeriesTitle = resolvedSeries.Title
 		}
 	}
-	if nextSeriesIndex == nil && matched.SeriesIndex != nil &&
+	if seriesID != nil && nextSeriesIndex == nil && matched.SeriesIndex != nil &&
 		(nextSeriesTitle == "" || candSeries == "" || strings.EqualFold(nextSeriesTitle, candSeries)) {
 		idx := *matched.SeriesIndex
 		nextSeriesIndex = &idx
@@ -512,8 +519,19 @@ func (s *Server) refreshBookMetadataByID(ctx context.Context, bookID string) err
 	}
 
 	idealTitle := cmp.Or(strings.TrimSpace(matched.Title), rec.title)
-	idealSeries := cmp.Or(candSeries, nextSeriesTitle)
-	idealIndex := cmp.Or(matched.SeriesIndex, nextSeriesIndex)
+	matched.AddSeriesMembership(metadata.SeriesMembership{Title: matched.Series, Index: matched.SeriesIndex, HardcoverID: matched.HardcoverSeriesID})
+	if err := catalog.SaveSeriesMemberships(ctx, tx, bookID, rec.authorID, matched.SeriesMemberships, catalog.IdealSourceMatch); err != nil {
+		return err
+	}
+	idealSeries, idealIndex := nextSeriesTitle, nextSeriesIndex
+	if len(matched.SeriesMemberships) <= 1 && (!locked || nextSeriesTitle != "") {
+		idealSeries = cmp.Or(candSeries, nextSeriesTitle)
+		if strings.EqualFold(idealSeries, nextSeriesTitle) {
+			idealIndex = cmp.Or(matched.SeriesIndex, nextSeriesIndex)
+		} else {
+			idealIndex = matched.SeriesIndex
+		}
+	}
 	if err := catalog.SaveIdealMetadataExec(ctx, tx, bookID, idealTitle, idealSeries, idealIndex, catalog.IdealSourceMatch); err != nil {
 		return fmt.Errorf("save refreshed ideal metadata: %w", err)
 	}
@@ -587,10 +605,22 @@ func (s *Server) enrichStagedBookDetails(ctx context.Context, details catalog.Bo
 			details.Year = y
 		}
 	}
-	if strings.TrimSpace(details.Series) == "" && strings.TrimSpace(matched.Series) != "" {
+	matched.AddSeriesMembership(metadata.SeriesMembership{Title: matched.Series, Index: matched.SeriesIndex, HardcoverID: matched.HardcoverSeriesID})
+	details.SeriesMemberships = matched.SeriesMemberships
+	locked := false
+	if details.BookID != "" {
+		locked, err = catalog.CanonicalSeriesLocked(enrichCtx, s.db, details.BookID)
+		if err != nil {
+			return details
+		}
+	}
+	if !locked && strings.TrimSpace(details.Series) == "" && strings.TrimSpace(matched.Series) != "" {
 		details.Series = metadata.SanitizeTitle(matched.Series)
 	}
-	if details.SeriesIndex == nil && matched.SeriesIndex != nil &&
+	if details.Series != "" && strings.EqualFold(details.Series, matched.Series) {
+		details.HardcoverSeriesID = matched.HardcoverSeriesID
+	}
+	if details.Series != "" && details.SeriesIndex == nil && matched.SeriesIndex != nil &&
 		(details.Series == "" || matched.Series == "" || strings.EqualFold(details.Series, matched.Series)) {
 		idx := *matched.SeriesIndex
 		details.SeriesIndex = &idx

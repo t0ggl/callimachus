@@ -1,7 +1,7 @@
 import { EntityLink } from './EntityLink';
 import { useState, useEffect, useRef } from 'react';
 import { Check, Plus, Loader2, BookOpen, AlertCircle, CheckCircle2, Search, Layers } from 'lucide-react';
-import { RequestMetadata, RequestType, SeriesSelection } from '../types';
+import { ProviderSeriesMembership, RequestMetadata, RequestType, SeriesSelection } from '../types';
 import { SeriesBadge } from './SeriesBadge';
 import { SeriesDetailModal } from './SeriesDetailModal';
 
@@ -21,6 +21,7 @@ type Match = {
   isbn13?: string;
   hardcover_series_id?: number;
   series_index?: number;
+  series_memberships?: ProviderSeriesMembership[];
   series_total?: number;
   title: string;
   authors?: string[];
@@ -366,6 +367,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
         series: m.series,
         hardcover_series_id: m.hardcover_series_id,
         series_index: m.series_index,
+        series_memberships: m.series_memberships,
         synopsis: m.description,
       });
       setAddedFormats((prev) => {
@@ -537,7 +539,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-zinc-400 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                    <p className="text-xs text-zinc-400 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                         {authors.length > 0 ? (
                           <span>
                             {authors.map((name, aIdx) => (
@@ -630,6 +632,11 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
                       total={m.series_total}
                       onSelect={setSelectedSeries}
                     />
+                    {m.series_memberships?.filter((membership) => membership.title !== m.series).map((membership) => (
+                      <SeriesBadge key={membership.hardcover_id ?? membership.title} title={membership.title}
+                        author={m.authors?.[0]} hardcoverID={membership.hardcover_id}
+                        index={membership.index} onSelect={setSelectedSeries} />
+                    ))}
                     <p className="text-xs text-zinc-400 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                       {authors.length > 0 ? (
                         <span>

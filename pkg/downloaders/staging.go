@@ -565,7 +565,7 @@ func (sm *StagingMonitor) resolveBookDetails(ctx context.Context, item database.
 			foundInDB = true
 			if hasIdeal && strings.TrimSpace(idealTitle) != "" {
 				details.Title = strings.TrimSpace(idealTitle)
-				if s := strings.TrimSpace(idealSeries); s != "" {
+				if s := strings.TrimSpace(idealSeries); s != "" && (details.Series == "" || strings.EqualFold(s, details.Series)) {
 					if !strings.EqualFold(s, details.Series) {
 						details.SeriesIndex = nil
 					}

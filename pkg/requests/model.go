@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/t0ggl/callimachus/pkg/metadata"
 )
 
 // Request status constants
@@ -56,7 +58,8 @@ type CreateRequestInput struct {
 	Format      string   `json:"format"`
 	UserRole    string   `json:"user_role,omitempty"`
 
-	HardcoverSeriesID int `json:"hardcover_series_id"`
+	HardcoverSeriesID int                         `json:"hardcover_series_id"`
+	SeriesMemberships []metadata.SeriesMembership `json:"series_memberships,omitempty"`
 }
 
 // RequestFilter defines search, filtering, and pagination parameters.

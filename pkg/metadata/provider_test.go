@@ -578,6 +578,10 @@ func TestHardcoverWitnessPrimaryMembership(t *testing.T) {
 			if err != nil || book.HardcoverSeriesID != tc.wantID {
 				t.Fatalf("book = %+v, err = %v", book, err)
 			}
+			if len(book.SeriesMemberships) < 2 {
+				t.Fatalf("expected all individual memberships: %+v", book.SeriesMemberships)
+			}
+
 			if tc.wantID != 0 && (book.Series != "The Tales of Witness" || book.SeriesIndex == nil || *book.SeriesIndex != 1 || book.SeriesTotal != 3) {
 				t.Fatalf("unexpected primary membership: %+v", book)
 			}

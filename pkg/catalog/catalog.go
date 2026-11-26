@@ -251,7 +251,17 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 	existing, err := c.GetBookByAuthorAndTitle(ctx, book.AuthorID, cleanTitle)
 	if err == nil {
 		// Backfill missing or strictly more precise metadata without overwriting existing fields or monitoring state.
-		if backfillBookFields(existing, book) {
+		incoming := *book
+		if existing.SeriesID == nil && book.SeriesID != nil {
+			locked, err := CanonicalSeriesLocked(ctx, c.db, existing.ID)
+			if err != nil {
+				return nil, err
+			}
+			if locked {
+				incoming.SeriesID, incoming.SeriesIndex, incoming.SeriesIndexDisplay = nil, nil, nil
+			}
+		}
+		if backfillBookFields(existing, &incoming) {
 			if err := c.UpsertBook(ctx, existing); err != nil {
 				return nil, err
 			}
@@ -560,9 +570,27 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 	}
 	book.Subtitle = strings.TrimSpace(book.Subtitle)
 	book.Description = metadata.CleanDescription(book.Description)
+	// Later editions use the same canonical series as files already in the library.
 	// Capture previous inventory before publishing the replacement.
 	var previous []database.MediaAsset
 	if book.BookID != "" {
+		locked, err := CanonicalSeriesLocked(ctx, c.db, book.BookID)
+		if err != nil {
+			return nil, err
+		}
+		if locked {
+			var canonicalSeries string
+			var canonicalIndex *float64
+			if err := c.db.QueryRowContext(ctx, `SELECT COALESCE(s.title, ''), b.series_index
+				FROM books b LEFT JOIN series s ON s.id = b.series_id WHERE b.id = ?`, book.BookID).
+				Scan(&canonicalSeries, &canonicalIndex); err != nil {
+				return nil, err
+			}
+			if !strings.EqualFold(book.Series, canonicalSeries) {
+				book.HardcoverSeriesID = 0
+			}
+			book.Series, book.SeriesIndex = canonicalSeries, canonicalIndex
+		}
 		editions, err := c.GetEditionsByBookID(ctx, book.BookID)
 		if err != nil {
 			return nil, err
@@ -596,7 +624,7 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 	// 2. Series (if present)
 	var series *database.Series
 	if book.Series != "" {
-		s, err := c.GetOrCreateSeries(ctx, book.Series, author.ID, 0)
+		s, err := c.GetOrCreateSeries(ctx, book.Series, author.ID, book.HardcoverSeriesID)
 		if err != nil {
 			return nil, fmt.Errorf("persist series: %w", err)
 		}
@@ -656,6 +684,9 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 		if err != nil {
 			return nil, fmt.Errorf("persist book: %w", err)
 		}
+	}
+	if err := c.SaveSeriesMemberships(ctx, dbBook.ID, dbBook.AuthorID, book.SeriesMemberships, IdealSourceImport); err != nil {
+		return nil, err
 	}
 	if err := c.SaveIdealMetadata(ctx, dbBook.ID, book.Title, book.Series, book.SeriesIndex, IdealSourceImport); err != nil {
 		return nil, fmt.Errorf("persist ideal metadata: %w", err)

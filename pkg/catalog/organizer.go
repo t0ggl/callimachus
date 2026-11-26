@@ -36,21 +36,23 @@ var (
 
 // BookDetails contains the domain metadata required for canonical organization.
 type BookDetails struct {
-	BookID      string            `json:"book_id,omitempty"`
-	Title       string            `json:"title"`
-	Subtitle    string            `json:"subtitle,omitempty"`
-	Author      string            `json:"author"`
-	Series      string            `json:"series,omitempty"`
-	SeriesIndex *float64          `json:"series_index,omitempty"`
-	Year        int               `json:"year,omitempty"`
-	PublishDate string            `json:"publish_date,omitempty"`
-	Publisher   string            `json:"publisher,omitempty"`
-	Description string            `json:"description,omitempty"`
-	ISBN13      string            `json:"isbn13,omitempty"`
-	ASIN        string            `json:"asin,omitempty"`
-	Language    string            `json:"language,omitempty"`
-	Format      string            `json:"format,omitempty"`
-	Identifiers map[string]string `json:"identifiers,omitempty"`
+	BookID            string                      `json:"book_id,omitempty"`
+	Title             string                      `json:"title"`
+	Subtitle          string                      `json:"subtitle,omitempty"`
+	Author            string                      `json:"author"`
+	Series            string                      `json:"series,omitempty"`
+	HardcoverSeriesID int                         `json:"hardcover_series_id,omitempty"`
+	SeriesMemberships []metadata.SeriesMembership `json:"series_memberships,omitempty"`
+	SeriesIndex       *float64                    `json:"series_index,omitempty"`
+	Year              int                         `json:"year,omitempty"`
+	PublishDate       string                      `json:"publish_date,omitempty"`
+	Publisher         string                      `json:"publisher,omitempty"`
+	Description       string                      `json:"description,omitempty"`
+	ISBN13            string                      `json:"isbn13,omitempty"`
+	ASIN              string                      `json:"asin,omitempty"`
+	Language          string                      `json:"language,omitempty"`
+	Format            string                      `json:"format,omitempty"`
+	Identifiers       map[string]string           `json:"identifiers,omitempty"`
 }
 
 // OrganizedResult contains the destination paths after canonical organization.

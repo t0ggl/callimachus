@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"unicode"
 )
 
 // ErrNotFound is returned when requested metadata is not found by a provider.
@@ -16,6 +17,13 @@ type ChapterMetadata struct {
 	Title    string  `json:"title"`
 	StartSec float64 `json:"start_sec"`
 	EndSec   float64 `json:"end_sec"`
+}
+
+// SeriesMembership is a provider's evidence for a book's place in a series.
+type SeriesMembership struct {
+	Title       string   `json:"title"`
+	Index       *float64 `json:"index,omitempty"`
+	HardcoverID int      `json:"hardcover_id,omitempty"`
 }
 
 // BookMetadata represents normalized book metadata aggregated across providers.
@@ -44,7 +52,48 @@ type BookMetadata struct {
 	Chapters      []ChapterMetadata `json:"chapters"`
 	DurationSec   float64           `json:"duration_sec"`
 
-	HardcoverSeriesID int `json:"hardcover_series_id,omitempty"`
+	HardcoverSeriesID int                `json:"hardcover_series_id,omitempty"`
+	SeriesMemberships []SeriesMembership `json:"series_memberships,omitempty"`
+	// ContextualSeries marks results ordered by a queried series rather than by the book's primary series.
+	ContextualSeries bool              `json:"contextual_series,omitempty"`
+	PrimarySeries    *SeriesMembership `json:"primary_series,omitempty"`
+}
+
+// AddSeriesMembership combines aliases while keeping distinct pinned series separate.
+func (m *BookMetadata) AddSeriesMembership(next SeriesMembership) {
+	key := seriesMembershipKey(next.Title)
+	if key == "" {
+		return
+	}
+	for i, current := range m.SeriesMemberships {
+		if current.HardcoverID > 0 && next.HardcoverID > 0 {
+			if current.HardcoverID != next.HardcoverID {
+				continue
+			}
+		} else if seriesMembershipKey(current.Title) != key {
+			continue
+		}
+		if current.Index == nil || (current.HardcoverID == 0 && next.HardcoverID > 0 && next.Index != nil) {
+			current.Index = next.Index
+		}
+		if current.HardcoverID == 0 && next.HardcoverID > 0 {
+			current.HardcoverID = next.HardcoverID
+			current.Title = next.Title
+		}
+		m.SeriesMemberships[i] = current
+		return
+	}
+	m.SeriesMemberships = append(m.SeriesMemberships, next)
+}
+
+func seriesMembershipKey(title string) string {
+	title = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(title)), "the ")
+	return strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			return r
+		}
+		return -1
+	}, title)
 }
 
 // SeriesMetadata represents normalized book series metadata from a search provider.

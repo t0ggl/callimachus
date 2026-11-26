@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -155,13 +156,16 @@ func mapAudnexusBook(res *audnexusBookResponse) BookMetadata {
 		}
 	}
 
-	if len(res.Series) > 0 {
-		meta.Series = res.Series[0].Name
-		if res.Series[0].Position != "" {
-			if pos, err := strconv.ParseFloat(res.Series[0].Position, 64); err == nil {
-				meta.SeriesIndex = &pos
-			}
+	for _, series := range res.Series {
+		membership := SeriesMembership{Title: series.Name}
+		if pos, err := strconv.ParseFloat(series.Position, 64); err == nil && !math.IsNaN(pos) && !math.IsInf(pos, 0) {
+			membership.Index = &pos
 		}
+		meta.AddSeriesMembership(membership)
+	}
+	if len(meta.SeriesMemberships) > 0 {
+		meta.Series = meta.SeriesMemberships[0].Title
+		meta.SeriesIndex = meta.SeriesMemberships[0].Index
 	}
 
 	for _, g := range res.Genres {
