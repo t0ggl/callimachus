@@ -35,10 +35,20 @@ it.each([
   expect(books).not.toHaveTextContent(/monitored/i);
   expect(screen.getByText('1 / 2 in library')).toBeInTheDocument();
   expect(container.querySelector('header img')).toHaveAttribute('src', kind === 'authors' ? '/author.jpg' : '/api/books/b/cover');
-  const toggle = screen.getByRole('checkbox', { name: `Monitor ${label}` });
+  const toggle = screen.getByRole('checkbox', { name: kind === 'series' ? 'Monitor series eBooks' : `Monitor ${label}` });
   await user.click(toggle);
   expect(fetchMock).toHaveBeenCalledWith(url, expect.objectContaining({ method: 'PUT', body: '{"monitored":true}' }));
   expect(toggle).toBeChecked();
+  const audioToggle = screen.queryByRole('checkbox', { name: 'Monitor series audiobooks' });
+  if (kind === 'series') {
+    expect(audioToggle).not.toBeChecked();
+    await user.click(audioToggle!);
+    expect(fetchMock).toHaveBeenLastCalledWith(url, expect.objectContaining({ method: 'PUT', body: '{"audiobookMonitored":true}' }));
+    expect(audioToggle).toBeChecked();
+    expect(toggle).toBeChecked();
+  } else {
+    expect(audioToggle).not.toBeInTheDocument();
+  }
   await user.click(screen.getByRole('button', { name: 'Check New Releases' }));
   expect(fetchMock).toHaveBeenLastCalledWith(expect.stringContaining('action=discover'), expect.objectContaining({ method: 'POST' }));
   expect(screen.getByRole('status')).toHaveTextContent('queued');
@@ -55,10 +65,10 @@ it('reports failed actions and keeps the saved toggle state', async () => {
   const user = userEvent.setup({ delay: null });
   vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ monitored: false, books: [] }) }).mockResolvedValue({ ok: false }));
   render(<EntityView kind="series" name="Sequence" canManage />);
-  await waitFor(() => expect(screen.getByLabelText('Monitor Series')).toBeEnabled());
-  await user.click(screen.getByLabelText('Monitor Series'));
+  await waitFor(() => expect(screen.getByLabelText('Monitor series eBooks')).toBeEnabled());
+  await user.click(screen.getByLabelText('Monitor series eBooks'));
   expect(await screen.findByRole('alert')).toHaveTextContent('retry');
-  expect(screen.getByLabelText('Monitor Series')).not.toBeChecked();
+  expect(screen.getByLabelText('Monitor series eBooks')).not.toBeChecked();
 });
 it('allows guests to browse without management controls', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ monitored: false, books: [] }) }));
@@ -135,7 +145,7 @@ it('resolves unpersisted series books for details, inline Download, and inline M
   await user.click(within(missingRow).getByRole('button', { name: 'Missing Entry' }));
   const detailDialog = await screen.findByRole('dialog', { name: 'Details for Missing Entry' });
   expect(within(detailDialog).getByRole('button', { name: 'Show Download Options' })).toBeInTheDocument();
-  expect(within(detailDialog).getByRole('button', { name: 'Monitor Book' })).toBeInTheDocument();
+  expect(within(detailDialog).getByRole('button', { name: 'Monitor eBook' })).toBeInTheDocument();
   expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(0);
   await user.click(within(detailDialog).getByRole('button', { name: 'Close details' }));
 
@@ -145,21 +155,21 @@ it('resolves unpersisted series books for details, inline Download, and inline M
   expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(1);
   await user.click(screen.getByRole('button', { name: 'Close' }));
 
-  // Monitor Book inside modal on Scheduled item resolves & syncs parent row state
+  // Monitor eBook inside modal on Scheduled item resolves & syncs parent row state
   await user.click(within(schedRow).getByRole('button', { name: 'Future Entry' }));
   const schedDialog = await screen.findByRole('dialog', { name: 'Details for Future Entry' });
-  await user.click(within(schedDialog).getByRole('button', { name: 'Monitor Book' }));
-  expect(await within(schedDialog).findByRole('button', { name: 'Monitoring Book' })).toHaveAttribute('aria-pressed', 'true');
+  await user.click(within(schedDialog).getByRole('button', { name: 'Monitor eBook' }));
+  expect(await within(schedDialog).findByRole('button', { name: 'Monitor eBook' })).toHaveAttribute('aria-pressed', 'true');
   await user.click(within(schedDialog).getByRole('button', { name: 'Close details' }));
   await waitFor(() => {
-    expect(within(schedRow).getByRole('button', { name: 'Monitoring' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(schedRow).getByRole('button', { name: 'Monitor eBook' })).toHaveAttribute('aria-pressed', 'true');
   });
 
   // Requester sees inline Download and Monitor controls (books & series), without curator-only manual triggers
   rerender(<EntityView kind="series" name="Sequence" canManage={false} canRequest />);
   expect(within(missingRow).getByRole('button', { name: 'Download' })).toBeInTheDocument();
-  expect(within(schedRow).getByRole('button', { name: /Monitoring/i })).toBeInTheDocument();
-  expect(screen.getByLabelText('Monitor Series')).toBeInTheDocument();
+  expect(within(schedRow).getByRole('button', { name: 'Monitor eBook' })).toBeInTheDocument();
+  expect(screen.getByLabelText('Monitor series eBooks')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /Check New Releases/i })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /Search Downloads/i })).not.toBeInTheDocument();
 
@@ -167,14 +177,14 @@ it('resolves unpersisted series books for details, inline Download, and inline M
   rerender(<EntityView kind="series" name="Sequence" canManage={false} canRequest={false} />);
   expect(within(missingRow).queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
   expect(within(schedRow).queryByRole('button', { name: /Monitor/i })).not.toBeInTheDocument();
-  expect(screen.queryByLabelText('Monitor Series')).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('Monitor series eBooks')).not.toBeInTheDocument();
 
   await user.click(within(guestRow).getByRole('button', { name: 'Guest Visible Entry' }));
   const guestDialog = await screen.findByRole('dialog', { name: 'Details for Guest Visible Entry' });
   expect(within(guestDialog).getByText('Guest readable blurb')).toBeInTheDocument();
   expect(within(guestDialog).getByText('No files available.')).toBeInTheDocument();
   expect(within(guestDialog).queryByRole('button', { name: 'Show Download Options' })).not.toBeInTheDocument();
-  expect(within(guestDialog).queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
+  expect(within(guestDialog).queryByRole('button', { name: /Monitor eBook/i })).not.toBeInTheDocument();
   expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(2);
 });
 
@@ -276,9 +286,9 @@ it('groups author books by series with standalone books separate and preserves d
   expect(screen.getByText('1 of 3 in library')).toBeInTheDocument();
 
   // Inline Monitor on a reordered series book updates that exact entry
-  await user.click(within(mistbornItems[3]).getByRole('button', { name: 'Monitor' }));
+  await user.click(within(mistbornItems[3]).getByRole('button', { name: 'Monitor eBook' }));
   await waitFor(() => {
-    expect(within(mistbornItems[3]).getByRole('button', { name: 'Monitoring' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(mistbornItems[3]).getByRole('button', { name: 'Monitor eBook' })).toHaveAttribute('aria-pressed', 'true');
   });
 
   // Clicking a reordered book opens its BookDetailModal

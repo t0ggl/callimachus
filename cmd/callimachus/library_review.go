@@ -125,7 +125,7 @@ func (s *Server) handleRemoveLibraryReview(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM series WHERE id=? AND monitored=0 AND discovery_checked_at IS NULL
+		DELETE FROM series WHERE id=? AND monitored=0 AND audiobook_monitored=0 AND discovery_checked_at IS NULL
 		AND NOT EXISTS (SELECT 1 FROM books WHERE series_id=series.id)
 		AND NOT EXISTS (SELECT 1 FROM catalog_actions WHERE kind='series' AND entity_id=series.id)`, seriesID); err != nil {
 		libraryReviewError(w, err)

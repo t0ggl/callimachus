@@ -61,14 +61,18 @@ func (s *Server) searchMonitoredBook(ctx context.Context, id string) error {
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO book_requests(user_id,book_id,title,author,format,status,year)
 		SELECT 'catalog-monitor',b.id,b.title,a.name,f.format,'searching',COALESCE(CAST(substr(b.release_date,1,4) AS INTEGER),0)
 		FROM books b JOIN authors a ON a.id=b.author_id
-		CROSS JOIN (SELECT 'epub' AS format UNION ALL SELECT 'm4b') f
+		JOIN missing_monitored_formats f ON f.book_id=b.id
 		WHERE b.id=?
 		AND NOT EXISTS(SELECT 1 FROM hidden_library_review review WHERE review.book_id=b.id AND review.kept=0)
 		AND NOT EXISTS(SELECT 1 FROM book_requests r WHERE r.book_id=b.id
+			AND (r.format=f.format OR r.format='both')
 			AND r.status IN ('searching','downloading','available','cancelled'))`, id); err != nil {
 		return err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM book_requests WHERE book_id=? AND status='searching' AND dismissed=0`, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id FROM book_requests r
+		WHERE r.book_id=? AND r.status='searching' AND r.dismissed=0
+		  AND EXISTS(SELECT 1 FROM missing_monitored_formats f WHERE f.book_id=r.book_id AND (r.format=f.format OR r.format='both'))
+		  AND NOT EXISTS(SELECT 1 FROM hidden_library_review review WHERE review.book_id=r.book_id AND review.kept=0)`, id)
 	if err != nil {
 		return err
 	}
@@ -160,15 +164,17 @@ func (s *Server) handleCatalogMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Monitored *bool `json:"monitored"`
+		Monitored          *bool `json:"monitored"`
+		AudiobookMonitored *bool `json:"audiobookMonitored"`
 	}
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&input) != nil || input.Monitored == nil {
-		http.Error(w, "monitored is required", 400)
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&input) != nil || (input.Monitored == nil && input.AudiobookMonitored == nil) ||
+		(kind != "series" && input.AudiobookMonitored != nil) {
+		http.Error(w, "A valid monitoring setting is required", 400)
 		return
 	}
 	id, err := s.catalogEntity(r, kind, name)
 	if err == nil {
-		err = s.catalogMonitor.SetMonitored(r.Context(), kind, id, *input.Monitored)
+		err = s.catalogMonitor.SetMonitoring(r.Context(), kind, id, input.Monitored, input.AudiobookMonitored)
 	}
 	if errors.Is(err, catalog.ErrAmbiguousSeries) {
 		http.Error(w, "Choose a series by catalog ID", http.StatusConflict)
@@ -222,7 +228,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 		column, bookColumn, photo = "title", "series_id", "''"
 	}
 	var id, photoURL string
-	var monitored bool
+	var monitored, audiobookMonitored bool
 	var err error
 	var known []metadata.BookMetadata
 	lookup := true
@@ -242,7 +248,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			id = series.ID
 			seriesTitle = series.Title
-			err = s.db.QueryRowContext(r.Context(), "SELECT monitored FROM series WHERE id=?", id).Scan(&monitored)
+			err = s.db.QueryRowContext(r.Context(), "SELECT monitored, audiobook_monitored FROM series WHERE id=?", id).Scan(&monitored, &audiobookMonitored)
 			if err == nil {
 				known, err = c.SeriesEvidence(r.Context(), id)
 				if errors.Is(err, catalog.ErrAmbiguousSeries) {
@@ -263,24 +269,25 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type entry struct {
-		ID          string   `json:"id"`
-		Title       string   `json:"title"`
-		Subtitle    string   `json:"subtitle,omitempty"`
-		AuthorName  string   `json:"authorName"`
-		SeriesID    string   `json:"seriesId,omitempty"`
-		SeriesTitle string   `json:"seriesTitle,omitempty"`
-		Date        string   `json:"releaseDate"`
-		Index       *float64 `json:"seriesIndex"`
-		Synopsis    string   `json:"synopsis,omitempty"`
-		Monitored   bool     `json:"monitored"`
-		State       string   `json:"state"`
-		Formats     []string `json:"formats"`
-		CoverURL    string   `json:"coverUrl,omitempty"`
+		ID                 string   `json:"id"`
+		Title              string   `json:"title"`
+		Subtitle           string   `json:"subtitle,omitempty"`
+		AuthorName         string   `json:"authorName"`
+		SeriesID           string   `json:"seriesId,omitempty"`
+		SeriesTitle        string   `json:"seriesTitle,omitempty"`
+		Date               string   `json:"releaseDate"`
+		Index              *float64 `json:"seriesIndex"`
+		Synopsis           string   `json:"synopsis,omitempty"`
+		Monitored          bool     `json:"monitored"`
+		AudiobookMonitored bool     `json:"audiobookMonitored"`
+		State              string   `json:"state"`
+		Formats            []string `json:"formats"`
+		CoverURL           string   `json:"coverUrl,omitempty"`
 	}
 	books := []entry{}
 	rows, err := s.db.QueryContext(r.Context(), `
 		SELECT b.id, b.title, COALESCE(b.subtitle,''), a.name, COALESCE(s.title,''), COALESCE(s.id,''),
-		       COALESCE(b.release_date,''), b.series_index, COALESCE(b.synopsis,''), b.monitored, `+bookAvailabilitySQL+`,
+		       COALESCE(b.release_date,''), b.series_index, COALESCE(b.synopsis,''), b.monitored, COALESCE(b.audiobook_monitored, b.monitored), `+bookAvailabilitySQL+`,
 		       (SELECT json_group_array(format) FROM (
 		           SELECT DISTINCT UPPER(e.format) AS format
 		           FROM book_editions e JOIN media_assets m ON m.edition_id=e.id
@@ -298,7 +305,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var b entry
 		var formats string
-		if err := rows.Scan(&b.ID, &b.Title, &b.Subtitle, &b.AuthorName, &b.SeriesTitle, &b.SeriesID, &b.Date, &b.Index, &b.Synopsis, &b.Monitored, &b.State, &formats); err != nil {
+		if err := rows.Scan(&b.ID, &b.Title, &b.Subtitle, &b.AuthorName, &b.SeriesTitle, &b.SeriesID, &b.Date, &b.Index, &b.Synopsis, &b.Monitored, &b.AudiobookMonitored, &b.State, &formats); err != nil {
 			http.Error(w, "Unable to load books", 500)
 			return
 		}
@@ -352,9 +359,10 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 					}
 					return ""
 				}(),
-				State:     b.State,
-				Monitored: b.Monitored,
-				Formats:   b.Formats,
+				State:              b.State,
+				Monitored:          b.Monitored,
+				AudiobookMonitored: b.AudiobookMonitored,
+				Formats:            b.Formats,
 			}
 		}
 		mergeLocalEntry := func(dst *entry, src entry) {
@@ -386,6 +394,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 			}
 			if !owned && src.State != "In library" {
 				dst.Monitored = dst.Monitored || src.Monitored
+				dst.AudiobookMonitored = dst.AudiobookMonitored || src.AudiobookMonitored
 			}
 			if src.State == "In library" && len(src.Formats) > 0 {
 				seen := make(map[string]bool, len(dst.Formats))
@@ -559,7 +568,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"monitored": monitored, "photoUrl": photoURL, "books": books})
+	json.NewEncoder(w).Encode(map[string]any{"monitored": monitored, "audiobookMonitored": audiobookMonitored, "photoUrl": photoURL, "books": books})
 }
 
 type resolveBookRequest struct {
@@ -713,33 +722,36 @@ func (s *Server) handleBookMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Monitored *bool `json:"monitored"`
+		Monitored          *bool `json:"monitored"`
+		AudiobookMonitored *bool `json:"audiobookMonitored"`
 	}
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&input) != nil || input.Monitored == nil {
-		http.Error(w, "monitored is required", http.StatusBadRequest)
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&input) != nil || (input.Monitored == nil && input.AudiobookMonitored == nil) {
+		http.Error(w, "A monitoring setting is required", http.StatusBadRequest)
 		return
 	}
-	result, err := s.db.ExecContext(r.Context(), `
+	var monitored, audiobookMonitored bool
+	err := s.db.QueryRowContext(r.Context(), `
 		UPDATE books
-		SET monitored = ?,
-		    availability_checked_at = CASE WHEN ? THEN NULL ELSE availability_checked_at END,
+		SET monitored = COALESCE(?, monitored),
+		    audiobook_monitored = COALESCE(?, audiobook_monitored),
+		    availability_checked_at = CASE WHEN ? OR ? THEN NULL ELSE availability_checked_at END,
 		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = ?`, *input.Monitored, *input.Monitored, id)
+		WHERE id = ?
+		RETURNING monitored, COALESCE(audiobook_monitored, monitored)`, input.Monitored, input.AudiobookMonitored,
+		input.Monitored, input.AudiobookMonitored, id).Scan(&monitored, &audiobookMonitored)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "Book not found", http.StatusNotFound)
+		return
+	}
 	if err != nil {
 		http.Error(w, "Unable to update book monitoring", http.StatusInternalServerError)
 		return
 	}
-	n, err := result.RowsAffected()
-	if err == nil && n == 0 {
-		http.Error(w, "Book not found", http.StatusNotFound)
-		return
-	}
-	if *input.Monitored {
-		s.wakeMonitor()
-	}
+	s.wakeMonitor()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id":        id,
-		"monitored": *input.Monitored,
+		"id":                 id,
+		"monitored":          monitored,
+		"audiobookMonitored": audiobookMonitored,
 	})
 }

@@ -137,7 +137,6 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   );
   const [findingCoverBookID, setFindingCoverBookID] = useState<string>();
   const [showDownloadOptions, setShowDownloadOptions] = useState(false);
-  const [monitored, setMonitored] = useState(Boolean(book?.monitored));
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
@@ -161,7 +160,6 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     const sameBook = Boolean(book && prevBook && book.id !== '' && book.id === prevBook.id);
     setPrevBook(book);
     setActiveBook(book);
-    setMonitored(Boolean(book?.monitored));
     if (!sameResolvingBook && !sameBook) {
       setActionError('');
       setDeleteError('');
@@ -194,13 +192,18 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   );
   const repairing = canRepair && repairBookID === currentBook?.id;
   const subpanelOpen = repairing || findingCover;
-  const isOwned = Boolean(
-    currentBook &&
-      (currentBook.state === 'In library' ||
-        (currentBook.state === undefined && (hasAssets || currentBook.formats.length > 0)))
-  );
+  const ownedFormats = [
+    ...(currentBook?.formats ?? []),
+    ...(currentBook?.editions.filter(({ assets }) => assets.length > 0).map(({ format }) => format) ?? []),
+  ];
+  const ownsEbook = ownedFormats.some((format) => format !== 'M4B' && format !== 'MP3');
+  const ownsAudiobook = ownedFormats.some((format) => format === 'M4B' || format === 'MP3');
+  const monitorOptions = [
+    { field: 'monitored', label: 'eBook', owned: ownsEbook },
+    { field: 'audiobookMonitored', label: 'audiobook', owned: ownsAudiobook },
+  ] as const;
   const allowRequest = Boolean(canRequest ?? canManage);
-  const showMonitorControl = !isOwned && allowRequest;
+  const showMonitorControl = allowRequest && monitorOptions.some(({ owned }) => !owned);
   const showInlineDownloadOptions = Boolean(!activity && !subpanelOpen && allowRequest && !hasAssets);
   const showOverflowRefresh = Boolean(!activity && canRefreshMetadata);
   const showOverflowRepair = canRepair;
@@ -367,22 +370,21 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     }
   };
 
-  const handleToggleMonitor = async () => {
+  const handleToggleMonitor = async (field: 'monitored' | 'audiobookMonitored') => {
     setActionBusy(true);
     setActionError('');
-    const next = !monitored;
     try {
       const persisted = await ensurePersistedBook();
+      const next = !persisted[field];
       const res = await fetch(`/api/books/${encodeURIComponent(persisted.id)}/monitor`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ monitored: next }),
+        body: JSON.stringify({ [field]: next }),
       });
       if (!res.ok) {
         throw new Error('Unable to save monitoring state. Check permissions and retry.');
       }
-      const updated: Book = { ...persisted, monitored: next };
-      setMonitored(next);
+      const updated: Book = { ...persisted, [field]: next };
       setActiveBook(updated);
       onBookUpdated?.(updated);
     } catch (e) {
@@ -888,22 +890,23 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
               </h4>
               {!activity && (showMonitorControl || showInlineDownloadOptions) && (
                 <div className="flex flex-wrap items-center gap-2">
-                  {showMonitorControl && (
+                  {showMonitorControl && monitorOptions.filter(({ owned }) => !owned).map(({ field, label }) => (
                     <button
+                      key={field}
                       type="button"
                       disabled={actionBusy || refreshing}
-                      aria-pressed={monitored}
-                      onClick={() => void handleToggleMonitor()}
+                      aria-pressed={Boolean(currentBook[field])}
+                      onClick={() => void handleToggleMonitor(field)}
                       className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50 ${
-                        monitored
+                        currentBook[field]
                           ? 'border-blue-700/80 bg-blue-950/70 text-blue-200 hover:bg-blue-900/70'
                           : 'border-zinc-700 bg-zinc-800 text-zinc-100 hover:bg-zinc-700'
                       }`}
                     >
                       <Bell className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                      {monitored ? 'Monitoring Book' : 'Monitor Book'}
+                      Monitor {label}
                     </button>
-                  )}
+                  ))}
                   {showInlineDownloadOptions && (
                     <button
                       type="button"

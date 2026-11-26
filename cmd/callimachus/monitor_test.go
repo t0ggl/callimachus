@@ -14,8 +14,11 @@ import (
 	"time"
 
 	"github.com/t0ggl/callimachus/pkg/auth"
+	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/config"
+	"github.com/t0ggl/callimachus/pkg/database"
 	"github.com/t0ggl/callimachus/pkg/indexers"
+	"github.com/t0ggl/callimachus/pkg/metadata"
 	"github.com/t0ggl/callimachus/pkg/requests"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 )
@@ -178,7 +181,7 @@ func TestCatalogMonitoringReusesAcquisitionRequest(t *testing.T) {
 	if err := monitor.Tick(ctx, now); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 {
+	if calls != 1 {
 		t.Fatalf("keeping the title should resume monitoring, got %d searches", calls)
 	}
 	for i := 0; i < 2; i++ {
@@ -186,10 +189,10 @@ func TestCatalogMonitoringReusesAcquisitionRequest(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM book_requests WHERE book_id='b'`).Scan(&count); err != nil || count != 2 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM book_requests WHERE book_id='b'`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("unexpected format request count: %d %v", count, err)
 	}
-	if calls != 6 {
+	if calls != 3 {
 		t.Fatal("manual refresh did not search immediately")
 	}
 	if _, err := db.Exec(`UPDATE book_requests SET status='downloading'`); err != nil {
@@ -203,8 +206,86 @@ func TestCatalogMonitoringReusesAcquisitionRequest(t *testing.T) {
 	if err := s.searchMonitoredBook(context.Background(), "b"); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 6 {
+	if calls != 3 {
 		t.Fatal("active acquisition searched again")
+	}
+}
+
+func TestSeriesMonitoringDefaultsToEbooksAndCanOptIntoAudio(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	for _, query := range []string{
+		`INSERT INTO authors(id,name,sort_name) VALUES('a','Author','Author')`,
+		`INSERT INTO series(id,title,author_id,hardcover_id) VALUES('s','Sequence','a',42)`,
+		`INSERT INTO books(id,author_id,title,series_id,monitored) VALUES('b','a','First Book','s',0)`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx := context.Background()
+	var found []metadata.BookMetadata
+	s := &Server{db: db, monitorWake: make(chan struct{}, 1)}
+	s.acquisition = &requests.Acquisition{DB: db, Search: func(context.Context, string, string) ([]indexers.ProwlarrRelease, error) { return nil, nil }}
+	s.catalogMonitor = s.newCatalogMonitor()
+	s.catalogMonitor.Discover = func(context.Context, string, string, []metadata.BookMetadata) ([]metadata.BookMetadata, error) {
+		return found, nil
+	}
+	url := "/api/catalog/entity?kind=series&name=Sequence&id=s"
+	setMonitoring := func(body string) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.handleCatalogMonitor(w, httptest.NewRequest("PUT", url, strings.NewReader(body)))
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("set monitoring: %d %s", w.Code, w.Body)
+		}
+		if err := s.catalogMonitor.Tick(ctx, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertFormats := func(title, want string) {
+		t.Helper()
+		var got string
+		if err := db.QueryRow(`SELECT group_concat(format, ',') FROM (
+			SELECT format FROM book_requests WHERE title=? ORDER BY format
+		)`, title).Scan(&got); err != nil || got != want {
+			t.Fatalf("%s requests = %q, want %q (err=%v)", title, got, want, err)
+		}
+	}
+
+	found = []metadata.BookMetadata{{Title: "Second Book", Authors: []string{"Author"}, Series: "Sequence", HardcoverSeriesID: 42}}
+	setMonitoring(`{"monitored":true}`)
+	assertFormats("First Book", "epub")
+	assertFormats("Second Book", "epub")
+
+	c := catalog.New(db)
+	epub, err := c.GetOrCreateEdition(ctx, &database.BookEdition{BookID: "b", Format: "epub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.UpsertMediaAsset(ctx, &database.MediaAsset{EditionID: epub.ID, FilePath: "first.epub"}); err != nil {
+		t.Fatal(err)
+	}
+
+	found = []metadata.BookMetadata{{Title: "Third Book", Authors: []string{"Author"}, Series: "Sequence", HardcoverSeriesID: 42}}
+	setMonitoring(`{"monitored":false,"audiobookMonitored":true}`)
+	assertFormats("First Book", "epub,m4b")
+	assertFormats("Second Book", "epub,m4b")
+	assertFormats("Third Book", "m4b")
+
+	found = []metadata.BookMetadata{{Title: "Fourth Book", Authors: []string{"Author"}, Series: "Sequence", HardcoverSeriesID: 42}}
+	setMonitoring(`{"monitored":true}`)
+	assertFormats("Fourth Book", "epub,m4b")
+	audiobook, err := c.GetOrCreateEdition(ctx, &database.BookEdition{BookID: "b", Format: "m4b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.UpsertMediaAsset(ctx, &database.MediaAsset{EditionID: audiobook.ID, FilePath: "first.m4b"}); err != nil {
+		t.Fatal(err)
+	}
+	var ebook, audio bool
+	if err := db.QueryRow(`SELECT monitored, audiobook_monitored FROM books WHERE id='b'`).Scan(&ebook, &audio); err != nil || ebook || audio {
+		t.Fatalf("owned formats still monitored: ebook=%v audio=%v (err=%v)", ebook, audio, err)
 	}
 }
 
@@ -638,4 +719,3 @@ func TestBookResolveAndCatalogEntityScopedSeriesIdentity(t *testing.T) {
 		t.Fatalf("unexpected scoped entity books: %+v", entity.Books)
 	}
 }
-

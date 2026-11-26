@@ -6,8 +6,8 @@ import { ManualSearch } from '../components/ManualSearch';
 import { SeriesBookCover, resolveCatalogBook } from '../components/SeriesDetailModal';
 import type { Book } from '../types';
 
-type EntityBook = Pick<Book, 'id' | 'title' | 'subtitle' | 'authorName' | 'seriesTitle' | 'seriesId' | 'coverUrl' | 'formats' | 'releaseDate' | 'seriesIndex' | 'synopsis' | 'state' | 'monitored'>;
-type Data = { monitored: boolean; photoUrl?: string; books: EntityBook[] };
+type EntityBook = Pick<Book, 'id' | 'title' | 'subtitle' | 'authorName' | 'seriesTitle' | 'seriesId' | 'coverUrl' | 'formats' | 'releaseDate' | 'seriesIndex' | 'synopsis' | 'state' | 'monitored' | 'audiobookMonitored'>;
+type Data = { monitored: boolean; audiobookMonitored?: boolean; photoUrl?: string; books: EntityBook[] };
 type IndexedEntityBook = { book: EntityBook; index: number };
 type AuthorBookGroup = {
   key: string;
@@ -187,15 +187,15 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
     const timer = window.setTimeout(() => setToast(''), 6000);
     return () => window.clearTimeout(timer);
   }, [toast]);
-  async function act(action?: 'discover' | 'downloads') {
+  async function act(action?: 'discover' | 'downloads', field: 'monitored' | 'audiobookMonitored' = 'monitored') {
     setBusy(true); setError('');
     try {
       const res = await fetch(url + (action ? `&action=${action}` : ''), {
         method: action ? 'POST' : 'PUT', headers: { 'Content-Type': 'application/json' },
-        ...(action ? {} : { body: JSON.stringify({ monitored: !data?.monitored }) }),
+        ...(action ? {} : { body: JSON.stringify({ [field]: !data?.[field] }) }),
       });
       if (!res.ok) throw new Error('Unable to save this action. Check your permissions and retry.');
-      if (!action) setData(prev => prev && ({ ...prev, monitored: !prev.monitored }));
+      if (!action) setData(prev => prev && ({ ...prev, [field]: !prev[field] }));
       setToast(action ? `${action === 'discover' ? 'New release check' : 'Download search'} queued. Results will appear after the background check. Refresh this view to see updates.` : 'Monitoring updated.');
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
@@ -229,7 +229,7 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
       synopsis: book.synopsis,
       coverUrl: book.coverUrl,
     });
-    updateBookEntry(index, { id: resolved.id, seriesId: resolved.seriesId, monitored: resolved.monitored });
+    updateBookEntry(index, { id: resolved.id, seriesId: resolved.seriesId, monitored: resolved.monitored, audiobookMonitored: resolved.audiobookMonitored });
     return resolved;
   };
 
@@ -244,6 +244,7 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
     setSelectedBook({
       id: '',
       monitored: Boolean(book.monitored),
+      audiobookMonitored: book.audiobookMonitored,
       state: book.state ?? 'Not in library',
       title: book.title,
       subtitle: book.subtitle,
@@ -362,7 +363,7 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
                   }`}
                 >
                   <Bell size={12} aria-hidden="true" />
-                  {book.monitored ? 'Monitoring' : 'Monitor'}
+                  Monitor eBook
                 </button>
               )}
             </div>
@@ -395,7 +396,7 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
             {data && (
               <div className="flex flex-wrap gap-2">
                 <span className={`${badge} ${neutralBadge}`}>{ownedCount} / {books.length} in library</span>
-                <span className={`${badge} ${data.monitored ? blueBadge : neutralBadge}`}>{data.monitored ? 'Monitored' : 'Unmonitored'}</span>
+                <span className={`${badge} ${(data.monitored || data.audiobookMonitored) ? blueBadge : neutralBadge}`}>{(data.monitored || data.audiobookMonitored) ? 'Monitored' : 'Unmonitored'}</span>
               </div>
             )}
           </div>
@@ -405,8 +406,14 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
             <div className="flex flex-wrap items-center gap-2">
               <label className={`${button} has-disabled:opacity-50`}>
                 <input type="checkbox" checked={data?.monitored ?? false} disabled={!data || busy} onChange={() => void act()} className="size-4 accent-blue-500" />
-                Monitor {isSeries ? 'Series' : 'Author'}
+                Monitor {isSeries ? 'series eBooks' : 'Author'}
               </label>
+              {isSeries && (
+                <label className={`${button} has-disabled:opacity-50`}>
+                  <input type="checkbox" checked={data?.audiobookMonitored ?? false} disabled={!data || busy} onChange={() => void act(undefined, 'audiobookMonitored')} className="size-4 accent-blue-500" />
+                  Monitor series audiobooks
+                </label>
+              )}
               {canManage && (
                 <>
                   <button type="button" className={button} disabled={!data || busy} onClick={() => void act('discover')}>
@@ -420,7 +427,7 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
             </div>
             <p className="max-w-[75ch] text-sm text-zinc-400">
               Monitoring checks for new releases monthly and searches for downloads daily until a book is acquired.
-              {isSeries && ' Series discovery requires Hardcover metadata in Settings.'}
+              {isSeries && ' Series discovery requires Hardcover metadata. Turning off a series format leaves individual book monitoring in place.'}
             </p>
           </div>
         )}
@@ -508,6 +515,7 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
                     seriesTitle: updated.seriesTitle,
                     seriesIndex: updated.seriesIndex,
                     monitored: updated.monitored,
+                    audiobookMonitored: updated.audiobookMonitored,
                     coverUrl: updated.coverUrl ?? item.coverUrl,
                   }
                 : item

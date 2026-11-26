@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"path/filepath"
@@ -28,13 +29,12 @@ func TestWorkerCLI_RunAndGracefulShutdown(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "cli_test.db")
 	testutil.PrepareTestDBFile(t, dbPath)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	// Cancel context after 100 milliseconds to simulate SIGINT/SIGTERM
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
-	}()
+	previous := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(cancelWhenListening{cancel}, nil)))
 
 	err := run(ctx, []string{
 		"-db", dbPath,
@@ -45,6 +45,17 @@ func TestWorkerCLI_RunAndGracefulShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected graceful shutdown without error, got: %v", err)
 	}
+}
+
+type cancelWhenListening struct {
+	cancel context.CancelFunc
+}
+
+func (w cancelWhenListening) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("conversion worker listening for jobs")) {
+		w.cancel()
+	}
+	return len(p), nil
 }
 
 func TestWorkerCLI_LogLevelPrecedence(t *testing.T) {

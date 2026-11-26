@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { DiscoveryResults } from '../components/DiscoveryResults';
@@ -515,9 +515,9 @@ describe('book discovery', () => {
 
     await user.click(within(seriesList).getByRole('button', { name: 'View series His Dark Materials' }));
     const dialog = await screen.findByRole('dialog');
-    const monitorBtn = await within(dialog).findByRole('button', { name: 'Monitor Series' });
+    const monitorBtn = await within(dialog).findByRole('button', { name: 'Monitor series eBooks' });
     await user.click(monitorBtn);
-    expect(await within(dialog).findByRole('button', { name: 'Monitoring' })).toBeInTheDocument();
+    await waitFor(() => expect(monitorBtn).toHaveAttribute('aria-pressed', 'true'));
 
     await user.click(within(dialog).getByTestId('close-series-detail'));
     expect(within(seriesList).getByText('Monitored')).toBeInTheDocument();

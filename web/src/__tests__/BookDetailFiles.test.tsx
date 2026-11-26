@@ -189,7 +189,7 @@ it('shows a pending book in the Library and explains the absence of files in its
   expect(screen.queryByRole('link', { name: /^Download/ })).not.toBeInTheDocument();
 });
 
-it('shows and toggles Monitor Book only for unowned books when user can manage', async () => {
+it('lets curators monitor missing eBook and audiobook formats independently', async () => {
   const user = userEvent.setup({ delay: null });
   const unowned: Book = {
     ...book,
@@ -204,21 +204,32 @@ it('shows and toggles Monitor Book only for unowned books when user can manage',
   vi.stubGlobal('fetch', fetchMock);
 
   const { rerender } = render(<BookDetailModal book={book} onClose={vi.fn()} canManage onBookUpdated={onBookUpdated} />);
-  expect(screen.queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Monitor eBook/i })).not.toBeInTheDocument();
 
   rerender(<BookDetailModal book={unowned} onClose={vi.fn()} canManage={false} onBookUpdated={onBookUpdated} />);
-  expect(screen.queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Monitor eBook/i })).not.toBeInTheDocument();
 
   rerender(<BookDetailModal book={unowned} onClose={vi.fn()} canManage onBookUpdated={onBookUpdated} />);
-  const toggle = screen.getByRole('button', { name: 'Monitor Book' });
+  const toggle = screen.getByRole('button', { name: 'Monitor eBook' });
   expect(toggle).toHaveAttribute('aria-pressed', 'false');
   await user.click(toggle);
   expect(fetchMock).toHaveBeenCalledWith(
     '/api/books/unowned-1/monitor',
     expect.objectContaining({ method: 'PUT', body: '{"monitored":true}' }),
   );
-  expect(screen.getByRole('button', { name: 'Monitoring Book' })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('button', { name: 'Monitor eBook' })).toHaveAttribute('aria-pressed', 'true');
   expect(onBookUpdated).toHaveBeenCalledWith(expect.objectContaining({ id: 'unowned-1', monitored: true }));
+
+  rerender(<BookDetailModal book={{ ...unowned, formats: ['EPUB'], state: 'In library' }} onClose={vi.fn()} canManage onBookUpdated={onBookUpdated} />);
+  expect(screen.queryByRole('button', { name: 'Monitor eBook' })).not.toBeInTheDocument();
+  const audio = screen.getByRole('button', { name: 'Monitor audiobook' });
+  expect(audio).toHaveAttribute('aria-pressed', 'false');
+  await user.click(audio);
+  expect(fetchMock).toHaveBeenLastCalledWith(
+    '/api/books/unowned-1/monitor',
+    expect.objectContaining({ method: 'PUT', body: '{"audiobookMonitored":true}' }),
+  );
+  expect(audio).toHaveAttribute('aria-pressed', 'true');
 });
 
 it('hides write controls from guests and lazily resolves unpersisted books for requester and curator actions', async () => {
@@ -248,9 +259,9 @@ it('hides write controls from guests and lazily resolves unpersisted books for r
   expect(screen.getByText('2099-09')).toBeVisible();
   expect(screen.getByText('No files available.')).toBeVisible();
   expect(screen.queryByRole('button', { name: 'Show Download Options' })).not.toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Monitor eBook/i })).not.toBeInTheDocument();
 
-  // Requester sees Show Download Options (no Monitor Book) and clicking resolves once with full metadata
+  // Requester sees Show Download Options (no Monitor eBook) and clicking resolves once with full metadata
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     if (url === '/api/books/resolve' && init?.method === 'POST') {
       return Response.json({
@@ -280,7 +291,7 @@ it('hides write controls from guests and lazily resolves unpersisted books for r
   rerender(
     <BookDetailModal book={unpersisted} canManage={false} canRequest onBookUpdated={onBookUpdated} onClose={vi.fn()} />
   );
-  expect(screen.getByRole('button', { name: 'Monitor Book' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Monitor eBook' })).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'Show Download Options' }));
 
   const resolveCall = fetchMock.mock.calls.find(([url]) => url === '/api/books/resolve');
@@ -305,14 +316,14 @@ it('hides write controls from guests and lazily resolves unpersisted books for r
   expect(await screen.findByRole('dialog', { name: 'Download Options' })).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'Close' }));
 
-  // Curator clicking Monitor Book on an unpersisted book resolves then PUTs /monitor
+  // Curator clicking Monitor eBook on an unpersisted book resolves then PUTs /monitor
   onBookUpdated.mockClear();
   fetchMock.mockClear();
   rerender(
     <BookDetailModal book={{ ...unpersisted, title: 'Another Remote' }} canManage canRequest onBookUpdated={onBookUpdated} onClose={vi.fn()} />
   );
-  await user.click(screen.getByRole('button', { name: 'Monitor Book' }));
-  expect(await screen.findByRole('button', { name: 'Monitoring Book' })).toHaveAttribute('aria-pressed', 'true');
+  await user.click(screen.getByRole('button', { name: 'Monitor eBook' }));
+  expect(await screen.findByRole('button', { name: 'Monitor eBook' })).toHaveAttribute('aria-pressed', 'true');
   expect(fetchMock.mock.calls.map(([u, opts]) => `${opts?.method ?? 'GET'} ${u}`)).toEqual([
     'POST /api/books/resolve',
     'PUT /api/books/persisted-remote/monitor',

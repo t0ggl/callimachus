@@ -142,7 +142,7 @@ it('opens the full series page from the modal button and closes the modal', asyn
   const button = await screen.findByRole('button', { name: 'Series page' });
   expect(button).toHaveAttribute('type', 'button');
   expect(screen.queryByRole('link', { name: 'Series page' })).not.toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Monitor Series' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Monitor series eBooks' })).not.toBeInTheDocument();
 
   try {
     await user.click(button);
@@ -153,7 +153,7 @@ it('opens the full series page from the modal button and closes the modal', asyn
   }
 });
 
-it('toggles series monitoring directly from SeriesDetailModal without navigating away', async () => {
+it.each([false, true])('toggles series eBook monitoring directly with audiobook monitoring set to %s', async (audiobookMonitored) => {
   const user = userEvent.setup({ delay: null });
   const onClose = vi.fn();
   const onSeriesUpdated = vi.fn();
@@ -164,6 +164,7 @@ it('toggles series monitoring directly from SeriesDetailModal without navigating
         title: 'His Dark Materials',
         authors: ['Philip Pullman'],
         monitored: false,
+        audiobookMonitored,
         total_books: 3,
         owned_count: 0,
         complete: true,
@@ -187,14 +188,14 @@ it('toggles series monitoring directly from SeriesDetailModal without navigating
     />
   );
 
-  const monitorBtn = await screen.findByRole('button', { name: 'Monitor Series' });
+  const monitorBtn = await screen.findByRole('button', { name: 'Monitor series eBooks' });
   expect(monitorBtn).toHaveAttribute('aria-pressed', 'false');
-  expect(screen.getByText('Series Unmonitored')).toBeInTheDocument();
+  expect(screen.getByText(audiobookMonitored ? 'Series Monitored' : 'Series Unmonitored')).toBeInTheDocument();
 
   await user.click(monitorBtn);
 
   await waitFor(() => {
-    expect(screen.getByRole('button', { name: 'Monitoring' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Monitor series eBooks' })).toHaveAttribute('aria-pressed', 'true');
   });
   expect(screen.getByText('Series Monitored')).toBeInTheDocument();
   expect(onSeriesUpdated).toHaveBeenCalledWith(true);
@@ -208,12 +209,12 @@ it('toggles series monitoring directly from SeriesDetailModal without navigating
   expect(putCall?.[1]?.body).toBe('{"monitored":true}');
 
   // Toggling off works in place too
-  await user.click(screen.getByRole('button', { name: 'Monitoring' }));
+  await user.click(screen.getByRole('button', { name: 'Monitor series eBooks' }));
   await waitFor(() => {
-    expect(screen.getByRole('button', { name: 'Monitor Series' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: 'Monitor series eBooks' })).toHaveAttribute('aria-pressed', 'false');
   });
-  expect(screen.getByText('Series Unmonitored')).toBeInTheDocument();
-  expect(onSeriesUpdated).toHaveBeenLastCalledWith(false);
+  expect(screen.getByText(audiobookMonitored ? 'Series Monitored' : 'Series Unmonitored')).toBeInTheDocument();
+  expect(onSeriesUpdated).toHaveBeenLastCalledWith(audiobookMonitored);
 });
 
 it('handles missing metadata gracefully and supports Escape, backdrop, and footer close', async () => {
@@ -622,7 +623,7 @@ it('opens unowned book details, inline Download options, and inline Monitor for 
   expect(within(detailDialog).getByText('2020-03-01')).toBeInTheDocument();
   expect(within(detailDialog).getByRole('img', { name: 'Missing Tome' })).toHaveAttribute('src', 'https://covers.example/missing.jpg');
   expect(within(detailDialog).getByRole('button', { name: 'Show Download Options' })).toBeInTheDocument();
-  expect(within(detailDialog).getByRole('button', { name: 'Monitor Book' })).toHaveAttribute('aria-pressed', 'false');
+  expect(within(detailDialog).getByRole('button', { name: 'Monitor eBook' })).toHaveAttribute('aria-pressed', 'false');
   expect(within(detailDialog).getByText('No files available.')).toBeInTheDocument();
   expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(0);
   await user.click(within(detailDialog).getByRole('button', { name: 'Close details' }));
@@ -636,11 +637,11 @@ it('opens unowned book details, inline Download options, and inline Monitor for 
   await user.click(within(downloadDialog).getByRole('button', { name: 'Close' }));
 
   // 3. Inline Monitor next to "Scheduled" resolves book & persists books.monitored.
-  const monitorBtn = within(scheduledItem).getByRole('button', { name: 'Monitor' });
+  const monitorBtn = within(scheduledItem).getByRole('button', { name: 'Monitor eBook' });
   expect(monitorBtn).toHaveAttribute('aria-pressed', 'false');
   await user.click(monitorBtn);
   await waitFor(() => {
-    expect(within(scheduledItem).getByRole('button', { name: 'Monitoring' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(scheduledItem).getByRole('button', { name: 'Monitor eBook' })).toHaveAttribute('aria-pressed', 'true');
   });
   expect(fetchMock).toHaveBeenCalledWith(
     '/api/books/book-sched/monitor',
@@ -720,19 +721,20 @@ it('lets guests inspect unowned book details read-only and allows requesters to 
   expect(within(guestDetail).getByText('2020-03')).toBeInTheDocument();
   expect(within(guestDetail).getByText('No files available.')).toBeInTheDocument();
   expect(within(guestDetail).queryByRole('button', { name: 'Show Download Options' })).not.toBeInTheDocument();
-  expect(within(guestDetail).queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
+  expect(within(guestDetail).queryByRole('button', { name: /Monitor eBook/i })).not.toBeInTheDocument();
   expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(0);
   await user.click(within(guestDetail).getByRole('button', { name: 'Close details' }));
 
   // Requester: sees Monitor Series, Download, Monitor on Scheduled books, and Monitor Book in details
   rerender(<SeriesDetailModal title="Sequence" canManage={false} canRequest onClose={vi.fn()} />);
-  expect(screen.getByRole('button', { name: 'Monitor Series' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Monitor series eBooks' })).toBeInTheDocument();
   expect(within(missingItem).getByRole('button', { name: 'Download' })).toBeInTheDocument();
-  expect(within(scheduledItem).getByRole('button', { name: 'Monitor' })).toBeInTheDocument();
+  expect(within(scheduledItem).getByRole('button', { name: 'Monitor eBook' })).toBeInTheDocument();
 
   await user.click(within(missingItem).getByRole('button', { name: 'Missing Tome' }));
   const reqDetail = await screen.findByRole('dialog', { name: 'Details for Missing Tome' });
-  expect(within(reqDetail).getByRole('button', { name: 'Monitor Book' })).toBeInTheDocument();
+  expect(within(reqDetail).getByRole('button', { name: 'Monitor eBook' })).toBeInTheDocument();
+  expect(within(reqDetail).getByRole('button', { name: 'Monitor audiobook' })).toBeInTheDocument();
   expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(0);
 
   await user.click(within(reqDetail).getByRole('button', { name: 'Show Download Options' }));

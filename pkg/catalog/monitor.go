@@ -34,34 +34,70 @@ func entityColumn(kind string) (string, error) {
 }
 
 func (m *Monitor) SetMonitored(ctx context.Context, kind, id string, enabled bool) error {
+	if kind == "series" && !enabled {
+		return m.SetMonitoring(ctx, kind, id, &enabled, &enabled)
+	}
+	return m.SetMonitoring(ctx, kind, id, &enabled, nil)
+}
+
+// SetMonitoring updates the entity and marks its known missing books in one transaction.
+func (m *Monitor) SetMonitoring(ctx context.Context, kind, id string, ebook, audiobook *bool) error {
 	if _, err := entityColumn(kind); err != nil {
 		return err
 	}
-	result, err := m.DB.ExecContext(ctx, "UPDATE "+kind+" SET monitored=?, discovery_checked_at=NULL WHERE id=?", enabled, id)
+	tx, err := m.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var result sql.Result
+	if kind == "series" {
+		result, err = tx.ExecContext(ctx, `UPDATE series SET monitored=COALESCE(?, monitored),
+			audiobook_monitored=COALESCE(?, audiobook_monitored), discovery_checked_at=NULL WHERE id=?`, ebook, audiobook, id)
+	} else {
+		result, err = tx.ExecContext(ctx, `UPDATE authors SET monitored=?, discovery_checked_at=NULL WHERE id=?`, ebook, id)
+	}
 	if err != nil {
 		return err
 	}
 	n, err := result.RowsAffected()
-	if err == nil && n == 0 {
+	if err != nil {
+		return err
+	}
+	if n == 0 {
 		return sql.ErrNoRows
+	}
+
+	if kind == "authors" && ebook != nil && *ebook {
+		_, err = tx.ExecContext(ctx, `UPDATE books SET monitored=1, audiobook_monitored=CASE WHEN audiobook_monitored=1 THEN 1 END,
+			availability_checked_at=NULL, updated_at=CURRENT_TIMESTAMP
+			WHERE author_id=? AND monitored=0 AND NOT EXISTS (
+				SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id WHERE e.book_id=books.id
+			)`, id)
+	} else if kind == "series" {
+		for _, format := range []struct {
+			enabled *bool
+			column  string
+			audio   bool
+		}{{ebook, "monitored", false}, {audiobook, "audiobook_monitored", true}} {
+			if format.enabled == nil || !*format.enabled {
+				continue
+			}
+			_, err = tx.ExecContext(ctx, `UPDATE books SET `+format.column+`=1, availability_checked_at=NULL, updated_at=CURRENT_TIMESTAMP
+				WHERE series_id=? AND `+format.column+` IS NOT 1 AND NOT EXISTS (
+					SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id
+					WHERE e.book_id=books.id AND (e.format IN ('m4b','mp3'))=?
+				)`, id, format.audio)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	if err != nil {
 		return err
 	}
-	if enabled {
-		bookCol := "author_id"
-		if kind == "series" {
-			bookCol = "series_id"
-		}
-		if _, err := m.DB.ExecContext(ctx, `
-			UPDATE books SET monitored = 1, availability_checked_at = NULL, updated_at = CURRENT_TIMESTAMP
-			WHERE `+bookCol+` = ? AND monitored = 0
-			  AND NOT EXISTS (SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id = e.id WHERE e.book_id = books.id)
-		`, id); err != nil {
-			return err
-		}
-	}
-	return nil
+	return tx.Commit()
 }
 
 func (m *Monitor) Queue(ctx context.Context, kind, id, action string) error {
@@ -88,18 +124,22 @@ func (m *Monitor) Tick(ctx context.Context, now time.Time) error {
 	var failures []string
 	for _, kind := range []string{"authors", "series"} {
 		col, _ := entityColumn(kind)
-		rows, err := m.DB.QueryContext(ctx, "SELECT id,"+col+",monitored,COALESCE(discovery_checked_at,''),EXISTS(SELECT 1 FROM catalog_actions WHERE kind=? AND entity_id="+kind+".id AND action='discover'),EXISTS(SELECT 1 FROM catalog_actions WHERE kind=? AND entity_id="+kind+".id AND action='downloads') FROM "+kind+" WHERE monitored=1 OR EXISTS(SELECT 1 FROM catalog_actions WHERE kind=? AND entity_id="+kind+".id)", kind, kind, kind)
+		audio := "monitored"
+		if kind == "series" {
+			audio = "audiobook_monitored"
+		}
+		rows, err := m.DB.QueryContext(ctx, "SELECT id,"+col+",monitored,"+audio+",COALESCE(discovery_checked_at,''),EXISTS(SELECT 1 FROM catalog_actions WHERE kind=? AND entity_id="+kind+".id AND action='discover'),EXISTS(SELECT 1 FROM catalog_actions WHERE kind=? AND entity_id="+kind+".id AND action='downloads') FROM "+kind+" WHERE (monitored=1 OR "+audio+"=1) OR EXISTS(SELECT 1 FROM catalog_actions WHERE kind=? AND entity_id="+kind+".id)", kind, kind, kind)
 		if err != nil {
 			return err
 		}
 		type entity struct {
-			id, name, last                 string
-			monitored, discover, downloads bool
+			id, name, last                        string
+			ebook, audiobook, discover, downloads bool
 		}
 		var entities []entity
 		for rows.Next() {
 			var e entity
-			if err = rows.Scan(&e.id, &e.name, &e.monitored, &e.last, &e.discover, &e.downloads); err != nil {
+			if err = rows.Scan(&e.id, &e.name, &e.ebook, &e.audiobook, &e.last, &e.discover, &e.downloads); err != nil {
 				rows.Close()
 				return err
 			}
@@ -116,9 +156,9 @@ func (m *Monitor) Tick(ctx context.Context, now time.Time) error {
 			next := last.AddDate(0, 1, -last.Day()+1)
 			day := min(last.Day(), next.AddDate(0, 1, -1).Day())
 			next = next.AddDate(0, 0, day-1)
-			if e.discover || (e.monitored && (last.IsZero() || !now.Before(next))) {
+			if e.discover || ((e.ebook || e.audiobook) && (last.IsZero() || !now.Before(next))) {
 				slog.DebugContext(ctx, "catalog discovery check", "entity_kind", kind, "entity_id", e.id)
-				err := m.discover(ctx, kind, e.id, e.name, e.monitored)
+				err := m.discover(ctx, kind, e.id, e.name, e.ebook, e.audiobook)
 				if err != nil {
 					failures = append(failures, err.Error())
 					continue
@@ -155,7 +195,7 @@ func (m *Monitor) Tick(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-func (m *Monitor) discover(ctx context.Context, kind, id, name string, monitored bool) error {
+func (m *Monitor) discover(ctx context.Context, kind, id, name string, ebook, audiobook bool) error {
 	c := New(m.DB)
 	var known []metadata.BookMetadata
 	if kind == "series" {
@@ -173,10 +213,10 @@ func (m *Monitor) discover(ctx context.Context, kind, id, name string, monitored
 	if err != nil {
 		return err
 	}
-	return m.persist(ctx, kind, id, name, monitored, known, found)
+	return m.persist(ctx, kind, id, name, ebook, audiobook, known, found)
 }
 
-func (m *Monitor) persist(ctx context.Context, kind, id, name string, monitored bool, known, found []metadata.BookMetadata) error {
+func (m *Monitor) persist(ctx context.Context, kind, id, name string, ebook, audiobook bool, known, found []metadata.BookMetadata) error {
 	c := New(m.DB)
 	var authors []string
 	var providerID int
@@ -229,7 +269,7 @@ func (m *Monitor) persist(ctx context.Context, kind, id, name string, monitored 
 		if err != nil {
 			return err
 		}
-		book := &database.Book{AuthorID: author.ID, Title: b.Title, SeriesIndex: b.SeriesIndex, Synopsis: &b.Description, Monitored: monitored}
+		book := &database.Book{AuthorID: author.ID, Title: b.Title, SeriesIndex: b.SeriesIndex, Synopsis: &b.Description, Monitored: ebook, AudiobookMonitored: audiobook, MonitorEitherFormat: kind == "authors" && ebook}
 		if kind == "series" {
 			book.SeriesID = &id
 		} else {
@@ -278,8 +318,8 @@ func (m *Monitor) persist(ctx context.Context, kind, id, name string, monitored 
 }
 
 func (m *Monitor) checkBooks(ctx context.Context, now time.Time, column, id string, force bool) error {
-	query := `SELECT b.id, b.title, COALESCE(b.subtitle,''), COALESCE(b.release_date,'') FROM books b WHERE b.monitored=1
-		AND NOT EXISTS(SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id WHERE e.book_id=b.id)
+	query := `SELECT b.id, b.title, COALESCE(b.subtitle,''), COALESCE(b.release_date,'') FROM books b
+		WHERE EXISTS(SELECT 1 FROM missing_monitored_formats f WHERE f.book_id=b.id)
 		AND NOT EXISTS(SELECT 1 FROM hidden_library_review review WHERE review.book_id=b.id AND review.kept=0)`
 	var args []any
 	if column != "" {

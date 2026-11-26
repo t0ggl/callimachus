@@ -394,7 +394,7 @@ func (s *Server) discoverSeries(ctx context.Context, settings config.Settings, q
 			ownedCount  int
 		}
 		rows, err := s.db.QueryContext(ctx, `
-			SELECT s.id, s.title, COALESCE(s.hardcover_id, 0), s.monitored, COALESCE(s.total_books, 0),
+			SELECT s.id, s.title, COALESCE(s.hardcover_id, 0), (s.monitored OR s.audiobook_monitored), COALESCE(s.total_books, 0),
 			       (SELECT COUNT(DISTINCT b.id)
 			        FROM books b
 			        JOIN book_editions e ON e.book_id = b.id
