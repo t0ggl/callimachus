@@ -351,10 +351,10 @@ func (a *Acquisition) process(ctx context.Context, id int64) error {
 			return err
 		}
 		_, err = a.DB.ExecContext(ctx, `UPDATE books
-			SET monitored=CASE WHEN r.format='m4b' AND books.audiobook_monitored IS NOT NULL THEN books.monitored ELSE 0 END,
+			SET ebook_monitored=CASE WHEN r.format='m4b' AND books.audiobook_monitored IS NOT NULL THEN books.ebook_monitored ELSE 0 END,
 			    audiobook_monitored=CASE WHEN r.format='epub' THEN COALESCE(books.audiobook_monitored, 0) ELSE 0 END,
 			    updated_at=CURRENT_TIMESTAMP
-			FROM book_requests r WHERE r.id=? AND books.id=r.book_id AND (books.monitored=1 OR books.audiobook_monitored=1)`, id)
+			FROM book_requests r WHERE r.id=? AND books.id=r.book_id AND (books.ebook_monitored=1 OR books.audiobook_monitored=1)`, id)
 		return err
 	case "failed", "error":
 		if key != "" {

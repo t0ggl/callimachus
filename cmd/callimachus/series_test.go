@@ -36,7 +36,7 @@ func TestSeriesReadingOrder(t *testing.T) {
 		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','test')`,
 		`INSERT INTO authors(id,name,sort_name) VALUES('a','Author','Author')`,
 		`INSERT INTO series(id,title,description,total_books,status,monitored) VALUES('s','Sequence','A sprawling fantasy sequence.',4,'ongoing',1)`,
-		`INSERT INTO books(id,author_id,title,subtitle,series_id,series_index,series_index_display,synopsis,monitored) VALUES('b','a','Second: A Novel (Sequence Book 1)','The Middle Volume','s',1,'#1','Local synopsis',1)`,
+		`INSERT INTO books(id,author_id,title,subtitle,series_id,series_index,series_index_display,synopsis,ebook_monitored) VALUES('b','a','Second: A Novel (Sequence Book 1)','The Middle Volume','s',1,'#1','Local synopsis',1)`,
 		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('placeholder','a','Second','s',1)`,
 		`INSERT INTO book_editions(id,book_id,format) VALUES('e1','b','epub')`,
 		`INSERT INTO book_editions(id,book_id,format) VALUES('e2','b','m4b')`,
@@ -141,9 +141,9 @@ func TestSeriesBooksMissingMetadataAndValidation(t *testing.T) {
 	for _, query := range []string{
 		`INSERT INTO authors(id,name,sort_name) VALUES('a1','Alpha Author','Author, Alpha')`,
 		`INSERT INTO series(id,title,status,monitored) VALUES('s1','Sparse Series','completed',0)`,
-		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date,monitored) VALUES('b_nil_late','a1','Zeta Unindexed','s1',NULL,'2022-01-01',0)`,
-		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date,monitored) VALUES('b_nil_early','a1','Alpha Unindexed','s1',NULL,'2021-01-01',0)`,
-		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date,monitored) VALUES('b_one','a1','First Volume','s1',1.0,'2020-01-01',1)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date,ebook_monitored) VALUES('b_nil_late','a1','Zeta Unindexed','s1',NULL,'2022-01-01',0)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date,ebook_monitored) VALUES('b_nil_early','a1','Alpha Unindexed','s1',NULL,'2021-01-01',0)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date,ebook_monitored) VALUES('b_one','a1','First Volume','s1',1.0,'2020-01-01',1)`,
 		`INSERT INTO users(id,username,email) VALUES('reader','Reader','reader@example.test')`,
 		`INSERT INTO book_requests(user_id,book_id,title,author,format,status) VALUES('reader','b_one','First Volume','Alpha Author','epub','searching')`,
 	} {
@@ -384,11 +384,11 @@ func TestSeriesBooks_LegendsOfTheRiftwarDeduplicationAndOwnedMetadata(t *testing
 		`INSERT INTO authors(id,name,sort_name) VALUES('a_feist_stirling','Raymond E. Feist & S. M. Stirling','Feist, Raymond E.')`,
 		`INSERT INTO series(id,title,description,total_books,status,monitored) VALUES('s_riftwar','Legends of the Riftwar','Three standalone novels set during the Riftwar.',3,'completed',1)`,
 		// Book 1 owned with UK spelling, co-author string, custom synopsis, custom release date.
-		`INSERT INTO books(id,author_id,title,subtitle,series_id,series_index,series_index_display,release_date,synopsis,monitored) VALUES('b1','a_feist_forstchen','Honoured Enemy','Book One Owned Subtitle','s_riftwar',1,'Book 1','2001-08-01','Owned synopsis for Honoured Enemy.',1)`,
+		`INSERT INTO books(id,author_id,title,subtitle,series_id,series_index,series_index_display,release_date,synopsis,ebook_monitored) VALUES('b1','a_feist_forstchen','Honoured Enemy','Book One Owned Subtitle','s_riftwar',1,'Book 1','2001-08-01','Owned synopsis for Honoured Enemy.',1)`,
 		// Local duplicate placeholder with US spelling + parenthesized series annotation.
 		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date) VALUES('b1_dup','a_feist_forstchen','Honored Enemy (Legends of the Riftwar, Book 1)','s_riftwar',1,'2001-09-15')`,
 		// Book 2 owned with uppercase "In", single author recorded locally.
-		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date,synopsis,monitored) VALUES('b2','a_feist','Murder In LaMut','s_riftwar',2,'2002-01-01','Owned synopsis for Murder In LaMut.',1)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index,release_date,synopsis,ebook_monitored) VALUES('b2','a_feist','Murder In LaMut','s_riftwar',2,'2002-01-01','Owned synopsis for Murder In LaMut.',1)`,
 		// Local duplicate unowned with co-author & lowercase "in".
 		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b2_dup','a_feist_rosenberg','Murder in LaMut','s_riftwar',2)`,
 		// Book 3 unowned local entry with "Series, Book 3: Title" prefix.

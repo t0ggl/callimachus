@@ -70,9 +70,9 @@ func (m *Monitor) SetMonitoring(ctx context.Context, kind, id string, ebook, aud
 	}
 
 	if kind == "authors" && ebook != nil && *ebook {
-		_, err = tx.ExecContext(ctx, `UPDATE books SET monitored=1, audiobook_monitored=CASE WHEN audiobook_monitored=1 THEN 1 END,
+		_, err = tx.ExecContext(ctx, `UPDATE books SET ebook_monitored=1, audiobook_monitored=CASE WHEN audiobook_monitored=1 THEN 1 END,
 			availability_checked_at=NULL, updated_at=CURRENT_TIMESTAMP
-			WHERE author_id=? AND monitored=0 AND NOT EXISTS (
+			WHERE author_id=? AND ebook_monitored=0 AND NOT EXISTS (
 				SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id WHERE e.book_id=books.id
 			)`, id)
 	} else if kind == "series" {
@@ -80,7 +80,7 @@ func (m *Monitor) SetMonitoring(ctx context.Context, kind, id string, ebook, aud
 			enabled *bool
 			column  string
 			audio   bool
-		}{{ebook, "monitored", false}, {audiobook, "audiobook_monitored", true}} {
+		}{{ebook, "ebook_monitored", false}, {audiobook, "audiobook_monitored", true}} {
 			if format.enabled == nil || !*format.enabled {
 				continue
 			}

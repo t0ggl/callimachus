@@ -287,7 +287,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 	books := []entry{}
 	rows, err := s.db.QueryContext(r.Context(), `
 		SELECT b.id, b.title, COALESCE(b.subtitle,''), a.name, COALESCE(s.title,''), COALESCE(s.id,''),
-		       COALESCE(b.release_date,''), b.series_index, COALESCE(b.synopsis,''), b.monitored, COALESCE(b.audiobook_monitored, b.monitored), `+bookAvailabilitySQL+`,
+		       COALESCE(b.release_date,''), b.series_index, COALESCE(b.synopsis,''), b.ebook_monitored, COALESCE(b.audiobook_monitored, b.ebook_monitored), `+bookAvailabilitySQL+`,
 		       (SELECT json_group_array(format) FROM (
 		           SELECT DISTINCT UPPER(e.format) AS format
 		           FROM book_editions e JOIN media_assets m ON m.edition_id=e.id
@@ -732,12 +732,12 @@ func (s *Server) handleBookMonitor(w http.ResponseWriter, r *http.Request) {
 	var monitored, audiobookMonitored bool
 	err := s.db.QueryRowContext(r.Context(), `
 		UPDATE books
-		SET monitored = COALESCE(?, monitored),
+		SET ebook_monitored = COALESCE(?, ebook_monitored),
 		    audiobook_monitored = COALESCE(?, audiobook_monitored),
 		    availability_checked_at = CASE WHEN ? OR ? THEN NULL ELSE availability_checked_at END,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
-		RETURNING monitored, COALESCE(audiobook_monitored, monitored)`, input.Monitored, input.AudiobookMonitored,
+		RETURNING ebook_monitored, COALESCE(audiobook_monitored, ebook_monitored)`, input.Monitored, input.AudiobookMonitored,
 		input.Monitored, input.AudiobookMonitored, id).Scan(&monitored, &audiobookMonitored)
 	if errors.Is(err, sql.ErrNoRows) {
 		http.Error(w, "Book not found", http.StatusNotFound)

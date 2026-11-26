@@ -52,7 +52,7 @@ func TestBookRefreshRBACAndCSRF(t *testing.T) {
 		INSERT INTO settings (key, value) VALUES ('hardcover_api_key', 'hc-test-key'), ('openlibrary_enabled', 'false')
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 		INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'Frank Herbert', 'Herbert, Frank');
-		INSERT INTO books (id, author_id, title, monitored) VALUES ('b1', 'a1', 'Dune', 0);
+		INSERT INTO books (id, author_id, title, ebook_monitored) VALUES ('b1', 'a1', 'Dune', 0);
 	`); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestBookRefreshPersistsDescriptionAndPreservesManualIdeal(t *testing.T) {
 		INSERT INTO settings (key, value) VALUES ('hardcover_api_key', 'hc-test-key'), ('openlibrary_enabled', 'false')
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 		INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'Frank Herbert', 'Herbert, Frank');
-		INSERT INTO books (id, author_id, title, release_date, synopsis, monitored)
+		INSERT INTO books (id, author_id, title, release_date, synopsis, ebook_monitored)
 		VALUES ('b1', 'a1', 'Dune', '1965', NULL, 1);
 		INSERT INTO book_editions (id, book_id, format, language) VALUES ('e1', 'b1', 'epub', 'en');
 		INSERT INTO book_ideal_metadata (book_id, title, series, series_index, source)
@@ -234,7 +234,7 @@ func TestBookRefreshOpenLibraryWorkDescriptionFallback(t *testing.T) {
 		INSERT INTO settings (key, value) VALUES ('hardcover_api_key', ''), ('openlibrary_enabled', 'true')
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 		INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'Ursula K. Le Guin', 'Guin, Ursula K. Le');
-		INSERT INTO books (id, author_id, title, release_date, monitored) VALUES ('b1', 'a1', 'The Left Hand of Darkness', '1969', 0);
+		INSERT INTO books (id, author_id, title, release_date, ebook_monitored) VALUES ('b1', 'a1', 'The Left Hand of Darkness', '1969', 0);
 		INSERT INTO book_editions (id, book_id, format, language) VALUES ('e1', 'b1', 'epub', 'en');
 	`); err != nil {
 		t.Fatal(err)

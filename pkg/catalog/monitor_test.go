@@ -106,7 +106,7 @@ func TestMonitoringReleaseDayDailyChecksAndAcquisition(t *testing.T) {
 	}
 	tick("2028-05-09T00:00:00Z", 0)
 	var count int
-	if err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM books WHERE monitored=1").Scan(&count); err != nil || count != 1 {
+	if err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM books WHERE ebook_monitored=1").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("unexpected discoveries %d: %v", count, err)
 	}
 	// Even a manual download search cannot acquire unreleased titles.
@@ -239,7 +239,7 @@ func TestIndividualBookMonitoringAndAutoUnmonitorOnAcquisition(t *testing.T) {
 
 	// Book is automatically unmonitored when downloaded, while series remains monitored.
 	var bookMonitored, seriesMonitored bool
-	if err := db.QueryRowContext(ctx, `SELECT monitored FROM books WHERE id=?`, book.ID).Scan(&bookMonitored); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT ebook_monitored FROM books WHERE id=?`, book.ID).Scan(&bookMonitored); err != nil {
 		t.Fatal(err)
 	}
 	if bookMonitored {
@@ -256,7 +256,7 @@ func TestIndividualBookMonitoringAndAutoUnmonitorOnAcquisition(t *testing.T) {
 	if err := m.Tick(ctx, time.Date(2030, 6, 16, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(ctx, `SELECT monitored FROM books WHERE id=?`, book.ID).Scan(&bookMonitored); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT ebook_monitored FROM books WHERE id=?`, book.ID).Scan(&bookMonitored); err != nil {
 		t.Fatal(err)
 	}
 	if bookMonitored {
@@ -269,7 +269,7 @@ func TestIndividualBookMonitoringAndAutoUnmonitorOnAcquisition(t *testing.T) {
 	}
 	var volFourID string
 	var volFourMonitored bool
-	if err := db.QueryRowContext(ctx, `SELECT id, monitored FROM books WHERE title='Volume Four'`).Scan(&volFourID, &volFourMonitored); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT id, ebook_monitored FROM books WHERE title='Volume Four'`).Scan(&volFourID, &volFourMonitored); err != nil {
 		t.Fatal(err)
 	}
 	if !volFourMonitored {
@@ -380,7 +380,7 @@ func TestMonitoringKeepsWitnessSeriesSeparate(t *testing.T) {
 	for _, query := range []string{
 		`INSERT INTO authors(id,name,sort_name) VALUES('erikson','Steven Erikson','Erikson, Steven'),('monroe','Grace Monroe','Monroe, Grace')`,
 		`INSERT INTO series(id,title,description,monitored) VALUES('legacy','The Witness','Local description',1)`,
-		`INSERT INTO books(id,author_id,title,series_id,series_index,monitored) VALUES('god','erikson','The God Is Not Willing','legacy',1,0)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index,ebook_monitored) VALUES('god','erikson','The God Is Not Willing','legacy',1,0)`,
 		`INSERT INTO book_editions(id,book_id,format) VALUES('local-edition','god','epub')`,
 		`INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES('local-file','local-edition','/library/erikson.epub',1)`,
 	} {
@@ -431,7 +431,7 @@ func TestMonitoringKeepsWitnessSeriesSeparate(t *testing.T) {
 		t.Fatalf("unrelated or duplicate books persisted: %d (%v)", count, err)
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM books b JOIN book_editions e ON e.book_id=b.id JOIN media_assets m ON m.edition_id=e.id
-  WHERE b.id='god' AND b.series_id='legacy' AND b.series_index=1 AND b.monitored=0 AND m.id='local-file'`).Scan(&count); err != nil || count != 1 {
+  WHERE b.id='god' AND b.series_id='legacy' AND b.series_index=1 AND b.ebook_monitored=0 AND m.id='local-file'`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("existing book, flags, or media changed: %d (%v)", count, err)
 	}
 }
@@ -446,7 +446,7 @@ func TestMonitoringFiltersCollectionsOnPersistAndAvailabilityCheck(t *testing.T)
 	}
 	// Pre-existing unowned omnibus row left from an older import must remain intact in SQLite
 	// without triggering automated acquisition searches.
-	if _, err := db.ExecContext(ctx, `INSERT INTO books(id,author_id,title,monitored) VALUES('legacy-omnibus',?,'Brandon Sanderson''s White Sand Omnibus',1)`, author.ID); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT INTO books(id,author_id,title,ebook_monitored) VALUES('legacy-omnibus',?,'Brandon Sanderson''s White Sand Omnibus',1)`, author.ID); err != nil {
 		t.Fatal(err)
 	}
 

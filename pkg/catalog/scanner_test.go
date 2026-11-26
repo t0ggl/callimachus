@@ -634,7 +634,7 @@ func TestCatalog_ReconcileBackfillsSeriesIndexOnRescan(t *testing.T) {
 	}
 	// Pre-existing catalog row has series_id set, but series_index is NULL ("Unindexed").
 	if _, err := db.ExecContext(ctx,
-		`INSERT INTO books (id, author_id, title, series_id, series_index, genres, monitored) VALUES ('b-lom-1', ?, 'Lord of Mysteries vol 1', ?, NULL, '[]', 1)`,
+		`INSERT INTO books (id, author_id, title, series_id, series_index, genres, ebook_monitored) VALUES ('b-lom-1', ?, 'Lord of Mysteries vol 1', ?, NULL, '[]', 1)`,
 		author.ID, series.ID,
 	); err != nil {
 		t.Fatal(err)

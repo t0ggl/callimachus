@@ -132,7 +132,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 		rows, err := s.db.QueryContext(r.Context(), `
 			SELECT b.id, b.title, COALESCE(b.subtitle, ''), a.name, b.series_index,
 			       COALESCE(b.release_date, ''),
-			       COALESCE(b.synopsis, ''), b.monitored, COALESCE(b.audiobook_monitored, b.monitored), `+bookAvailabilitySQL+`
+			       COALESCE(b.synopsis, ''), b.ebook_monitored, COALESCE(b.audiobook_monitored, b.ebook_monitored), `+bookAvailabilitySQL+`
 			FROM books b
 			JOIN authors a ON a.id=b.author_id
 			WHERE b.series_id=?
