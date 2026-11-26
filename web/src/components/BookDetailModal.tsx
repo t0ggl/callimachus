@@ -200,7 +200,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
         (currentBook.state === undefined && (hasAssets || currentBook.formats.length > 0)))
   );
   const allowRequest = Boolean(canRequest ?? canManage);
-  const showMonitorControl = !isOwned && Boolean(canManage);
+  const showMonitorControl = !isOwned && allowRequest;
   const showInlineDownloadOptions = Boolean(!activity && !subpanelOpen && allowRequest && !hasAssets);
   const showOverflowRefresh = Boolean(!activity && canRefreshMetadata);
   const showOverflowRepair = canRepair;

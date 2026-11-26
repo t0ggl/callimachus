@@ -280,7 +280,7 @@ it('hides write controls from guests and lazily resolves unpersisted books for r
   rerender(
     <BookDetailModal book={unpersisted} canManage={false} canRequest onBookUpdated={onBookUpdated} onClose={vi.fn()} />
   );
-  expect(screen.queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Monitor Book' })).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'Show Download Options' }));
 
   const resolveCall = fetchMock.mock.calls.find(([url]) => url === '/api/books/resolve');

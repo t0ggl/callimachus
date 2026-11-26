@@ -459,7 +459,7 @@ export function SeriesDetailModal({
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    {canManage && (
+                    {allowRequest && (
                       <button
                         type="button"
                         disabled={seriesMonitorBusy}
@@ -646,7 +646,7 @@ export function SeriesDetailModal({
                                         Download
                                       </button>
                                     )}
-                                    {state === 'Scheduled' && canManage && (
+                                    {state === 'Scheduled' && allowRequest && (
                                       <button
                                         type="button"
                                         disabled={rowBusy}
