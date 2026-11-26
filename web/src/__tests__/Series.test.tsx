@@ -648,7 +648,7 @@ it('opens unowned book details, inline Download options, and inline Monitor for 
   );
 });
 
-it('lets guests inspect unowned book details read-only and restricts requesters to download actions in SeriesDetailModal', async () => {
+it('lets guests inspect unowned book details read-only and allows requesters to download and monitor in SeriesDetailModal', async () => {
   const user = userEvent.setup({ delay: null });
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     if (url.startsWith('/api/series/books?')) {
@@ -724,14 +724,15 @@ it('lets guests inspect unowned book details read-only and restricts requesters 
   expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(0);
   await user.click(within(guestDetail).getByRole('button', { name: 'Close details' }));
 
-  // Requester: sees Download & Show Download Options (resolves lazily on click), never Monitor
+  // Requester: sees Monitor Series, Download, Monitor on Scheduled books, and Monitor Book in details
   rerender(<SeriesDetailModal title="Sequence" canManage={false} canRequest onClose={vi.fn()} />);
+  expect(screen.getByRole('button', { name: 'Monitor Series' })).toBeInTheDocument();
   expect(within(missingItem).getByRole('button', { name: 'Download' })).toBeInTheDocument();
-  expect(within(scheduledItem).queryByRole('button', { name: /Monitor/i })).not.toBeInTheDocument();
+  expect(within(scheduledItem).getByRole('button', { name: 'Monitor' })).toBeInTheDocument();
 
   await user.click(within(missingItem).getByRole('button', { name: 'Missing Tome' }));
   const reqDetail = await screen.findByRole('dialog', { name: 'Details for Missing Tome' });
-  expect(within(reqDetail).queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
+  expect(within(reqDetail).getByRole('button', { name: 'Monitor Book' })).toBeInTheDocument();
   expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(0);
 
   await user.click(within(reqDetail).getByRole('button', { name: 'Show Download Options' }));

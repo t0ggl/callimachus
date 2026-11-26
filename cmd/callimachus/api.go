@@ -210,11 +210,11 @@ type APISettingsUpdateRequest struct {
 
 func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/catalog/entity", s.handleCatalogEntity)
-	mux.Handle("PUT /api/catalog/entity", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleCatalogMonitor)))
+	mux.Handle("PUT /api/catalog/entity", auth.RequireRole(auth.RoleRequester)(http.HandlerFunc(s.handleCatalogMonitor)))
 	mux.Handle("POST /api/catalog/entity", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleCatalogAction)))
 	mux.HandleFunc("GET /api/discover", s.handleDiscover)
 	mux.Handle("POST /api/books/resolve", auth.RequireRole(auth.RoleRequester)(http.HandlerFunc(s.handleResolveBook)))
-	mux.Handle("PUT /api/books/{id}/monitor", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleBookMonitor)))
+	mux.Handle("PUT /api/books/{id}/monitor", auth.RequireRole(auth.RoleRequester)(http.HandlerFunc(s.handleBookMonitor)))
 	mux.Handle("POST /api/books/{id}/refresh", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleRefreshBookMetadata)))
 	mux.HandleFunc("GET /api/books/{id}/cover", s.handleBookCover)
 	mux.Handle("POST /api/books/{id}/cover", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleUploadBookCover)))

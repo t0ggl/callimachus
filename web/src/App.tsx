@@ -77,7 +77,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const isAdmin = currentUser?.role === 'admin';
   const canManage = currentUser?.role === 'admin' || currentUser?.role === 'curator';
-  const canRequest = canManage || currentUser?.role === 'requester';
+  const canRequest = canManage || currentUser?.role === 'requester' || currentUser?.role === 'user';
   const [books, setBooks] = useState<Book[]>([]);
   const [authors, setAuthors] = useState<Author[]>([]);
   const [series, setSeries] = useState<Series[]>([]);

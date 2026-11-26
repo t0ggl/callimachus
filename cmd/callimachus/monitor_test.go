@@ -242,6 +242,7 @@ func TestBookResolveAndMonitorEndpoints(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
 	s := &Server{db: db, monitorWake: make(chan struct{}, 1)}
+	s.catalogMonitor = s.newCatalogMonitor()
 	mux := http.NewServeMux()
 	s.registerAPIRoutes(mux)
 
@@ -341,27 +342,24 @@ func TestBookResolveAndMonitorEndpoints(t *testing.T) {
 		t.Fatalf("expected 2099-11 Scheduled, got %+v", monthNameBook)
 	}
 
-	// Book monitor endpoint enforces curator/admin role, validates input, and leaves series.monitored unchanged.
+	// Book and catalog monitor endpoints allow any authenticated requester+ user while blocking guests and unauthenticated callers.
 	if w := request("PUT", "/api/books/"+resolved.ID+"/monitor", `{"monitored":true}`, ""); w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for unauthenticated monitor, got %d", w.Code)
 	}
 	if w := request("PUT", "/api/books/"+resolved.ID+"/monitor", `{"monitored":true}`, auth.RoleGuest); w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for guest monitor, got %d", w.Code)
 	}
-	if w := request("PUT", "/api/books/"+resolved.ID+"/monitor", `{"monitored":true}`, auth.RoleRequester); w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for requester, got %d", w.Code)
-	}
-	if w := request("PUT", "/api/books/"+resolved.ID+"/monitor", `{}`, auth.RoleCurator); w.Code != http.StatusBadRequest {
+	if w := request("PUT", "/api/books/"+resolved.ID+"/monitor", `{}`, auth.RoleRequester); w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for missing monitored field, got %d", w.Code)
 	}
-	if w := request("PUT", "/api/books/nonexistent/monitor", `{"monitored":true}`, auth.RoleCurator); w.Code != http.StatusNotFound {
+	if w := request("PUT", "/api/books/nonexistent/monitor", `{"monitored":true}`, auth.RoleRequester); w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for nonexistent book, got %d", w.Code)
 	}
 	if _, err := db.Exec(`UPDATE books SET availability_checked_at='2026-01-01T00:00:00Z' WHERE id=?`, resolved.ID); err != nil {
 		t.Fatal(err)
 	}
-	if w := request("PUT", "/api/books/"+resolved.ID+"/monitor", `{"monitored":true}`, auth.RoleCurator); w.Code != http.StatusOK {
-		t.Fatalf("enable book monitor: %d %s", w.Code, w.Body.String())
+	if w := request("PUT", "/api/books/"+resolved.ID+"/monitor", `{"monitored":true}`, auth.RoleRequester); w.Code != http.StatusOK {
+		t.Fatalf("enable book monitor as requester: %d %s", w.Code, w.Body.String())
 	}
 	var bookMonitored, seriesMonitored bool
 	var checkedAt *string
@@ -384,6 +382,20 @@ func TestBookResolveAndMonitorEndpoints(t *testing.T) {
 	}
 	if bookMonitored || seriesMonitored {
 		t.Fatalf("expected book and series unmonitored, got book=%v series=%v", bookMonitored, seriesMonitored)
+	}
+
+	// Series and author monitoring also allow requesters while blocking guests and unauthenticated callers.
+	if w := request("PUT", "/api/catalog/entity?kind=series&name=Epic+Saga&author=Author+One", `{"monitored":true}`, ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated series monitor, got %d", w.Code)
+	}
+	if w := request("PUT", "/api/catalog/entity?kind=series&name=Epic+Saga&author=Author+One", `{"monitored":true}`, auth.RoleGuest); w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for guest series monitor, got %d", w.Code)
+	}
+	if w := request("PUT", "/api/catalog/entity?kind=series&name=Epic+Saga&author=Author+One", `{"monitored":true}`, auth.RoleRequester); w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for requester series monitor, got %d: %s", w.Code, w.Body.String())
+	}
+	if w := request("PUT", "/api/catalog/entity?kind=authors&name=Author+One", `{"monitored":true}`, auth.RoleRequester); w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for requester author monitor, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

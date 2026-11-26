@@ -155,15 +155,19 @@ it('resolves unpersisted series books for details, inline Download, and inline M
     expect(within(schedRow).getByRole('button', { name: 'Monitoring' })).toHaveAttribute('aria-pressed', 'true');
   });
 
-  // Requester sees inline Download (and Show Download Options) but never Monitor controls
+  // Requester sees inline Download and Monitor controls (books & series), without curator-only manual triggers
   rerender(<EntityView kind="series" name="Sequence" canManage={false} canRequest />);
   expect(within(missingRow).getByRole('button', { name: 'Download' })).toBeInTheDocument();
-  expect(within(schedRow).queryByRole('button', { name: /Monitor/i })).not.toBeInTheDocument();
+  expect(within(schedRow).getByRole('button', { name: /Monitoring/i })).toBeInTheDocument();
+  expect(screen.getByLabelText('Monitor Series')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Check New Releases/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Search Downloads/i })).not.toBeInTheDocument();
 
   // Guests cannot see Download or Monitor actions inline or inside unowned details
   rerender(<EntityView kind="series" name="Sequence" canManage={false} canRequest={false} />);
   expect(within(missingRow).queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
   expect(within(schedRow).queryByRole('button', { name: /Monitor/i })).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('Monitor Series')).not.toBeInTheDocument();
 
   await user.click(within(guestRow).getByRole('button', { name: 'Guest Visible Entry' }));
   const guestDialog = await screen.findByRole('dialog', { name: 'Details for Guest Visible Entry' });

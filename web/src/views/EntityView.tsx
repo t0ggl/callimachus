@@ -349,7 +349,7 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
                   Download
                 </button>
               )}
-              {canManage && state === 'Scheduled' && (
+              {allowRequest && state === 'Scheduled' && (
                 <button
                   type="button"
                   disabled={rowBusy}
@@ -400,19 +400,23 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
             )}
           </div>
         </div>
-        {canManage && (
+        {allowRequest && (
           <div className="space-y-3 border-t border-zinc-800 bg-zinc-950/40 p-4 sm:px-6">
             <div className="flex flex-wrap items-center gap-2">
               <label className={`${button} has-disabled:opacity-50`}>
                 <input type="checkbox" checked={data?.monitored ?? false} disabled={!data || busy} onChange={() => void act()} className="size-4 accent-blue-500" />
                 Monitor {isSeries ? 'Series' : 'Author'}
               </label>
-              <button type="button" className={button} disabled={!data || busy} onClick={() => void act('discover')}>
-                <Calendar size={16} aria-hidden="true" /> Check New Releases
-              </button>
-              <button type="button" className={button} disabled={!data || busy} onClick={() => void act('downloads')}>
-                <Search size={16} aria-hidden="true" /> Search Downloads
-              </button>
+              {canManage && (
+                <>
+                  <button type="button" className={button} disabled={!data || busy} onClick={() => void act('discover')}>
+                    <Calendar size={16} aria-hidden="true" /> Check New Releases
+                  </button>
+                  <button type="button" className={button} disabled={!data || busy} onClick={() => void act('downloads')}>
+                    <Search size={16} aria-hidden="true" /> Search Downloads
+                  </button>
+                </>
+              )}
             </div>
             <p className="max-w-[75ch] text-sm text-zinc-400">
               Monitoring checks for new releases monthly and searches for downloads daily until a book is acquired.
