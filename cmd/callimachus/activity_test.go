@@ -83,10 +83,13 @@ func TestActivityScopeAndStandaloneDismissal(t *testing.T) {
 		INSERT INTO book_requests(id,user_id,book_id,title,author,format,status)
 			VALUES(1,'owner','b','Book','Author','epub','downloading');
 		INSERT INTO download_queue(id,request_id,download_client_task_id,title,protocol,status)
-			VALUES('owned',1,'task','Book EPUB','torrent','importing'),('standalone',NULL,'task2','Other Book','torrent','completed');
+			VALUES('owned',1,'task','Book EPUB','torrent','importing'),
+			('standalone-completed',NULL,'task2','Other Book','torrent','completed'),
+			('standalone-active',NULL,'task3','Active Book','torrent','downloading');
 		INSERT INTO conversion_queue(id,download_id,edition_id,source_path,target_path,status)
 			VALUES('owned-job','owned','e','/source','/target','pending'),
-			('standalone-job',NULL,'e','/other','/target2','pending');`)
+			('standalone-job',NULL,'e','/other','/target2','pending'),
+			('standalone-done-job',NULL,'e','/done','/target3','completed');`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,8 +110,8 @@ func TestActivityScopeAndStandaloneDismissal(t *testing.T) {
 		w := call(http.MethodGet, "/api/activity", tc.user, tc.role)
 		var snapshot APIActivityResponse
 		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &snapshot) != nil ||
-			len(snapshot.Requests) != tc.requests || len(snapshot.ConversionJobs) != 1+tc.requests ||
-			len(snapshot.Downloads) != 1+tc.requests {
+			len(snapshot.Requests) != tc.requests || len(snapshot.ConversionJobs) != 2+tc.requests ||
+			len(snapshot.Downloads) != 2+tc.requests {
 			t.Fatalf("%s snapshot: %d %s", tc.user, w.Code, w.Body)
 		}
 		if tc.requests == 1 && (snapshot.Requests[0].Stage != "importing" || snapshot.Requests[0].BookID == nil || *snapshot.Requests[0].BookID != "b") {
@@ -119,9 +122,11 @@ func TestActivityScopeAndStandaloneDismissal(t *testing.T) {
 		path, role string
 		want       int
 	}{
-		{"/api/activity/downloads/standalone", auth.RoleRequester, 403},
+		{"/api/activity/downloads/standalone-active", auth.RoleRequester, 403},
 		{"/api/activity/downloads/owned", auth.RoleCurator, 409},
-		{"/api/activity/downloads/standalone", auth.RoleCurator, 204},
+		{"/api/activity/downloads/standalone-completed", auth.RoleCurator, 409},
+		{"/api/activity/downloads/standalone-active", auth.RoleCurator, 204},
+		{"/api/activity/conversions/standalone-done-job", auth.RoleCurator, 409},
 		{"/api/activity/conversions/standalone-job", auth.RoleCurator, 204},
 	} {
 		w := call(http.MethodDelete, tc.path, "curator", tc.role)
@@ -132,5 +137,15 @@ func TestActivityScopeAndStandaloneDismissal(t *testing.T) {
 	var status string
 	if err := db.QueryRow("SELECT status FROM conversion_queue WHERE id='standalone-job'").Scan(&status); err != nil || status != "cancelled" {
 		t.Fatalf("cancelled state: %s %v", status, err)
+	}
+	if err := db.QueryRow("SELECT status FROM download_queue WHERE id='standalone-active'").Scan(&status); err != nil || status != "cancelled" {
+		t.Fatalf("cancelled download state: %s %v", status, err)
+	}
+	var dismissed int
+	if err := db.QueryRow("SELECT dismissed FROM download_queue WHERE id='standalone-completed'").Scan(&dismissed); err != nil || dismissed != 0 {
+		t.Fatalf("completed download should not be dismissed: %d %v", dismissed, err)
+	}
+	if err := db.QueryRow("SELECT dismissed FROM conversion_queue WHERE id='standalone-done-job'").Scan(&dismissed); err != nil || dismissed != 0 {
+		t.Fatalf("completed conversion should not be dismissed: %d %v", dismissed, err)
 	}
 }

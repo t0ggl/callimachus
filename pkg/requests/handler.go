@@ -252,7 +252,7 @@ func (h *Handler) handleGetRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		err := h.service.dismiss(r.Context(), id)
 		switch {
-		case errors.Is(err, ErrImportFinishing):
+		case errors.Is(err, ErrImportFinishing), errors.Is(err, ErrCompletedActivity):
 			writeError(w, http.StatusConflict, err.Error())
 		case err != nil:
 			writeError(w, http.StatusInternalServerError, "unable to remove activity")

@@ -387,9 +387,11 @@ export const ActivityView: React.FC<ActivityViewProps> = (props) => {
             <ul aria-label="Book activity" className="divide-y divide-zinc-800/80 @4xl:grid @4xl:col-span-full @4xl:grid-cols-subgrid">
               {filteredItems.map(item => {
                 const allowRequest = Boolean(props.canRequest ?? props.canManageJobs);
-                const path = item.request && allowRequest ? `/api/requests/${encodeURIComponent(item.request.id)}` : props.canManageJobs ?
-                  item.downloadId ? `/api/activity/downloads/${encodeURIComponent(item.downloadId)}` :
-                    item.conversionId ? `/api/activity/conversions/${encodeURIComponent(item.conversionId)}` : undefined : undefined;
+                const isCompleted = item.phase === 'Completed';
+                const path = isCompleted ? undefined :
+                  item.request && allowRequest ? `/api/requests/${encodeURIComponent(item.request.id)}` : props.canManageJobs ?
+                    item.downloadId ? `/api/activity/downloads/${encodeURIComponent(item.downloadId)}` :
+                      item.conversionId ? `/api/activity/conversions/${encodeURIComponent(item.conversionId)}` : undefined : undefined;
                 const busy = pending.includes(item.id);
                 const action = busy ? 'Working…' : isFinished(item) ? 'Remove' : 'Cancel';
                 const tone = phaseStyle(item.phase);
