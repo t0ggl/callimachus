@@ -199,7 +199,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       (item) =>
         item.title.toLowerCase().includes(q) ||
         (item.subtitle && item.subtitle.toLowerCase().includes(q)) ||
-        item.book?.seriesTitle?.toLowerCase().includes(q)
+        item.book?.seriesTitle?.toLowerCase().includes(q) ||
+        item.book?.seriesMemberships?.some((membership) => membership.title.toLowerCase().includes(q))
     );
   }, [books, authors, series, query, canAccessSettings, onNavigate, onSelectBook, onClose]);
 

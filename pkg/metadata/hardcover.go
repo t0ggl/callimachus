@@ -276,6 +276,15 @@ func mapHardcoverBookNode(b *hardcoverBookNode) BookMetadata {
 
 	if bs := primaryHardcoverMembership(b, meta.Authors); bs != nil {
 		applyHardcoverMembership(&meta, *bs)
+		meta.AddSeriesMembership(hardcoverMembership(bs))
+	}
+	for i := range b.BookSeries {
+		if bs := &b.BookSeries[i]; !bs.Compilation {
+			meta.AddSeriesMembership(hardcoverMembership(bs))
+		}
+	}
+	if bs := b.FeaturedBookSeries; bs != nil && !bs.Compilation {
+		meta.AddSeriesMembership(hardcoverMembership(bs))
 	}
 
 	addLanguage := func(lang *hardcoverLanguage) {
@@ -334,7 +343,7 @@ func primaryHardcoverMembership(b *hardcoverBookNode, authors []string) *hardcov
 		return b.FeaturedBookSeries
 	}
 	var best *hardcoverBookSeries
-	bestRank, tied := 0, false
+	bestRank, bestCount, tied, missingCount := 0, 0, false, false
 	for i := range b.BookSeries {
 		bs := &b.BookSeries[i]
 		if !compatible(bs) {
@@ -346,13 +355,26 @@ func primaryHardcoverMembership(b *hardcoverBookNode, authors []string) *hardcov
 		} else if bs.Series.Author != nil && bs.Series.Author.Name != "" {
 			rank = 2
 		}
+		count := bs.Series.BooksCount
+		if bs.Series.Canonical != nil && bs.Series.Canonical.BooksCount > 0 {
+			count = bs.Series.Canonical.BooksCount
+		}
 		if rank > bestRank {
-			best, bestRank, tied = bs, rank, false
-		} else if rank == bestRank && (bs.Series.identity() == 0 || bs.Series.identity() != best.Series.identity()) {
+			best, bestRank, bestCount, tied, missingCount = bs, rank, count, false, false
+			continue
+		}
+		if rank != bestRank || (bs.Series.identity() != 0 && bs.Series.identity() == best.Series.identity()) {
+			continue
+		}
+		if count <= 0 || bestCount <= 0 {
+			missingCount = true
+		} else if count < bestCount {
+			best, bestCount, tied = bs, count, false
+		} else if count == bestCount {
 			tied = true
 		}
 	}
-	if tied {
+	if tied || missingCount {
 		return nil
 	}
 	return best
@@ -363,6 +385,14 @@ func (s hardcoverSeries) identity() int {
 		return s.CanonicalID
 	}
 	return s.ID
+}
+
+func hardcoverMembership(bs *hardcoverBookSeries) SeriesMembership {
+	series := bs.Series
+	if series.Canonical != nil && series.Canonical.Name != "" {
+		series = *series.Canonical
+	}
+	return SeriesMembership{Title: series.Name, Index: bs.SeriesPosition, HardcoverID: bs.Series.identity()}
 }
 
 func applyHardcoverMembership(meta *BookMetadata, bs hardcoverBookSeries) {

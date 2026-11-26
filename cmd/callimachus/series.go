@@ -105,7 +105,8 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 			FROM book_editions e
 			JOIN media_assets m ON m.edition_id=e.id
 			JOIN books b ON b.id=e.book_id
-			WHERE b.series_id=?
+			JOIN book_series bs ON bs.book_id = b.id
+			WHERE bs.series_id=?
 			ORDER BY UPPER(e.format) ASC`, seriesID)
 		if err != nil {
 			http.Error(w, "Unable to load series", 500)
@@ -130,12 +131,13 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 		fmtRows.Close()
 
 		rows, err := s.db.QueryContext(r.Context(), `
-			SELECT b.id, b.title, COALESCE(b.subtitle, ''), a.name, b.series_index,
+			SELECT b.id, b.title, COALESCE(b.subtitle, ''), a.name, bs.series_index,
 			       COALESCE(b.release_date, ''),
 			       COALESCE(b.synopsis, ''), b.ebook_monitored, COALESCE(b.audiobook_monitored, b.ebook_monitored), `+bookAvailabilitySQL+`
 			FROM books b
 			JOIN authors a ON a.id=b.author_id
-			WHERE b.series_id=?
+			JOIN book_series bs ON bs.book_id = b.id
+			WHERE bs.series_id=?
 			ORDER BY b.id`, seriesID)
 		if err != nil {
 			http.Error(w, "Unable to load series", 500)
@@ -533,6 +535,9 @@ func deduplicateLocalSeriesBooks(books []seriesBook, seriesTitle string) []serie
 }
 
 func mergeSeriesBookMetadata(local *seriesBook, remote metadata.BookMetadata) {
+	for _, membership := range remote.SeriesMemberships {
+		local.AddSeriesMembership(membership)
+	}
 	owned := local.State == "In library"
 	if local.Title == "" && remote.Title != "" {
 		local.Title = remote.Title

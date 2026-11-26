@@ -1,3 +1,4 @@
+import { AdditionalSeriesEditor } from './AdditionalSeriesEditor';
 import { EntityLink } from './EntityLink';
 import React, { useEffect, useId, useState } from 'react';
 import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download, Bell, Trash2, Upload, Search, Loader2, RefreshCw, MoreHorizontal, Wrench } from 'lucide-react';
@@ -6,7 +7,7 @@ import { MetadataRepairPanel } from './MetadataRepairPanel';
 import { CoverFinderPanel } from './CoverFinderPanel';
 import { BookAcquisition } from './AcquisitionProgress';
 import { validateCoverFile } from '../utils/coverValidation';
-import { Book, MetadataCandidate } from '../types';
+import { Book, MetadataCandidate, ProviderSeriesMembership } from '../types';
 
 export interface ResolveBookInput {
   bookId?: string;
@@ -17,6 +18,7 @@ export interface ResolveBookInput {
   seriesId?: string;
   hardcoverSeriesId?: number;
   seriesIndex?: number | null;
+  providerSeriesMemberships?: ProviderSeriesMembership[];
   releaseDate?: string;
   synopsis?: string;
   coverUrl?: string;
@@ -35,9 +37,9 @@ export async function resolveCatalogBook(input: ResolveBookInput): Promise<Book>
         synopsis: found.synopsis || input.synopsis,
         subtitle: found.subtitle || input.subtitle,
         releaseDate: found.releaseDate || input.releaseDate,
-        seriesId: found.seriesId || input.seriesId,
-        seriesTitle: found.seriesTitle || input.series,
-        seriesIndex: found.seriesIndex ?? input.seriesIndex ?? undefined,
+        seriesId: found.seriesId || (found.seriesMemberships ? undefined : input.seriesId),
+        seriesTitle: found.seriesTitle || (found.seriesMemberships ? undefined : input.series),
+        seriesIndex: found.seriesIndex ?? (found.seriesMemberships ? undefined : input.seriesIndex ?? undefined),
       };
     }
   }
@@ -53,6 +55,7 @@ export async function resolveCatalogBook(input: ResolveBookInput): Promise<Book>
       series_id: input.seriesId || undefined,
       hardcover_series_id: input.hardcoverSeriesId || undefined,
       series_index: input.seriesIndex ?? undefined,
+      series_memberships: input.providerSeriesMemberships,
       release_date: input.releaseDate,
       synopsis: input.synopsis,
       cover_url: input.coverUrl,
@@ -68,8 +71,8 @@ export async function resolveCatalogBook(input: ResolveBookInput): Promise<Book>
     synopsis: resolved.synopsis || input.synopsis,
     subtitle: resolved.subtitle || input.subtitle,
     releaseDate: resolved.releaseDate || input.releaseDate,
-    seriesTitle: resolved.seriesTitle || input.series,
-    seriesIndex: resolved.seriesIndex ?? input.seriesIndex ?? undefined,
+    seriesTitle: resolved.seriesTitle || (resolved.seriesMemberships ? undefined : input.series),
+    seriesIndex: resolved.seriesIndex ?? (resolved.seriesMemberships ? undefined : input.seriesIndex ?? undefined),
   };
 }
 
@@ -331,6 +334,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
       series: currentBook.seriesTitle,
       seriesId: currentBook.seriesId,
       seriesIndex: currentBook.seriesIndex,
+      providerSeriesMemberships: currentBook.providerSeriesMemberships,
       releaseDate: currentBook.releaseDate,
       synopsis: currentBook.synopsis,
       coverUrl: currentBook.coverUrl,
@@ -343,8 +347,8 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
       subtitle: resolved.subtitle || currentBook.subtitle,
       releaseDate: resolved.releaseDate || currentBook.releaseDate,
       seriesId: resolved.seriesId || currentBook.seriesId,
-      seriesTitle: resolved.seriesTitle || currentBook.seriesTitle,
-      seriesIndex: resolved.seriesIndex ?? currentBook.seriesIndex,
+      seriesTitle: resolved.seriesTitle || (resolved.seriesMemberships ? undefined : currentBook.seriesTitle),
+      seriesIndex: resolved.seriesIndex ?? (resolved.seriesMemberships ? undefined : currentBook.seriesIndex),
       seriesIndexDisplay: resolved.seriesIndexDisplay || currentBook.seriesIndexDisplay,
     };
     setActiveBook(merged);
@@ -716,7 +720,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
 
         {/* Content body */}
         {repairing ? (
-          <MetadataRepairPanel key={currentBook.id} bookID={currentBook.id} defaultLanguage={defaultLanguage} initialCandidate={initialRepairCandidate} onApplied={onMetadataApplied}
+          <MetadataRepairPanel key={currentBook.id} bookID={currentBook.id} defaultLanguage={defaultLanguage} initialCandidate={initialRepairCandidate} book={currentBook} onApplied={onMetadataApplied}
             onBack={() => {
               setRepairBookID(undefined);
               requestAnimationFrame(() => actionsMenuTriggerRef.current?.focus());
@@ -858,6 +862,17 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                   </div>
                 )}
 
+                {currentBook.seriesMemberships?.filter((membership) => !membership.isPrimary).map((membership) => (
+                  <div key={membership.seriesId} className="flex items-start gap-2 text-zinc-300">
+                    <Layers className="w-4 h-4 text-purple-400 shrink-0" aria-hidden="true" />
+                    <span className="text-zinc-400 shrink-0">Also in</span>
+                    <span className="font-medium text-zinc-200 break-words min-w-0">
+                      <EntityLink kind="series" name={membership.title} id={membership.seriesId} />
+                      {membership.index != null && ` (Book ${membership.indexDisplay || membership.index})`}
+                    </span>
+                  </div>
+                ))}
+
                 {currentBook.releaseDate && (
                   <div className="flex items-center gap-2 text-zinc-300">
                     <Calendar className="w-4 h-4 text-zinc-500 shrink-0" />
@@ -880,6 +895,13 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
           </div>
 
           {activity ?? (currentBook.id && <BookAcquisition key={currentBook.id} bookId={currentBook.id} />)}
+
+          {isAdmin && currentBook.id && currentBook.seriesMemberships && (
+            <AdditionalSeriesEditor key={currentBook.id} book={currentBook} onSaved={(saved) => {
+              setActiveBook(saved);
+              onMetadataApplied?.();
+            }} />
+          )}
 
           {/* Editions & File Assets */}
           <div className="space-y-4 border-t border-zinc-800 pt-5">

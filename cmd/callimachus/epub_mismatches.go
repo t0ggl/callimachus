@@ -776,6 +776,16 @@ func (s *Server) executeDuplicateResolution(
 			slog.ErrorContext(ctx, "resolve duplicate preserve ideal metadata failed", "book", otherBookID, "error", err)
 			return resolveDuplicatesResponse{}, http.StatusInternalServerError, "Unable to resolve duplicate EPUBs."
 		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO book_series (book_id, series_id, series_index, series_index_display, source)
+			SELECT ?, bs.series_id, bs.series_index, bs.series_index_display, bs.source
+			FROM book_series bs WHERE bs.book_id = ? AND bs.is_primary = 0 AND NOT EXISTS (
+				SELECT 1 FROM book_series_exclusions x WHERE x.book_id = ? AND x.series_id = bs.series_id
+			)
+			ON CONFLICT (book_id, series_id) DO NOTHING`, keepAsset.bookID, otherBookID, keepAsset.bookID); err != nil {
+			slog.ErrorContext(ctx, "resolve duplicate preserve series memberships failed", "book", otherBookID, "error", err)
+			return resolveDuplicatesResponse{}, http.StatusInternalServerError, "Unable to resolve duplicate EPUBs."
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM books WHERE id = ?`, otherBookID); err != nil {
 			slog.ErrorContext(ctx, "resolve duplicate delete merged book failed", "book", otherBookID, "error", err)
 			return resolveDuplicatesResponse{}, http.StatusInternalServerError, "Unable to resolve duplicate EPUBs."
@@ -790,7 +800,7 @@ func (s *Server) executeDuplicateResolution(
 		if seriesID.Valid {
 			if _, err := tx.ExecContext(ctx, `
 				DELETE FROM series WHERE id = ? AND monitored = 0 AND audiobook_monitored = 0 AND discovery_checked_at IS NULL
-				AND NOT EXISTS (SELECT 1 FROM books WHERE series_id = series.id)
+				AND NOT EXISTS (SELECT 1 FROM book_series WHERE series_id = series.id)
 				AND NOT EXISTS (SELECT 1 FROM catalog_actions WHERE kind = 'series' AND entity_id = series.id)`, seriesID.String); err != nil {
 				slog.ErrorContext(ctx, "resolve duplicate cleanup series failed", "book", otherBookID, "error", err)
 				return resolveDuplicatesResponse{}, http.StatusInternalServerError, "Unable to resolve duplicate EPUBs."

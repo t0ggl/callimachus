@@ -240,7 +240,7 @@ func (s *Server) applyBulkMonitor(ctx context.Context, monitor interface {
 	}
 
 	var bookCount int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM books WHERE series_id = ?`, item.ID).Scan(&bookCount); err == nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM book_series WHERE series_id = ?`, item.ID).Scan(&bookCount); err == nil {
 		res.AffectedBookCount = bookCount
 	}
 	val := enabled
@@ -332,9 +332,9 @@ func (s *Server) applyBulkRefresh(ctx context.Context, item bulkLibraryTarget) b
 	res.Title = cmp.Or(title, res.Title)
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, title FROM books
-		WHERE series_id = ?
-		ORDER BY series_index IS NULL, series_index, title, id`, item.ID)
+		SELECT b.id, b.title FROM books b JOIN book_series bs ON bs.book_id = b.id
+		WHERE bs.series_id = ?
+		ORDER BY bs.series_index IS NULL, bs.series_index, b.title, b.id`, item.ID)
 	if err != nil {
 		res.Error = "Unable to load series books."
 		return res

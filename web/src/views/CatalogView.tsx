@@ -251,7 +251,8 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
       const matchesSearch =
         b.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
         b.authorName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (b.seriesTitle && b.seriesTitle.toLowerCase().includes(searchQuery.toLowerCase()));
+        (b.seriesTitle && b.seriesTitle.toLowerCase().includes(searchQuery.toLowerCase())) ||
+        b.seriesMemberships?.some((membership) => membership.title.toLowerCase().includes(searchQuery.toLowerCase()));
 
       const matchesFormat =
         formatFilter === 'ALL' || b.formats.includes(formatFilter);
@@ -373,7 +374,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
         kind: 'series',
         id: s.id,
         title: s.title,
-        bookCount: books.filter((b) => b.seriesId === s.id).length,
+        bookCount: books.filter((b) => b.seriesId === s.id || b.seriesMemberships?.some((membership) => membership.seriesId === s.id)).length,
         monitored: s.monitored,
       }));
     }
@@ -1361,9 +1362,17 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
       {activeTab === 'series' && (
         <div className="space-y-4">
           {filteredSeries.map((s) => {
-            const seriesBooks = books
-              .filter((b) => b.seriesId === s.id)
-              .sort((a, b) => (a.seriesIndex || 0) - (b.seriesIndex || 0));
+            const seriesBooks = books.flatMap((book) => {
+              const membership = book.seriesMemberships?.find((item) => item.seriesId === s.id);
+              if (membership) return [{ book, index: membership.index }];
+              return book.seriesId === s.id ? [{ book, index: book.seriesIndex ?? null }] : [];
+            }).sort((a, b) => {
+              if (a.index != null && b.index != null && a.index !== b.index) return a.index - b.index;
+              if (a.index == null && b.index != null) return 1;
+              if (a.index != null && b.index == null) return -1;
+              return (a.book.releaseDate ?? '').localeCompare(b.book.releaseDate ?? '') ||
+                a.book.title.localeCompare(b.book.title) || a.book.id.localeCompare(b.book.id);
+            });
             const seriesTarget: BulkSelectionItem = {
               kind: 'series',
               id: s.id,
@@ -1446,7 +1455,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
 
                 {/* Series Reading Order Sequence */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 border-t border-zinc-800/80">
-                  {seriesBooks.map((book) => (
+                  {seriesBooks.map(({ book, index }) => (
                     <div
                       key={book.id}
                       onClick={(e) => {
@@ -1465,7 +1474,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                         </div>
                       </div>
                       <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-sm bg-purple-950 text-purple-300 border border-purple-800 shrink-0">
-                        {book.seriesIndex != null ? `Book ${book.seriesIndex}` : 'Unindexed'}
+                        {index != null ? `Book ${index}` : 'Unindexed'}
                       </span>
                     </div>
                   ))}

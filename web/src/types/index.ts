@@ -199,6 +199,20 @@ export interface CoverSearchResponse {
   candidates: CoverCandidate[];
 }
 
+export interface BookSeriesMembership {
+  seriesId: string;
+  title: string;
+  index: number | null;
+  indexDisplay?: string | null;
+  isPrimary: boolean;
+}
+
+export interface ProviderSeriesMembership {
+  title: string;
+  index?: number;
+  hardcover_id?: number;
+}
+
 export type BookState = 'In library' | 'Downloading' | 'Searching' | 'Requested' | 'Scheduled' | 'Not in library';
 
 export interface Book {
@@ -212,6 +226,8 @@ export interface Book {
   authorName: string;
   seriesId?: string;
   seriesTitle?: string;
+  seriesMemberships?: BookSeriesMembership[];
+  providerSeriesMemberships?: ProviderSeriesMembership[];
   seriesIndex?: number;
   seriesIndexDisplay?: string;
   releaseDate?: string;
@@ -397,6 +413,7 @@ export const mapBookRequest = (r: APIBookRequest): BookRequest => ({
 });
 
 export interface RequestMetadata {
+  series_memberships?: ProviderSeriesMembership[];
   hardcover_series_id?: number;
   book_id?: string;
   cover_url?: string;

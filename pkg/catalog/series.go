@@ -18,8 +18,8 @@ const seriesColumns = "s.id, s.title, s.description, s.total_books, s.status, s.
 // A legacy series can be reused for an author only when every linked book
 // belongs to that author. An explicitly owned series may include guest authors.
 const seriesAuthorMatch = `(s.author_id = :author OR (s.author_id IS NULL
- AND EXISTS (SELECT 1 FROM books WHERE series_id = s.id AND author_id = :author)
- AND NOT EXISTS (SELECT 1 FROM books WHERE series_id = s.id AND author_id <> :author)))`
+ AND EXISTS (SELECT 1 FROM book_series bs JOIN books b ON b.id = bs.book_id WHERE bs.series_id = s.id AND b.author_id = :author)
+ AND NOT EXISTS (SELECT 1 FROM book_series bs JOIN books b ON b.id = bs.book_id WHERE bs.series_id = s.id AND b.author_id <> :author)))`
 
 // FindSeries resolves a local ID or an unambiguous series title. An author
 // can distinguish series with identical display titles.
@@ -33,7 +33,7 @@ func (c *Catalog) FindSeries(ctx context.Context, id, title, author string, hard
 	rows, err := c.db.QueryContext(ctx, `SELECT `+seriesColumns+` FROM series s
  WHERE s.title = ? COLLATE NOCASE AND (? = '' OR
  EXISTS (SELECT 1 FROM authors a WHERE a.name = ? COLLATE NOCASE AND
-  (a.id = s.author_id OR EXISTS (SELECT 1 FROM books b WHERE b.series_id = s.id AND b.author_id = a.id))))
+  (a.id = s.author_id OR EXISTS (SELECT 1 FROM book_series bs JOIN books b ON b.id = bs.book_id WHERE bs.series_id = s.id AND b.author_id = a.id))))
  LIMIT 2`, strings.TrimSpace(title), author, metadata.NormalizeAuthor(author))
 	if err != nil {
 		return nil, err
@@ -70,7 +70,7 @@ func ResolveSeries(ctx context.Context, db interface {
  WITH candidates AS (
   SELECT s.id, s.hardcover_id FROM series s WHERE s.title = :title COLLATE NOCASE
   AND ((:author <> '' AND `+seriesAuthorMatch+`)
-    OR (:author = '' AND s.author_id IS NULL AND s.hardcover_id IS NULL AND NOT EXISTS (SELECT 1 FROM books WHERE series_id = s.id)))
+    OR (:author = '' AND s.author_id IS NULL AND s.hardcover_id IS NULL AND NOT EXISTS (SELECT 1 FROM book_series WHERE series_id = s.id)))
   AND (:hardcover = 0 OR s.hardcover_id IS NULL)
  )
  INSERT INTO series (id, title, author_id, hardcover_id)
@@ -105,7 +105,7 @@ func (c *Catalog) SeriesEvidence(ctx context.Context, id string) ([]metadata.Boo
 		return []metadata.BookMetadata{{HardcoverSeriesID: providerID}}, nil
 	}
 	author := owner
-	rows, err := c.db.QueryContext(ctx, `SELECT b.title, a.name FROM books b JOIN authors a ON a.id = b.author_id WHERE b.series_id = ?`, id)
+	rows, err := c.db.QueryContext(ctx, `SELECT b.title, a.name FROM books b JOIN authors a ON a.id = b.author_id JOIN book_series bs ON bs.book_id = b.id WHERE bs.series_id = ?`, id)
 	if err != nil {
 		return nil, err
 	}

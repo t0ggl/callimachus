@@ -281,9 +281,14 @@ func writeMetadataJSON(w http.ResponseWriter, value any) {
 
 var errPathConflict = errors.New("destination path conflict")
 
+type primarySeriesOverride struct {
+	SeriesID string `json:"seriesId"`
+}
+
 type repairRequest struct {
-	Candidate *epub.Metadata `json:"candidate"`
-	Preview   string         `json:"preview"`
+	PrimarySeries *primarySeriesOverride `json:"primarySeries,omitempty"`
+	Candidate     *epub.Metadata         `json:"candidate"`
+	Preview       string                 `json:"preview"`
 }
 
 type repairPreview struct {
@@ -348,6 +353,25 @@ func (s *Server) handleMetadataRepair(w http.ResponseWriter, r *http.Request, ap
 	book, files, err := s.repairBook(ctx, id)
 	if !checkRepairBook(w, err, len(files)) {
 		return
+	}
+	if req.PrimarySeries != nil {
+		if req.Candidate == nil {
+			req.Candidate = &epub.Metadata{Title: book.Title}
+		}
+		req.Candidate.Series, req.Candidate.SeriesIndex = "", nil
+		if req.PrimarySeries.SeriesID != "" {
+			if err := s.db.QueryRowContext(ctx, `SELECT s.title, bs.series_index FROM book_series bs JOIN series s ON s.id = bs.series_id
+				WHERE bs.book_id = ? AND bs.series_id = ?`, id, req.PrimarySeries.SeriesID).Scan(&req.Candidate.Series, &req.Candidate.SeriesIndex); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					http.Error(w, "Choose a series that contains this book.", http.StatusBadRequest)
+				} else {
+					http.Error(w, "Unable to load the series.", http.StatusInternalServerError)
+				}
+				return
+			}
+		}
+		req.Candidate.SeriesCatalogID = req.PrimarySeries.SeriesID
+		req.Candidate.ReplaceSeries = true
 	}
 	cfg, err := config.Load(ctx, s.db, s.baseOverrides)
 	if err != nil {
@@ -1064,7 +1088,13 @@ func repairTarget(library epub.Metadata, candidate *epub.Metadata) epub.Metadata
 	if author := metadata.NormalizeAuthor(strings.Join(candidate.Authors, " & ")); author != "" {
 		library.Authors = strings.Split(author, " & ")
 	}
-	if series := metadata.SanitizeTitle(candidate.Series); series != "" {
+	if candidate.ReplaceSeries {
+		library.Series = metadata.SanitizeTitle(candidate.Series)
+		library.SeriesIndex = nil
+		if library.Series != "" {
+			library.SeriesIndex = candidate.SeriesIndex
+		}
+	} else if series := metadata.SanitizeTitle(candidate.Series); series != "" {
 		if !strings.EqualFold(series, library.Series) {
 			library.SeriesIndex = nil
 		}
@@ -1377,20 +1407,33 @@ func updateCandidateMetadata(ctx context.Context, tx *sql.Tx, bookID string, boo
 		return err
 	}
 	var seriesID *string
-	// A metadata repair that leaves author and series unchanged should preserve
-	// the existing membership, including ambiguous legacy rows.
-	err := tx.QueryRowContext(ctx, `SELECT b.series_id FROM books b JOIN series s ON s.id = b.series_id
+	if !candidate.ReplaceSeries {
+		// A metadata repair that leaves author and series unchanged should preserve
+		// the existing membership, including ambiguous legacy rows.
+		err := tx.QueryRowContext(ctx, `SELECT b.series_id FROM books b JOIN series s ON s.id = b.series_id
   WHERE b.id = ? AND b.author_id = ? AND s.title = ? COLLATE NOCASE`, bookID, authorID, target.Series).Scan(&seriesID)
-	if errors.Is(err, sql.ErrNoRows) {
-		series, err := catalog.ResolveSeries(ctx, tx, target.Series, authorID, 0)
-		if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			series, err := catalog.ResolveSeries(ctx, tx, target.Series, authorID, 0)
+			if err != nil {
+				return err
+			}
+			if series != nil {
+				seriesID = &series.ID
+			}
+		} else if err != nil {
 			return err
 		}
-		if series != nil {
-			seriesID = &series.ID
+	}
+	if candidate.ReplaceSeries {
+		seriesID = nil
+		if candidate.SeriesCatalogID != "" {
+			seriesID = &candidate.SeriesCatalogID
 		}
-	} else if err != nil {
-		return err
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE book_series SET is_primary = 0, source = 'manual_repair'
+			WHERE book_id = ? AND is_primary = 1 AND series_id IS NOT ?`, bookID, seriesID); err != nil {
+			return err
+		}
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -1402,6 +1445,9 @@ func updateCandidateMetadata(ctx context.Context, tx *sql.Tx, bookID string, boo
 			updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 		target.Title, target.Subtitle, authorID, seriesID, target.SeriesIndex, catalog.SeriesIndexLabel(target.SeriesIndex),
 		target.SeriesIndex, target.PublishDate, target.Description, bookID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE book_series SET source = 'manual_repair' WHERE book_id = ? AND is_primary = 1`, bookID); err != nil {
 		return err
 	}
 	candidateLang := cmp.Or(metadata.NormalizeLanguage(candidate.Language), strings.TrimSpace(candidate.Language))

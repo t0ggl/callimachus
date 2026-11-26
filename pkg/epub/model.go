@@ -26,19 +26,21 @@ var (
 
 // Metadata contains Dublin Core and extended EPUB 2 / EPUB 3 / Calibre metadata.
 type Metadata struct {
-	Title        string            `json:"title"`
-	Subtitle     string            `json:"subtitle,omitempty"`
-	Authors      []string          `json:"authors,omitempty"`
-	SortAuthor   string            `json:"sort_author,omitempty"`
-	Series       string            `json:"series,omitempty"`
-	SeriesIndex  *float64          `json:"series_index,omitempty"`
-	Publisher    string            `json:"publisher,omitempty"`
-	PublishDate  string            `json:"publish_date,omitempty"`
-	Description  string            `json:"description,omitempty"`
-	ISBN13       string            `json:"isbn13,omitempty"`
-	Language     string            `json:"language,omitempty"`
-	Identifiers  map[string]string `json:"identifiers,omitempty"` // e.g. "calibre", "uuid", "isbn"
-	ExtraMeta    map[string]string `json:"extra_meta,omitempty"`
+	Title           string            `json:"title"`
+	Subtitle        string            `json:"subtitle,omitempty"`
+	Authors         []string          `json:"authors,omitempty"`
+	SortAuthor      string            `json:"sort_author,omitempty"`
+	SeriesCatalogID string            `json:"-"`
+	ReplaceSeries   bool              `json:"-"` // Internal request to explicitly replace or clear the primary series.
+	Series          string            `json:"series,omitempty"`
+	SeriesIndex     *float64          `json:"series_index,omitempty"`
+	Publisher       string            `json:"publisher,omitempty"`
+	PublishDate     string            `json:"publish_date,omitempty"`
+	Description     string            `json:"description,omitempty"`
+	ISBN13          string            `json:"isbn13,omitempty"`
+	Language        string            `json:"language,omitempty"`
+	Identifiers     map[string]string `json:"identifiers,omitempty"` // e.g. "calibre", "uuid", "isbn"
+	ExtraMeta       map[string]string `json:"extra_meta,omitempty"`
 }
 
 // Clone returns a deep copy of the Metadata struct.

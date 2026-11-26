@@ -206,6 +206,7 @@ func (s *RequestService) insertRequests(ctx context.Context, input CreateRequest
 			date := fmt.Sprintf("%04d", input.Year)
 			book.ReleaseDate = &date
 		}
+		var incomingSeriesID *string
 		if strings.TrimSpace(input.Series) != "" {
 			series, err := c.GetOrCreateSeries(ctx, input.Series, author.ID, input.HardcoverSeriesID)
 			if err != nil {
@@ -213,11 +214,23 @@ func (s *RequestService) insertRequests(ctx context.Context, input CreateRequest
 			}
 			if series != nil {
 				book.SeriesID = &series.ID
+				incomingSeriesID = book.SeriesID
 			}
 		}
 		book, err = c.GetOrCreateBook(ctx, book)
 		if err != nil {
 			return nil, err
+		}
+		if incomingSeriesID != nil {
+			if err := c.SaveObservedSeries(ctx, book.ID, *incomingSeriesID, input.SeriesIndex); err != nil {
+				return nil, err
+			}
+		}
+		if err := c.SaveSeriesMemberships(ctx, book.ID, book.AuthorID, input.SeriesMemberships, catalog.IdealSourceMatch); err != nil {
+			return nil, err
+		}
+		if book.SeriesID == nil || incomingSeriesID == nil || *book.SeriesID != *incomingSeriesID {
+			input.Series, input.SeriesIndex = "", nil
 		}
 		if err := c.SaveIdealMetadata(ctx, book.ID, input.Title, input.Series, input.SeriesIndex, catalog.IdealSourceMatch); err != nil {
 			return nil, err

@@ -223,9 +223,10 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid entity", 400)
 		return
 	}
-	column, bookColumn, photo := "name", "author_id", "COALESCE(photo_url,'')"
+	bookJoin, bookFilter, seriesIndex := "LEFT JOIN series s ON s.id=b.series_id", "b.author_id=?", "b.series_index"
 	if kind == "series" {
-		column, bookColumn, photo = "title", "series_id", "''"
+		bookJoin = "JOIN book_series bs ON bs.book_id=b.id JOIN series s ON s.id=bs.series_id"
+		bookFilter, seriesIndex = "bs.series_id=?", "bs.series_index"
 	}
 	var id, photoURL string
 	var monitored, audiobookMonitored bool
@@ -262,40 +263,41 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 			lookup = false
 		}
 	} else {
-		err = s.db.QueryRowContext(r.Context(), "SELECT id,monitored,"+photo+" FROM "+kind+" WHERE "+column+"=? COLLATE NOCASE", name).Scan(&id, &monitored, &photoURL)
+		err = s.db.QueryRowContext(r.Context(), "SELECT id,monitored,COALESCE(photo_url,'') FROM authors WHERE name=? COLLATE NOCASE", name).Scan(&id, &monitored, &photoURL)
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		http.Error(w, "Unable to load entity", 500)
 		return
 	}
 	type entry struct {
-		ID                 string   `json:"id"`
-		Title              string   `json:"title"`
-		Subtitle           string   `json:"subtitle,omitempty"`
-		AuthorName         string   `json:"authorName"`
-		SeriesID           string   `json:"seriesId,omitempty"`
-		SeriesTitle        string   `json:"seriesTitle,omitempty"`
-		Date               string   `json:"releaseDate"`
-		Index              *float64 `json:"seriesIndex"`
-		Synopsis           string   `json:"synopsis,omitempty"`
-		Monitored          bool     `json:"monitored"`
-		AudiobookMonitored bool     `json:"audiobookMonitored"`
-		State              string   `json:"state"`
-		Formats            []string `json:"formats"`
-		CoverURL           string   `json:"coverUrl,omitempty"`
+		ID                 string          `json:"id"`
+		Title              string          `json:"title"`
+		Subtitle           string          `json:"subtitle,omitempty"`
+		AuthorName         string          `json:"authorName"`
+		SeriesID           string          `json:"seriesId,omitempty"`
+		SeriesMemberships  json.RawMessage `json:"seriesMemberships,omitempty"`
+		SeriesTitle        string          `json:"seriesTitle,omitempty"`
+		Date               string          `json:"releaseDate"`
+		Index              *float64        `json:"seriesIndex"`
+		Synopsis           string          `json:"synopsis,omitempty"`
+		Monitored          bool            `json:"monitored"`
+		AudiobookMonitored bool            `json:"audiobookMonitored"`
+		State              string          `json:"state"`
+		Formats            []string        `json:"formats"`
+		CoverURL           string          `json:"coverUrl,omitempty"`
 	}
 	books := []entry{}
 	rows, err := s.db.QueryContext(r.Context(), `
-		SELECT b.id, b.title, COALESCE(b.subtitle,''), a.name, COALESCE(s.title,''), COALESCE(s.id,''),
-		       COALESCE(b.release_date,''), b.series_index, COALESCE(b.synopsis,''), b.ebook_monitored, COALESCE(b.audiobook_monitored, b.ebook_monitored), `+bookAvailabilitySQL+`,
+		SELECT b.id, b.title, COALESCE(b.subtitle,''), a.name, COALESCE(s.title,''), COALESCE(s.id,''), `+bookSeriesMembershipsSQL+`,
+		       COALESCE(b.release_date,''), `+seriesIndex+`, COALESCE(b.synopsis,''), b.ebook_monitored, COALESCE(b.audiobook_monitored, b.ebook_monitored), `+bookAvailabilitySQL+`,
 		       (SELECT json_group_array(format) FROM (
 		           SELECT DISTINCT UPPER(e.format) AS format
 		           FROM book_editions e JOIN media_assets m ON m.edition_id=e.id
 		           WHERE e.book_id=b.id AND e.format<>'' ORDER BY format
 		       ))
-		FROM books b JOIN authors a ON a.id=b.author_id LEFT JOIN series s ON s.id=b.series_id
-		WHERE b.`+bookColumn+`=?
-		ORDER BY b.series_index IS NULL, b.series_index, b.release_date, b.title, b.id`, id)
+		FROM books b JOIN authors a ON a.id=b.author_id `+bookJoin+`
+		WHERE `+bookFilter+`
+		ORDER BY `+seriesIndex+` IS NULL, `+seriesIndex+`, b.release_date, b.title COLLATE NOCASE, b.id`, id)
 	if err != nil {
 		http.Error(w, "Unable to load books", 500)
 		return
@@ -305,7 +307,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var b entry
 		var formats string
-		if err := rows.Scan(&b.ID, &b.Title, &b.Subtitle, &b.AuthorName, &b.SeriesTitle, &b.SeriesID, &b.Date, &b.Index, &b.Synopsis, &b.Monitored, &b.AudiobookMonitored, &b.State, &formats); err != nil {
+		if err := rows.Scan(&b.ID, &b.Title, &b.Subtitle, &b.AuthorName, &b.SeriesTitle, &b.SeriesID, &b.SeriesMemberships, &b.Date, &b.Index, &b.Synopsis, &b.Monitored, &b.AudiobookMonitored, &b.State, &formats); err != nil {
 			http.Error(w, "Unable to load books", 500)
 			return
 		}
@@ -572,17 +574,18 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 }
 
 type resolveBookRequest struct {
-	BookID            string   `json:"book_id,omitempty"`
-	Title             string   `json:"title"`
-	Subtitle          string   `json:"subtitle,omitempty"`
-	Author            string   `json:"author"`
-	Series            string   `json:"series,omitempty"`
-	SeriesID          string   `json:"series_id,omitempty"`
-	HardcoverSeriesID int      `json:"hardcover_series_id,omitempty"`
-	SeriesIndex       *float64 `json:"series_index,omitempty"`
-	ReleaseDate       string   `json:"release_date,omitempty"`
-	Synopsis          string   `json:"synopsis,omitempty"`
-	CoverURL          string   `json:"cover_url,omitempty"`
+	BookID            string                      `json:"book_id,omitempty"`
+	Title             string                      `json:"title"`
+	Subtitle          string                      `json:"subtitle,omitempty"`
+	Author            string                      `json:"author"`
+	Series            string                      `json:"series,omitempty"`
+	SeriesID          string                      `json:"series_id,omitempty"`
+	HardcoverSeriesID int                         `json:"hardcover_series_id,omitempty"`
+	SeriesIndex       *float64                    `json:"series_index,omitempty"`
+	SeriesMemberships []metadata.SeriesMembership `json:"series_memberships,omitempty"`
+	ReleaseDate       string                      `json:"release_date,omitempty"`
+	Synopsis          string                      `json:"synopsis,omitempty"`
+	CoverURL          string                      `json:"cover_url,omitempty"`
 }
 
 func validExternalCoverURL(raw string) string {
@@ -684,6 +687,19 @@ func (s *Server) handleResolveBook(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			http.Error(w, "Unable to save book", http.StatusInternalServerError)
 			return
+		}
+		if seriesID != nil {
+			if err := c.SaveObservedSeries(r.Context(), saved.ID, *seriesID, req.SeriesIndex); err != nil {
+				http.Error(w, "Unable to save series membership", http.StatusInternalServerError)
+				return
+			}
+		}
+		if err := c.SaveSeriesMemberships(r.Context(), saved.ID, saved.AuthorID, req.SeriesMemberships, catalog.IdealSourceMatch); err != nil {
+			http.Error(w, "Unable to save series memberships", http.StatusInternalServerError)
+			return
+		}
+		if saved.SeriesID == nil || seriesID == nil || *saved.SeriesID != *seriesID {
+			seriesTitle, req.SeriesIndex = "", nil
 		}
 		if err := c.SaveIdealMetadata(r.Context(), saved.ID, title, seriesTitle, req.SeriesIndex, catalog.IdealSourceMatch); err != nil {
 			http.Error(w, "Unable to save ideal metadata", http.StatusInternalServerError)

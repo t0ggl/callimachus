@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ArrowRight, Check, Copy, Download, FolderOutput, Trash2 } from 'lucide-react';
 import type {
+  Book,
   MetadataCandidate,
   MetadataCandidatesResponse,
   MetadataDiff,
@@ -106,6 +107,7 @@ function MetadataPreviewTable({ rows, before, after }: { rows: MetadataDiff[]; b
 
 interface Props {
   bookID: string;
+  book?: Book;
   defaultLanguage?: string;
   initialCandidate?: MetadataCandidate;
   onBack: () => void;
@@ -149,7 +151,7 @@ function parseCandidatesPayload(
   };
 }
 
-export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate, onBack, onApplied }: Props) {
+export function MetadataRepairPanel({ bookID, book, defaultLanguage, initialCandidate, onBack, onApplied }: Props) {
   const heading = useRef<HTMLHeadingElement>(null);
   const id = useId();
   const [activeBookID, setActiveBookID] = useState(bookID);
@@ -163,6 +165,7 @@ export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate,
   const [choices, setChoices] = useState<MetadataCandidate[]>();
   const [searchError, setSearchError] = useState('');
   const [candidate, setCandidate] = useState<MetadataCandidate | undefined>(initialCandidate);
+  const [primarySeries, setPrimarySeries] = useState<{ seriesId: string }>();
   const [preview, setPreview] = useState<MetadataPreview>();
   const [previewError, setPreviewError] = useState('');
   const [previewAttempt, setPreviewAttempt] = useState(0);
@@ -231,16 +234,16 @@ export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate,
   useEffect(() => {
     const controller = new AbortController();
     const options: RequestInit = { signal: controller.signal };
-    if (candidate) {
+    if (candidate || primarySeries) {
       options.method = 'POST';
       options.headers = { 'Content-Type': 'application/json' };
-      options.body = JSON.stringify({ candidate });
+      options.body = JSON.stringify({ candidate, primarySeries });
     }
     void metadataRequest<MetadataPreview>(base + '/metadata-diff', options)
       .then((result) => { if (!controller.signal.aborted) setPreview(result); })
       .catch((error: Error) => { if (!controller.signal.aborted) setPreviewError(error.message); });
     return () => controller.abort();
-  }, [base, candidate, previewAttempt]);
+  }, [base, candidate, primarySeries, previewAttempt]);
 
   function select(next?: MetadataCandidate) {
     if (next === candidate) return;
@@ -293,7 +296,7 @@ export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate,
       await metadataRequest(base + '/fix-metadata', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ candidate, preview: preview.preview }),
+        body: JSON.stringify({ candidate, primarySeries, preview: preview.preview }),
       });
       setCompleted(true);
       onApplied?.();
@@ -320,7 +323,7 @@ export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate,
         <button type="button" className={secondary} disabled={applying || resolvingDuplicates} onClick={onBack}>Back to details</button>
       </div>
       {completed ? (
-        <p role="status" className="text-sm text-emerald-300">Metadata applied to {candidate ? 'the library and EPUB files.' : 'the EPUB files.'}</p>
+        <p role="status" className="text-sm text-emerald-300">Metadata applied to {candidate || primarySeries ? 'the library and EPUB files.' : 'the EPUB files.'}</p>
       ) : <>
         <form className="space-y-3" onSubmit={(event) => {
           event.preventDefault();
@@ -408,6 +411,30 @@ export function MetadataRepairPanel({ bookID, defaultLanguage, initialCandidate,
             </p>
           )}
         </fieldset>
+        {book?.seriesMemberships && (
+          <label className="block space-y-1.5 border-t border-zinc-800 pt-4 text-sm">
+            <span className="font-semibold">Primary series</span>
+            <select
+              className={`block w-full max-w-lg rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 ${focus}`}
+              disabled={applying || resolvingDuplicates}
+              value={primarySeries ? primarySeries.seriesId || 'standalone' : 'default'}
+              onChange={(event) => {
+                const choice = event.target.value;
+                const membership = book.seriesMemberships?.find((item) => item.seriesId === choice);
+                setPreview(undefined);
+                setPreviewError('');
+                setApplyError('');
+                setPrimarySeries(choice === 'default' ? undefined : { seriesId: membership?.seriesId ?? '' });
+              }}
+            >
+              <option value="default">Use selected metadata</option>
+              <option value="standalone">Standalone on disk</option>
+              {book.seriesMemberships.map((membership) => (
+                <option key={membership.seriesId} value={membership.seriesId}>{membership.title}</option>
+              ))}
+            </select>
+          </label>
+        )}
         <div className="space-y-3 border-t border-zinc-800 pt-4">
           <h4 className="text-sm font-semibold">Preview metadata to apply</h4>
           {duplicateStatus && (

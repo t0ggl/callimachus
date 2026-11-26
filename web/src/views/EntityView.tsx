@@ -6,7 +6,7 @@ import { ManualSearch } from '../components/ManualSearch';
 import { SeriesBookCover, resolveCatalogBook } from '../components/SeriesDetailModal';
 import type { Book } from '../types';
 
-type EntityBook = Pick<Book, 'id' | 'title' | 'subtitle' | 'authorName' | 'seriesTitle' | 'seriesId' | 'coverUrl' | 'formats' | 'releaseDate' | 'seriesIndex' | 'synopsis' | 'state' | 'monitored' | 'audiobookMonitored'>;
+type EntityBook = Pick<Book, 'id' | 'title' | 'subtitle' | 'authorName' | 'seriesTitle' | 'seriesId' | 'seriesMemberships' | 'coverUrl' | 'formats' | 'releaseDate' | 'seriesIndex' | 'synopsis' | 'state' | 'monitored' | 'audiobookMonitored'>;
 type Data = { monitored: boolean; audiobookMonitored?: boolean; photoUrl?: string; books: EntityBook[] };
 type IndexedEntityBook = { book: EntityBook; index: number };
 type AuthorBookGroup = {
@@ -167,9 +167,9 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
             synopsis: book.synopsis || entry?.synopsis,
             subtitle: book.subtitle || entry?.subtitle,
             releaseDate: book.releaseDate || entry?.releaseDate,
-            seriesId: book.seriesId || entry?.seriesId,
-            seriesTitle: book.seriesTitle || entry?.seriesTitle,
-            seriesIndex: book.seriesIndex ?? entry?.seriesIndex,
+            seriesId: book.seriesId ?? (book.seriesMemberships ? undefined : entry?.seriesId),
+            seriesTitle: book.seriesTitle ?? (book.seriesMemberships ? undefined : entry?.seriesTitle),
+            seriesIndex: book.seriesIndex ?? (book.seriesMemberships ? undefined : entry?.seriesIndex),
             state: book.state || entry?.state,
           });
         }
@@ -327,6 +327,14 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
             </button>
           </div>
           {book.subtitle && <p className="text-xs text-zinc-400">{book.subtitle}</p>}
+          {!isSeries && book.seriesMemberships?.some((membership) => !membership.isPrimary) && (
+            <p className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-zinc-400">
+              <span>Also in</span>
+              {book.seriesMemberships.filter((membership) => !membership.isPrimary).map((membership) => (
+                <EntityLink key={membership.seriesId} kind="series" name={membership.title} id={membership.seriesId} />
+              ))}
+            </p>
+          )}
           {isSeries && (
             <p className="text-xs text-zinc-400">by <EntityLink kind="authors" name={book.authorName} /></p>
           )}
@@ -511,9 +519,12 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
                     subtitle: updated.subtitle,
                     releaseDate: updated.releaseDate,
                     synopsis: updated.synopsis,
-                    seriesId: updated.seriesId,
-                    seriesTitle: updated.seriesTitle,
-                    seriesIndex: updated.seriesIndex,
+                    seriesId: isSeries ? item.seriesId : updated.seriesId,
+                    seriesTitle: isSeries ? item.seriesTitle : updated.seriesTitle,
+                    seriesIndex: isSeries
+                      ? (updated.seriesMemberships?.find((membership) => membership.seriesId === item.seriesId)?.index ?? item.seriesIndex)
+                      : updated.seriesIndex,
+                    seriesMemberships: updated.seriesMemberships,
                     monitored: updated.monitored,
                     audiobookMonitored: updated.audiobookMonitored,
                     coverUrl: updated.coverUrl ?? item.coverUrl,

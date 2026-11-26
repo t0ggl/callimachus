@@ -63,6 +63,10 @@ fragment SeriesBookFields on books {
 
 		seen[b.ID] = true
 		book := mapHardcoverBookNode(&b)
+		book.ContextualSeries = true
+		if book.Series != "" {
+			book.PrimarySeries = &SeriesMembership{Title: book.Series, Index: book.SeriesIndex, HardcoverID: book.HardcoverSeriesID}
+		}
 		// Use the requested membership even if the book features another series.
 		count := series.BooksCount
 		if count == 0 {
@@ -75,6 +79,7 @@ fragment SeriesBookFields on books {
 			SeriesPosition: membership.SeriesPosition,
 			Series:         hardcoverSeries{ID: series.ID, Name: title, BooksCount: count},
 		})
+		book.AddSeriesMembership(SeriesMembership{Title: title, Index: membership.SeriesPosition, HardcoverID: series.ID})
 		if book.SeriesIndex != nil {
 			position := *book.SeriesIndex
 			if i, ok := positions[position]; ok {

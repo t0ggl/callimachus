@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Book, BookState, SeriesSelection } from '../types';
+import type { Book, BookState, ProviderSeriesMembership, SeriesSelection } from '../types';
 import {
   X,
   Layers,
@@ -28,6 +28,9 @@ export interface SeriesBookEntry {
   publish_date?: string;
   series_index?: number | null;
   series_index_display?: string;
+  series_memberships?: ProviderSeriesMembership[];
+  contextual_series?: boolean;
+  primary_series?: ProviderSeriesMembership;
   hardcover_series_id?: number;
   formats?: string[];
   library_book_id?: string;
@@ -184,10 +187,11 @@ export function SeriesDetailModal({
       title: book.title,
       subtitle: book.subtitle,
       author: book.authors?.join(', ') || seriesAuthors[0] || 'Unknown',
-      series: displayTitle,
-      seriesId: data?.id ?? id,
-      hardcoverSeriesId: book.hardcover_series_id ?? hardcoverID,
-      seriesIndex: book.series_index,
+      series: book.contextual_series ? book.primary_series?.title : displayTitle,
+      seriesId: book.contextual_series ? undefined : data?.id ?? id,
+      hardcoverSeriesId: book.contextual_series ? book.primary_series?.hardcover_id : book.hardcover_series_id ?? hardcoverID,
+      seriesIndex: book.contextual_series ? book.primary_series?.index : book.series_index,
+      providerSeriesMemberships: book.series_memberships,
       releaseDate: book.publish_date,
       synopsis: book.description,
       coverUrl: book.cover_url,
@@ -219,9 +223,10 @@ export function SeriesDetailModal({
         subtitle: book.subtitle,
         authorId: '',
         authorName: bookAuthor,
-        seriesId: data?.id ?? id,
-        seriesTitle: displayTitle,
-        seriesIndex: book.series_index ?? undefined,
+        seriesId: book.contextual_series ? undefined : data?.id ?? id,
+        seriesTitle: book.contextual_series ? book.primary_series?.title : displayTitle,
+        seriesIndex: book.contextual_series ? book.primary_series?.index : book.series_index ?? undefined,
+        providerSeriesMemberships: book.series_memberships,
         seriesIndexDisplay: book.series_index_display,
         releaseDate: book.publish_date,
         synopsis: book.description,
@@ -246,9 +251,9 @@ export function SeriesDetailModal({
         synopsis: found.synopsis || book.description,
         subtitle: found.subtitle || book.subtitle,
         releaseDate: found.releaseDate || book.publish_date,
-        seriesTitle: found.seriesTitle || displayTitle,
-        seriesIndex: found.seriesIndex ?? (book.series_index ?? undefined),
-        seriesIndexDisplay: found.seriesIndexDisplay || book.series_index_display,
+        seriesTitle: found.seriesTitle || (found.seriesMemberships ? undefined : displayTitle),
+        seriesIndex: found.seriesIndex ?? (found.seriesMemberships ? undefined : book.series_index ?? undefined),
+        seriesIndexDisplay: found.seriesIndexDisplay || (found.seriesMemberships ? undefined : book.series_index_display),
         state: found.state || book.state,
       });
     } catch (e) {
@@ -711,13 +716,14 @@ export function SeriesDetailModal({
                   (b) => (b.book_id && b.book_id === updated.id) || (b.library_book_id && b.library_book_id === updated.id)
                 );
           if (idx >= 0) {
+            const membership = updated.seriesMemberships?.find((item) => item.seriesId === (data?.id ?? id));
             updateBookEntry(idx, {
               book_id: updated.id,
               title: updated.title,
               subtitle: updated.subtitle,
               publish_date: updated.releaseDate,
               description: updated.synopsis,
-              series_index: updated.seriesIndex ?? null,
+              series_index: membership ? membership.index : updated.seriesMemberships ? books[idx].series_index : updated.seriesIndex ?? null,
               monitored: updated.monitored,
               audiobookMonitored: updated.audiobookMonitored,
               ...(updated.coverUrl ? { cover_url: updated.coverUrl } : {}),

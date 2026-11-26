@@ -301,21 +301,23 @@ func (s *Server) discoverSeries(ctx context.Context, settings config.Settings, q
 		}
 	}
 
-	// Surface series referenced by returned books when the series name matches the query.
+	// Surface all series referenced by returned books that match the query.
 	for _, b := range books {
-		seriesTitle := strings.TrimSpace(b.Series)
-		if seriesTitle == "" || !seriesMatchesQuery(seriesTitle, query) {
-			continue
+		memberships := slices.Clone(b.SeriesMemberships)
+		memberships = append(memberships, metadata.SeriesMembership{Title: b.Series, HardcoverID: b.HardcoverSeriesID})
+		for _, membership := range memberships {
+			if membership.Title == "" || !seriesMatchesQuery(membership.Title, query) {
+				continue
+			}
+			total := 0
+			if strings.EqualFold(membership.Title, b.Series) {
+				total = b.SeriesTotal
+			}
+			raw = append(raw, discoverSeriesMatch{SeriesMetadata: metadata.SeriesMetadata{
+				Title: membership.Title, Authors: b.Authors, BooksCount: total,
+				CoverURL: b.CoverURL, HardcoverSeriesID: membership.HardcoverID,
+			}})
 		}
-		raw = append(raw, discoverSeriesMatch{
-			SeriesMetadata: metadata.SeriesMetadata{
-				Title:             seriesTitle,
-				Authors:           b.Authors,
-				BooksCount:        b.SeriesTotal,
-				CoverURL:          b.CoverURL,
-				HardcoverSeriesID: b.HardcoverSeriesID,
-			},
-		})
 	}
 
 	if len(raw) == 0 {
@@ -399,7 +401,7 @@ func (s *Server) discoverSeries(ctx context.Context, settings config.Settings, q
 			        FROM books b
 			        JOIN book_editions e ON e.book_id = b.id
 			        JOIN media_assets m ON m.edition_id = e.id
-			        WHERE b.series_id = s.id)
+			        JOIN book_series bs ON bs.book_id = b.id WHERE bs.series_id = s.id)
 			FROM series s`)
 		if err == nil {
 			var locals []localSeries
@@ -778,6 +780,12 @@ func groupDiscoveryBooks(books []metadata.BookMetadata) [][]metadata.BookMetadat
 }
 
 func mergeDiscoveryBook(dst *metadata.BookMetadata, src metadata.BookMetadata) {
+	dst.SeriesMemberships = slices.Clone(dst.SeriesMemberships)
+	dst.AddSeriesMembership(metadata.SeriesMembership{Title: dst.Series, Index: dst.SeriesIndex, HardcoverID: dst.HardcoverSeriesID})
+	for _, membership := range src.SeriesMemberships {
+		dst.AddSeriesMembership(membership)
+	}
+	dst.AddSeriesMembership(metadata.SeriesMembership{Title: src.Series, Index: src.SeriesIndex, HardcoverID: src.HardcoverSeriesID})
 	dst.Subtitle = cmp.Or(dst.Subtitle, src.Subtitle)
 	if dst.Subtitle == "" {
 		dstTitle, dstSubtitle := discoveryTitleParts(dst.Title, dst.Authors)
