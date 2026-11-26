@@ -4,6 +4,7 @@ import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Laye
 import { ManualSearch } from './ManualSearch';
 import { MetadataRepairPanel } from './MetadataRepairPanel';
 import { CoverFinderPanel } from './CoverFinderPanel';
+import { BookAcquisition } from './AcquisitionProgress';
 import { validateCoverFile } from '../utils/coverValidation';
 import { Book, MetadataCandidate } from '../types';
 
@@ -876,7 +877,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
             </div>
           </div>
 
-          {activity}
+          {activity ?? (currentBook.id && <BookAcquisition key={currentBook.id} bookId={currentBook.id} />)}
 
           {/* Editions & File Assets */}
           <div className="space-y-4 border-t border-zinc-800 pt-5">
