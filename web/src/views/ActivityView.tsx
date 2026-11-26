@@ -297,7 +297,7 @@ export const ActivityView: React.FC<ActivityViewProps> = (props) => {
         </p>
       </div>
     ) : items.length > 0 ? (
-      <div className="space-y-3">
+      <div className="@container space-y-3">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div className="relative w-full sm:w-80">
             <Search className="w-4 h-4 text-zinc-500 absolute left-3 top-2.5" aria-hidden="true" />
@@ -372,10 +372,10 @@ export const ActivityView: React.FC<ActivityViewProps> = (props) => {
             )}
           </div>
         ) : (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/90 overflow-hidden">
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900/90 overflow-hidden @4xl:grid @4xl:grid-cols-[minmax(10rem,2fr)_7.5rem_minmax(10rem,1.4fr)_minmax(7.5rem,1.2fr)_fit-content(15.5rem)] @4xl:gap-x-3">
             <div
               aria-hidden="true"
-              className="hidden md:grid md:grid-cols-[minmax(14rem,2fr)_7.5rem_minmax(11rem,1.4fr)_minmax(10rem,1.2fr)_auto] items-center gap-3 border-b border-zinc-800 bg-zinc-950/60 px-4 py-2 text-[11px] font-medium text-zinc-400"
+              className="hidden @4xl:grid @4xl:col-span-full @4xl:grid-cols-subgrid items-center border-b border-zinc-800 bg-zinc-950/60 px-4 py-2 text-[11px] font-medium text-zinc-400"
             >
               <span>Book</span>
               <span>Format</span>
@@ -384,7 +384,7 @@ export const ActivityView: React.FC<ActivityViewProps> = (props) => {
               <span className="text-right">Actions</span>
             </div>
 
-            <ul aria-label="Book activity" className="divide-y divide-zinc-800/80">
+            <ul aria-label="Book activity" className="divide-y divide-zinc-800/80 @4xl:grid @4xl:col-span-full @4xl:grid-cols-subgrid">
               {filteredItems.map(item => {
                 const allowRequest = Boolean(props.canRequest ?? props.canManageJobs);
                 const path = item.request && allowRequest ? `/api/requests/${encodeURIComponent(item.request.id)}` : props.canManageJobs ?
@@ -403,112 +403,110 @@ export const ActivityView: React.FC<ActivityViewProps> = (props) => {
                 return <li
                   key={item.id}
                   data-testid={`activity-${item.id}`}
-                  className="rounded-none border-0 bg-zinc-900/90 px-3.5 py-2.5 sm:px-4 transition-colors hover:bg-zinc-800/40"
+                  className="grid grid-cols-1 gap-y-2.5 @4xl:col-span-full @4xl:grid-cols-subgrid @4xl:items-center rounded-none border-0 bg-zinc-900/90 px-3.5 py-2.5 sm:px-4 transition-colors hover:bg-zinc-800/40"
                 >
-                  <div className="grid grid-cols-1 md:grid-cols-[minmax(14rem,2fr)_7.5rem_minmax(11rem,1.4fr)_minmax(10rem,1.2fr)_auto] md:items-center gap-2.5 md:gap-3">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <ActivityThumbnail coverUrl={item.request?.coverUrl} format={item.format} />
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <ActivityThumbnail coverUrl={item.request?.coverUrl} format={item.format} />
+                    <button
+                      type="button"
+                      onClick={() => setSelected(item.id)}
+                      aria-label={[item.title, [item.format, item.phase].filter(Boolean).join(' · ')].join(' ')}
+                      className={`min-w-0 flex-1 min-h-11 sm:min-h-0 flex flex-col justify-center rounded-sm text-left wrap-anywhere group ${focusRing}`}
+                    >
+                      <span className="text-xs sm:text-sm font-semibold text-zinc-100 leading-snug underline decoration-zinc-700 underline-offset-4 group-hover:text-blue-300 group-hover:decoration-blue-300 transition-colors truncate">
+                        {item.title}
+                      </span>
+                      {item.author && (
+                        <span className="text-xs text-zinc-400 truncate">
+                          by {item.author}
+                        </span>
+                      )}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center">
+                    {item.format ? (
+                      <span className={`inline-flex items-center rounded-sm border px-2 py-0.5 text-[11px] font-mono font-medium ${formatBadgeTone}`}>
+                        {item.format}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-zinc-500">—</span>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-1 min-w-0">
+                    <span className={`inline-flex w-fit items-center gap-1.5 rounded-sm border px-2 py-0.5 text-xs font-medium wrap-anywhere ${tone.badge}`}>
+                      <PhaseIcon phase={item.phase} />
+                      {statusText}
+                    </span>
+                    {(errors[item.id] || item.error) && (
+                      <div
+                        role="alert"
+                        className="rounded-md border border-red-900/60 bg-red-950/30 px-2.5 py-1 flex items-start gap-1.5 text-xs text-red-200"
+                      >
+                        <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" aria-hidden="true" />
+                        <span className="min-w-0 wrap-anywhere">{errors[item.id] || item.error}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="min-w-0">
+                    {item.progress !== undefined ? (
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px] tabular-nums">
+                          <span className="font-mono font-medium text-zinc-200">{percent(item.progress).toFixed(1)}%</span>
+                          {!isFinished(item) && (
+                            <span className="font-mono text-zinc-400">
+                              {`${item.speed ? `${item.speed} · ` : ''}ETA: ${duration(item.eta || 0)}`}
+                            </span>
+                          )}
+                        </div>
+                        <div
+                          role="progressbar"
+                          aria-label={`${item.title} overall progress`}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-valuenow={percent(item.progress)}
+                          className="h-1.5 rounded-full overflow-hidden bg-zinc-800"
+                        >
+                          <div
+                            className={`h-full rounded-full transition-[width] duration-300 ease-out ${tone.bar}`}
+                            style={{ width: `${percent(item.progress)}%` }}
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <span className="text-xs font-mono text-zinc-500">—</span>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center @4xl:justify-end gap-1.5">
+                    {allowRequest && item.request && item.request.status !== 'downloading' && (
                       <button
                         type="button"
-                        onClick={() => setSelected(item.id)}
-                        aria-label={[item.title, [item.format, item.phase].filter(Boolean).join(' · ')].join(' ')}
-                        className={`min-w-0 flex-1 min-h-11 sm:min-h-0 flex flex-col justify-center rounded-sm text-left wrap-anywhere group ${focusRing}`}
+                        aria-label={`Manual Search for ${item.title}`}
+                        onClick={() => setManual(item.request!)}
+                        className={`${secondaryButton} text-blue-300 hover:text-blue-200`}
                       >
-                        <span className="text-xs sm:text-sm font-semibold text-zinc-100 leading-snug underline decoration-zinc-700 underline-offset-4 group-hover:text-blue-300 group-hover:decoration-blue-300 transition-colors truncate">
-                          {item.title}
-                        </span>
-                        {item.author && (
-                          <span className="text-xs text-zinc-400 truncate">
-                            by {item.author}
-                          </span>
-                        )}
+                        <Search className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        Manual Search
                       </button>
-                    </div>
-
-                    <div className="flex items-center">
-                      {item.format ? (
-                        <span className={`inline-flex items-center rounded-sm border px-2 py-0.5 text-[11px] font-mono font-medium ${formatBadgeTone}`}>
-                          {item.format}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-zinc-500">—</span>
-                      )}
-                    </div>
-
-                    <div className="flex flex-col gap-1 min-w-0">
-                      <span className={`inline-flex w-fit items-center gap-1.5 rounded-sm border px-2 py-0.5 text-xs font-medium ${tone.badge}`}>
-                        <PhaseIcon phase={item.phase} />
-                        {statusText}
-                      </span>
-                      {(errors[item.id] || item.error) && (
-                        <div
-                          role="alert"
-                          className="rounded-md border border-red-900/60 bg-red-950/30 px-2.5 py-1 flex items-start gap-1.5 text-xs text-red-200"
-                        >
-                          <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" aria-hidden="true" />
-                          <span className="min-w-0 wrap-anywhere">{errors[item.id] || item.error}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="min-w-0">
-                      {item.progress !== undefined ? (
-                        <div className="space-y-1">
-                          <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px] tabular-nums">
-                            <span className="font-mono font-medium text-zinc-200">{percent(item.progress).toFixed(1)}%</span>
-                            {!isFinished(item) && (
-                              <span className="font-mono text-zinc-400">
-                                {`${item.speed ? `${item.speed} · ` : ''}ETA: ${duration(item.eta || 0)}`}
-                              </span>
-                            )}
-                          </div>
-                          <div
-                            role="progressbar"
-                            aria-label={`${item.title} overall progress`}
-                            aria-valuemin={0}
-                            aria-valuemax={100}
-                            aria-valuenow={percent(item.progress)}
-                            className="h-1.5 rounded-full overflow-hidden bg-zinc-800"
-                          >
-                            <div
-                              className={`h-full rounded-full transition-[width] duration-300 ease-out ${tone.bar}`}
-                              style={{ width: `${percent(item.progress)}%` }}
-                            />
-                          </div>
-                        </div>
-                      ) : (
-                        <span className="text-xs font-mono text-zinc-500">—</span>
-                      )}
-                    </div>
-
-                    <div className="flex flex-wrap items-center md:justify-end gap-1.5 shrink-0">
-                      {allowRequest && item.request && item.request.status !== 'downloading' && (
-                        <button
-                          type="button"
-                          aria-label={`Manual Search for ${item.title}`}
-                          onClick={() => setManual(item.request!)}
-                          className={`${secondaryButton} text-blue-300 hover:text-blue-200`}
-                        >
-                          <Search className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                          Manual Search
-                        </button>
-                      )}
-                      {path && (
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void dismiss(item.id, path)}
-                          aria-label={[action, item.title, item.format].filter(Boolean).join(' ')}
-                          className={isFinished(item)
-                            ? secondaryButton
-                            : `inline-flex items-center justify-center gap-1.5 min-h-11 sm:min-h-9 rounded-md border border-red-900/60 bg-red-950/30 px-2.5 py-1 text-xs font-medium text-red-300 transition-colors hover:bg-red-950/60 hover:text-red-200 disabled:opacity-50 disabled:cursor-not-allowed ${focusRing}`
-                          }
-                        >
-                          <X className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                          {action}
-                        </button>
-                      )}
-                    </div>
+                    )}
+                    {path && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void dismiss(item.id, path)}
+                        aria-label={[action, item.title, item.format].filter(Boolean).join(' ')}
+                        className={isFinished(item)
+                          ? secondaryButton
+                          : `inline-flex items-center justify-center gap-1.5 min-h-11 sm:min-h-9 rounded-md border border-red-900/60 bg-red-950/30 px-2.5 py-1 text-xs font-medium text-red-300 transition-colors hover:bg-red-950/60 hover:text-red-200 disabled:opacity-50 disabled:cursor-not-allowed ${focusRing}`
+                        }
+                      >
+                        <X className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        {action}
+                      </button>
+                    )}
                   </div>
                 </li>;
               })}
