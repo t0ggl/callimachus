@@ -246,7 +246,8 @@ it('supports keyboard navigation across card controls and search log', async () 
   const detailsDialog = await screen.findByRole('dialog', { name: 'Details for Dune' });
   const logToggle = within(detailsDialog).getByRole('button', { name: 'View Search Log' });
   expect(logToggle).toHaveAttribute('aria-expanded', 'false');
-  expect(logToggle).toHaveAttribute('aria-controls', 'activity-search-log');
+  const logPanel = document.getElementById(logToggle.getAttribute('aria-controls')!);
+  expect(logPanel).toHaveAttribute('hidden');
   logToggle.focus();
   await user.keyboard('{Enter}');
   expect(logToggle).toHaveAttribute('aria-expanded', 'true');
@@ -271,33 +272,104 @@ it('hides Manual Search and Cancel/Remove controls for guests in ActivityView', 
   expect(screen.queryByRole('button', { name: /Remove/i })).not.toBeInTheDocument();
 });
 
+class MockEventSource {
+  static current: MockEventSource;
+  listeners: Record<string, ((e: MessageEvent) => void)[]> = {};
+  onopen: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+
+  constructor(public url: string) {
+    MockEventSource.current = this;
+  }
+
+  addEventListener(type: string, callback: (e: MessageEvent) => void) {
+    this.listeners[type] ??= [];
+    this.listeners[type].push(callback);
+  }
+
+  emit(type: string, data: unknown) {
+    const event = { data: JSON.stringify(data) } as MessageEvent;
+    for (const listener of this.listeners[type] ?? []) listener(event);
+  }
+
+  close() {
+    this.listeners = {};
+  }
+}
+
+
+it('shows the live download stages and request log when opening a book from its author page', async () => {
+  const user = userEvent.setup({ delay: null });
+  vi.stubGlobal('EventSource', MockEventSource);
+  const book = {
+    id: 'book', title: 'Dune', authorName: 'Frank Herbert', authorId: 'author',
+    state: 'Downloading', formats: [], editions: [],
+  };
+  const request = { id: 1, book_id: book.id, title: book.title, author: book.authorName, format: 'epub', status: 'downloading', stage: 'downloading' };
+  const download = { ...testDownloads[0], bookId: book.id, requestId: '1', status: 'downloading', progressPercent: 40 };
+  const snapshot = {
+    requests: [
+      request,
+      { ...request, id: 2, book_id: 'other-book', format: 'm4b' },
+      { ...request, id: 3, format: 'm4b', status: 'available', stage: 'available' },
+    ],
+    downloads: [download], conversionJobs: [], logs: [],
+  };
+  const fetchMock = vi.fn(async (url: string, _options?: RequestInit) => {
+    if (url === '/api/auth/me') return Response.json({ id: 'curator', role: 'curator' });
+    if (url === '/api/catalog/entity?kind=authors&name=Frank%20Herbert') return Response.json({ books: [book] });
+    if (url === '/api/books' || url === '/api/books?id=book') return Response.json([book]);
+    if (url === '/api/authors' || url === '/api/series') return Response.json([]);
+    if (url === '/api/requests') return Response.json(snapshot.requests);
+    if (url === '/api/activity') return Response.json(snapshot);
+    if (url === '/api/requests/1') {
+      return Response.json({ events: [{ id: 1, message: 'Import started', occurred_at: '2026-11-26T20:00:00Z' }] });
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const originalUrl = window.location.href;
+  window.history.replaceState(null, '', '#/authors/Frank%20Herbert');
+  try {
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Dune' }));
+    const dialog = within(await screen.findByRole('dialog', { name: 'Details for Dune' }));
+    const stages = within(await dialog.findByRole('list', { name: 'Acquisition stages' }));
+    expect(stages.getAllByRole('listitem')).toHaveLength(6);
+    expect(stages.getByText('Downloading').parentElement).toHaveAttribute('aria-current', 'step');
+    expect(dialog.getByText('20.0% overall')).toBeVisible();
+    expect(fetchMock.mock.calls.some(([url]) => url.startsWith('/api/requests/'))).toBe(false);
+
+    act(() => MockEventSource.current.emit('download_progress', { id: download.id, progressPercent: 90 }));
+    expect(dialog.getByText('45.0% overall')).toBeVisible();
+
+    await user.click(dialog.getByRole('button', { name: 'View Search Log' }));
+    expect(await dialog.findByText('Import started')).toBeVisible();
+    const logSignal = fetchMock.mock.calls.find(([url]) => url === '/api/requests/1')?.[1]?.signal;
+
+    act(() => MockEventSource.current.emit('activity_snapshot', {
+      ...snapshot,
+      downloads: [{ ...download, status: 'importing' }],
+    }));
+    expect(stages.getByText('Importing').parentElement).toHaveAttribute('aria-current', 'step');
+
+    act(() => MockEventSource.current.emit('activity_snapshot', {
+      ...snapshot,
+      requests: snapshot.requests.map(item => item.id === 1 ? { ...item, status: 'available', stage: 'available' } : item),
+      downloads: [{ ...download, status: 'completed' }],
+    }));
+    expect(stages.getByText('Available').parentElement).toHaveAttribute('aria-current', 'step');
+    expect(dialog.getByRole('list', { name: 'Search log' })).toBeVisible();
+
+    await user.click(dialog.getByRole('button', { name: 'Close details' }));
+    expect(logSignal?.aborted).toBe(true);
+  } finally {
+    window.history.replaceState(null, '', originalUrl);
+  }
+});
+
 it('keeps Fix Metadata open across SSE activity updates when details stayed open from in-progress download to completion', async () => {
   const user = userEvent.setup({ delay: null });
-
-  class MockEventSource {
-    static instances: MockEventSource[] = [];
-    listeners: Record<string, ((e: MessageEvent) => void)[]> = {};
-    onopen: (() => void) | null = null;
-    onerror: (() => void) | null = null;
-
-    constructor(public url: string) {
-      MockEventSource.instances.push(this);
-    }
-
-    addEventListener(type: string, callback: (e: MessageEvent) => void) {
-      this.listeners[type] ??= [];
-      this.listeners[type].push(callback);
-    }
-
-    emit(type: string, data: unknown) {
-      const event = { data: JSON.stringify(data) } as MessageEvent;
-      for (const listener of this.listeners[type] ?? []) listener(event);
-    }
-
-    close() {
-      this.listeners = {};
-    }
-  }
 
   vi.stubGlobal('EventSource', MockEventSource);
 
@@ -427,7 +499,7 @@ it('keeps Fix Metadata open across SSE activity updates when details stayed open
 
   // 2. Leave book details open while SSE reports the download completing.
   downloadCompleted = true;
-  const stream = MockEventSource.instances[0];
+  const stream = MockEventSource.current;
   expect(stream).toBeDefined();
   act(() => {
     stream.emit('activity_snapshot', {

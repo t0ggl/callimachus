@@ -1,5 +1,5 @@
 import { EntityView } from './views/EntityView';
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Layout, NavView } from './components/Layout';
 import { CatalogView } from './views/CatalogView';
 import { ActivityView } from './views/ActivityView';
@@ -8,6 +8,7 @@ import { SettingsView } from './views/SettingsView';
 import { CommandPalette } from './components/CommandPalette';
 import { BookDetailModal } from './components/BookDetailModal';
 import { useActivityStream } from './hooks/useActivityStream';
+import { activityItems, BookActivityContext } from './utils/activity';
 import {
   Book,
   Author,
@@ -124,6 +125,10 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
     initialConversionJobs: [],
     initialDownloads: [],
   });
+  const bookActivity = useMemo(
+    () => activityItems({ conversionJobs, downloads, logs, requests }),
+    [conversionJobs, downloads, logs, requests],
+  );
 
   const redirectToOIDC = useCallback(() => {
     window.location.assign('/api/auth/oidc/login');
@@ -423,7 +428,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
   const convertingJobsCount = conversionJobs.filter((j) => j.status === 'processing').length;
 
   return (
-    <>
+    <BookActivityContext.Provider value={bookActivity}>
       <Layout
         currentView={currentView}
         onNavigate={navigateTo}
@@ -607,7 +612,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
           onClose={() => setSelectedBook(null)}
         />
       )}
-    </>
+    </BookActivityContext.Provider>
   );
 };
 
