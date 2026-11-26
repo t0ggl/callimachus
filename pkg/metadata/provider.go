@@ -47,6 +47,15 @@ type BookMetadata struct {
 	HardcoverSeriesID int `json:"hardcover_series_id,omitempty"`
 }
 
+// SeriesMetadata represents normalized book series metadata from a search provider.
+type SeriesMetadata struct {
+	Title             string   `json:"title"`
+	Authors           []string `json:"authors,omitempty"`
+	BooksCount        int      `json:"books_count,omitempty"`
+	CoverURL          string   `json:"cover_url,omitempty"`
+	HardcoverSeriesID int      `json:"hardcover_series_id,omitempty"`
+}
+
 // Provider defines the unified contract implemented by metadata source clients.
 type Provider interface {
 	Name() string

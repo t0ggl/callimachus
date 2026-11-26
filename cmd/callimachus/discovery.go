@@ -25,7 +25,15 @@ const (
 	defaultDiscoverPageSize = 10
 	maxDiscoverPageSize     = 50
 	maxDiscoverPage         = 50
+	maxDiscoverSeries       = 5
 )
+
+type discoverSeriesMatch struct {
+	metadata.SeriesMetadata
+	LibrarySeriesID string `json:"library_series_id,omitempty"`
+	Monitored       bool   `json:"monitored,omitempty"`
+	OwnedCount      int    `json:"owned_count,omitempty"`
+}
 
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -58,29 +66,29 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	slog.DebugContext(ctx, "metadata discovery search started")
+	cfg, err := config.Load(ctx, s.db, s.baseOverrides)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
 	var (
 		books   []metadata.BookMetadata
 		hasMore bool
 		status  int
 	)
 	if paginated {
-		books, hasMore, status = s.searchMetadataPage(ctx, query, page, limit)
+		books, hasMore, status = s.searchMetadataPageWithSettings(ctx, cfg.Settings, query, page, limit)
 		if page >= maxDiscoverPage {
 			hasMore = false
 		}
 	} else {
-		books, status = s.searchMetadata(ctx, query)
+		books, status = s.searchMetadataWithSettings(ctx, cfg.Settings, query)
 	}
 	if status != 0 {
 		http.Error(w, http.StatusText(status), status)
 		return
 	}
-	type match struct {
-		metadata.BookMetadata
-		LibraryBookID    string   `json:"library_book_id,omitempty"`
-		RequestedFormats []string `json:"requested_formats,omitempty"`
-		RequestStatus    string   `json:"request_status,omitempty"`
-	}
+	type match = discoverMatch
 	inventory := map[string]string{}
 	rows, err := s.db.QueryContext(r.Context(), `SELECT DISTINCT b.id,b.title,a.name FROM books b JOIN authors a ON a.id=b.author_id JOIN book_editions e ON e.book_id=b.id JOIN media_assets m ON m.edition_id=e.id`)
 	if err != nil {
@@ -237,16 +245,24 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		result.RequestStatus = matchedStatus
 		out = append(out, result)
 	}
-	slog.DebugContext(ctx, "metadata discovery search completed", "results", len(out))
+	var seriesMatches []discoverSeriesMatch
+	if !paginated || page == 1 {
+		seriesMatches = s.discoverSeries(ctx, cfg.Settings, query, out)
+	}
+	out = filterSeriesOmnibuses(out, seriesMatches)
+
+	slog.DebugContext(ctx, "metadata discovery search completed", "results", len(out), "series", len(seriesMatches))
 	w.Header().Set("Content-Type", "application/json")
 	if paginated {
 		resp := struct {
-			Results  []match `json:"results"`
-			Page     int     `json:"page"`
-			HasMore  bool    `json:"hasMore"`
-			NextPage int     `json:"nextPage,omitempty"`
+			Results  []discoverMatch       `json:"results"`
+			Series   []discoverSeriesMatch `json:"series,omitempty"`
+			Page     int                   `json:"page"`
+			HasMore  bool                  `json:"hasMore"`
+			NextPage int                   `json:"nextPage,omitempty"`
 		}{
 			Results: out,
+			Series:  seriesMatches,
 			Page:    page,
 			HasMore: hasMore,
 		}
@@ -257,6 +273,240 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(out)
+}
+
+type discoverMatch struct {
+	metadata.BookMetadata
+	LibraryBookID    string   `json:"library_book_id,omitempty"`
+	RequestedFormats []string `json:"requested_formats,omitempty"`
+	RequestStatus    string   `json:"request_status,omitempty"`
+}
+
+func (s *Server) discoverSeries(ctx context.Context, settings config.Settings, query string, books []discoverMatch) []discoverSeriesMatch {
+	var raw []discoverSeriesMatch
+
+	if settings.HardcoverAPIKey != "" {
+		client := s.prowlarrHTTPClient
+		if client == nil {
+			client = &http.Client{Timeout: 20 * time.Second}
+		}
+		p := metadata.NewHardcoverProvider(settings.HardcoverAPIKey, metadata.WithHardcoverClient(client))
+		found, err := p.SearchSeries(ctx, query, maxDiscoverSeries)
+		if err != nil {
+			slog.DebugContext(ctx, "hardcover series search failed")
+		} else {
+			for _, sm := range found {
+				raw = append(raw, discoverSeriesMatch{SeriesMetadata: sm})
+			}
+		}
+	}
+
+	// Surface series referenced by returned books when the series name matches the query.
+	for _, b := range books {
+		seriesTitle := strings.TrimSpace(b.Series)
+		if seriesTitle == "" || !seriesMatchesQuery(seriesTitle, query) {
+			continue
+		}
+		raw = append(raw, discoverSeriesMatch{
+			SeriesMetadata: metadata.SeriesMetadata{
+				Title:             seriesTitle,
+				Authors:           b.Authors,
+				BooksCount:        b.SeriesTotal,
+				CoverURL:          b.CoverURL,
+				HardcoverSeriesID: b.HardcoverSeriesID,
+			},
+		})
+	}
+
+	if len(raw) == 0 {
+		return nil
+	}
+
+	// Deduplicate by HardcoverSeriesID or normalized (title, primary author).
+	byHC := make(map[int]int)
+	byKey := make(map[string]int)
+	merged := make([]discoverSeriesMatch, 0, min(len(raw), maxDiscoverSeries))
+	for _, item := range raw {
+		titleKey := discoveryTitleKey(item.Title)
+		if titleKey == "" {
+			continue
+		}
+		authorKey := ""
+		if parts := discoveryAuthor(item.Authors); len(parts) > 0 {
+			authorKey = strings.Join(parts, " ")
+		}
+		key := titleKey + "\x00" + authorKey
+		existingIdx := -1
+		if item.HardcoverSeriesID > 0 {
+			if idx, ok := byHC[item.HardcoverSeriesID]; ok {
+				existingIdx = idx
+			}
+		}
+		if existingIdx < 0 {
+			if idx, ok := byKey[key]; ok {
+				existingIdx = idx
+			} else if authorKey == "" {
+				// Match an existing entry with the same title if this candidate has no author.
+				for i := range merged {
+					if discoveryTitleKey(merged[i].Title) == titleKey {
+						existingIdx = i
+						break
+					}
+				}
+			}
+		}
+		if existingIdx >= 0 {
+			dst := &merged[existingIdx]
+			if dst.HardcoverSeriesID == 0 && item.HardcoverSeriesID > 0 {
+				dst.HardcoverSeriesID = item.HardcoverSeriesID
+				byHC[item.HardcoverSeriesID] = existingIdx
+			}
+			if dst.BooksCount < item.BooksCount {
+				dst.BooksCount = item.BooksCount
+			}
+			if dst.CoverURL == "" && item.CoverURL != "" {
+				dst.CoverURL = item.CoverURL
+			}
+			if len(dst.Authors) == 0 && len(item.Authors) > 0 {
+				dst.Authors = item.Authors
+			}
+			continue
+		}
+		if len(merged) >= maxDiscoverSeries {
+			continue
+		}
+		idx := len(merged)
+		merged = append(merged, item)
+		if item.HardcoverSeriesID > 0 {
+			byHC[item.HardcoverSeriesID] = idx
+		}
+		byKey[key] = idx
+	}
+
+	// Enrich with local library series metadata (id, monitored, owned_count, total_books).
+	if s.db != nil && len(merged) > 0 {
+		type localSeries struct {
+			id          string
+			title       string
+			hardcoverID int
+			monitored   bool
+			totalBooks  int
+			ownedCount  int
+		}
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT s.id, s.title, COALESCE(s.hardcover_id, 0), s.monitored, COALESCE(s.total_books, 0),
+			       (SELECT COUNT(DISTINCT b.id)
+			        FROM books b
+			        JOIN book_editions e ON e.book_id = b.id
+			        JOIN media_assets m ON m.edition_id = e.id
+			        WHERE b.series_id = s.id)
+			FROM series s`)
+		if err == nil {
+			var locals []localSeries
+			for rows.Next() {
+				var ls localSeries
+				if scanErr := rows.Scan(&ls.id, &ls.title, &ls.hardcoverID, &ls.monitored, &ls.totalBooks, &ls.ownedCount); scanErr == nil {
+					locals = append(locals, ls)
+				}
+			}
+			rows.Close()
+			for i := range merged {
+				mKey := discoveryTitleKey(merged[i].Title)
+				for _, ls := range locals {
+					if (merged[i].HardcoverSeriesID > 0 && ls.hardcoverID == merged[i].HardcoverSeriesID) ||
+						(mKey != "" && discoveryTitleKey(ls.title) == mKey) {
+						merged[i].LibrarySeriesID = ls.id
+						merged[i].Monitored = ls.monitored
+						merged[i].OwnedCount = ls.ownedCount
+						if ls.totalBooks > merged[i].BooksCount {
+							merged[i].BooksCount = ls.totalBooks
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return merged
+}
+
+func seriesMatchesQuery(seriesTitle, query string) bool {
+	sKey := discoveryTitleKey(seriesTitle)
+	qKey := discoveryTitleKey(query)
+	if sKey == "" || qKey == "" {
+		return false
+	}
+	return strings.Contains(sKey, qKey) || strings.Contains(qKey, sKey)
+}
+
+func filterSeriesOmnibuses(books []discoverMatch, series []discoverSeriesMatch) []discoverMatch {
+	if len(books) == 0 {
+		return books
+	}
+	type seriesInfo struct {
+		titleKey  string
+		authors   []string
+		seriesIdx int // index into series slice, or -1
+	}
+	var known []seriesInfo
+	for i, s := range series {
+		if tk := discoveryTitleKey(s.Title); tk != "" {
+			known = append(known, seriesInfo{titleKey: tk, authors: s.Authors, seriesIdx: i})
+		}
+	}
+	distinctFirstBook := make(map[string]bool)
+	for _, b := range books {
+		stk := discoveryTitleKey(b.Series)
+		if stk == "" {
+			continue
+		}
+		known = append(known, seriesInfo{titleKey: stk, authors: b.Authors, seriesIdx: -1})
+		if b.SeriesIndex != nil && *b.SeriesIndex == 1 {
+			mainTitle, _ := discoveryTitleParts(b.Title, b.Authors)
+			if discoveryTitleKey(mainTitle) != stk && discoveryTitleKey(b.Title) != stk {
+				distinctFirstBook[stk] = true
+			}
+		}
+	}
+	if len(known) == 0 {
+		return books
+	}
+
+	filtered := make([]discoverMatch, 0, len(books))
+	for _, b := range books {
+		if b.LibraryBookID != "" || b.SeriesIndex != nil {
+			filtered = append(filtered, b)
+			continue
+		}
+		mainTitle, _ := discoveryTitleParts(b.Title, b.Authors)
+		btk := discoveryTitleKey(b.Title)
+		mtk := discoveryTitleKey(mainTitle)
+		suppressed := false
+		for _, ser := range known {
+			if ser.titleKey != btk && ser.titleKey != mtk {
+				continue
+			}
+			if len(b.Authors) > 0 && len(ser.authors) > 0 && !metadata.SharesAuthor(b.Authors, ser.authors) {
+				bAuth := discoveryAuthor(b.Authors)
+				sAuth := discoveryAuthor(ser.authors)
+				if !sameDiscoveryAuthor(bAuth, sAuth) {
+					continue
+				}
+			}
+			if b.HardcoverID == "" || distinctFirstBook[ser.titleKey] {
+				suppressed = true
+				if ser.seriesIdx >= 0 && series[ser.seriesIdx].CoverURL == "" && b.CoverURL != "" {
+					series[ser.seriesIdx].CoverURL = b.CoverURL
+				}
+				break
+			}
+		}
+		if !suppressed {
+			filtered = append(filtered, b)
+		}
+	}
+	return filtered
 }
 
 func (s *Server) searchMetadata(ctx context.Context, query string) ([]metadata.BookMetadata, int) {

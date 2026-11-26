@@ -231,3 +231,106 @@ func preferHardcoverSeriesBook(candidate, current hardcoverBookNode) bool {
 	}
 	return candidate.Description != "" && current.Description == ""
 }
+
+// SearchSeries searches Hardcover series by query string and returns ranked series metadata.
+func (p *HardcoverProvider) SearchSeries(ctx context.Context, query string, limit int) ([]SeriesMetadata, error) {
+	trimmed := strings.TrimSpace(query)
+	if trimmed == "" {
+		return []SeriesMetadata{}, nil
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	var search struct {
+		Data struct {
+			Search struct {
+				IDs []int `json:"ids"`
+			} `json:"search"`
+		} `json:"data"`
+	}
+	if err := p.doQuery(
+		ctx,
+		`query SearchSeries($query: String!, $perPage: Int!) { search(query: $query, query_type: "Series", per_page: $perPage) { ids } }`,
+		map[string]interface{}{"query": trimmed, "perPage": limit},
+		&search,
+	); err != nil {
+		return nil, err
+	}
+	ids := search.Data.Search.IDs
+	if len(ids) == 0 {
+		return []SeriesMetadata{}, nil
+	}
+	const detailsQuery = `query SearchSeriesDetails($ids: [Int!]!) {
+ series(where: {id: {_in: $ids}}) {
+  id canonical_id name books_count
+  author { name }
+  canonical { id name books_count author { name } }
+  book_series(where: {compilation: {_eq: false}}, order_by: {position: asc_nulls_last}, limit: 1) {
+   book { image: cached_image }
+  }
+ }
+}`
+	var res struct {
+		Data struct {
+			Series []struct {
+				hardcoverSeries
+				BookSeries []struct {
+					Book *struct {
+						Image *hardcoverImage `json:"image"`
+					} `json:"book"`
+				} `json:"book_series"`
+			} `json:"series"`
+		} `json:"data"`
+	}
+	if err := p.doQuery(ctx, detailsQuery, map[string]interface{}{"ids": ids}, &res); err != nil {
+		return nil, err
+	}
+	byID := make(map[int]int, len(res.Data.Series))
+	for i, s := range res.Data.Series {
+		byID[s.ID] = i
+	}
+	results := make([]SeriesMetadata, 0, len(ids))
+	seen := make(map[int]bool, len(ids))
+	for _, id := range ids {
+		idx, ok := byID[id]
+		if !ok {
+			continue
+		}
+		node := res.Data.Series[idx]
+		canon := node.hardcoverSeries
+		if canon.Canonical != nil && strings.TrimSpace(canon.Canonical.Name) != "" {
+			canon = *canon.Canonical
+		}
+		canonID := node.hardcoverSeries.identity()
+		if canonID > 0 && seen[canonID] {
+			continue
+		}
+		name := strings.TrimSpace(canon.Name)
+		if name == "" {
+			continue
+		}
+		if canonID > 0 {
+			seen[canonID] = true
+		}
+		item := SeriesMetadata{
+			Title:             name,
+			BooksCount:        canon.BooksCount,
+			HardcoverSeriesID: canonID,
+		}
+		author := canon.Author
+		if (author == nil || strings.TrimSpace(author.Name) == "") && node.Author != nil {
+			author = node.Author
+		}
+		if author != nil && strings.TrimSpace(author.Name) != "" {
+			item.Authors = []string{strings.TrimSpace(author.Name)}
+		}
+		for _, bs := range node.BookSeries {
+			if bs.Book != nil && bs.Book.Image != nil && strings.TrimSpace(bs.Book.Image.URL) != "" {
+				item.CoverURL = strings.TrimSpace(bs.Book.Image.URL)
+				break
+			}
+		}
+		results = append(results, item)
+	}
+	return results, nil
+}

@@ -820,7 +820,8 @@ describe('App Integration', () => {
     expect(within(modalReadingOrder).queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
     expect(within(modalReadingOrder).queryByRole('button', { name: /Monitor/i })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Manage monitoring' }));
+    expect(screen.queryByRole('button', { name: /Monitor Series/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Series page' }));
 
     const readingOrder = await screen.findByRole('list', { name: 'Reading Order' });
     expect(within(readingOrder).queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
