@@ -543,3 +543,31 @@ func TestQualityProfile_IndependentMediaSizeLimits(t *testing.T) {
 		})
 	}
 }
+
+func TestQualityProfile_EvaluateReleaseIssues_ReportsAllCriteria(t *testing.T) {
+	t.Parallel()
+	profile := DefaultQualityProfile()
+	profile.AllowedFormats = []string{"epub", "m4b"}
+	profile.EbookFormatPreferences = []string{"EPUB", "AZW3", "MOBI", "PDF"}
+	profile.MaxEbookSizeBytes = 10 * 1024 * 1024
+	profile.RejectPatterns = []*regexp.Regexp{regexp.MustCompile(`(?i)\bsample\b`)}
+
+	issues := profile.EvaluateReleaseIssues(ReleaseCandidate{
+		Title: "Philip.Pullman-His.Dark.Materials.01-03.FRENCH.sample.azw3",
+		Size:  20 * 1024 * 1024,
+	})
+	got := map[string]bool{}
+	for _, issue := range issues {
+		got[issue.Criterion] = true
+	}
+	for _, want := range []string{"pattern", "language", "format", "size", "multi-book"} {
+		if !got[want] {
+			t.Errorf("missing expected criterion %q in issues: %+v", want, issues)
+		}
+	}
+
+	prefs := profile.AllowedEbookPreferences()
+	if len(prefs) != 1 || prefs[0] != "epub" {
+		t.Fatalf("AllowedEbookPreferences() = %v, want [epub]", prefs)
+	}
+}

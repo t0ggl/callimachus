@@ -12,16 +12,87 @@ import (
 )
 
 func TestScoreCandidate(t *testing.T) {
-	c := ScoreCandidate(indexers.ProwlarrRelease{Title: "Book EPUB 2024", Seeders: 50, Verified: true}, 2024, []string{"EPUB", "PDF"})
-	if c.Score != 75 || c.Format != "epub" {
+	c := ScoreCandidate(
+		indexers.ProwlarrRelease{Title: "Book EPUB 2024", Seeders: 50, Verified: true},
+		2024,
+		FormatEPUB,
+		Evaluation{Format: "epub", EbookPreferences: []string{"EPUB", "PDF"}},
+	)
+	if c.Score != 75 || c.Format != "epub" || c.Breakdown["format"] != 30 {
 		t.Fatalf("%+v", c)
 	}
-	if c := ScoreCandidate(indexers.ProwlarrRelease{Title: "Book"}, 0, nil); c.Score != 0 {
+	if c := ScoreCandidate(indexers.ProwlarrRelease{Title: "Book"}, 0, "", Evaluation{}); c.Score != 0 {
 		t.Fatal(c)
 	}
-	c = ScoreCandidate(indexers.ProwlarrRelease{Title: "Book PDF", Seeders: 1}, 0, []string{"EPUB", "PDF"})
-	if c.Score != 35 {
+	c = ScoreCandidate(
+		indexers.ProwlarrRelease{Title: "Book PDF", Seeders: 1},
+		0,
+		FormatEPUB,
+		Evaluation{Format: "pdf", EbookPreferences: []string{"EPUB", "PDF"}},
+	)
+	if c.Score != 35 || c.Breakdown["format"] != 25 {
 		t.Fatal(c)
+	}
+}
+
+func TestScoreCandidate_FormatPreferencesAndExclusions(t *testing.T) {
+	prefs := []string{"epub", "azw3", "mobi", "pdf", "cbr", "cbz"}
+	var prev int
+	for i, fmtName := range prefs {
+		c := ScoreCandidate(
+			indexers.ProwlarrRelease{Title: "Single Book " + fmtName},
+			0,
+			FormatEPUB,
+			Evaluation{Format: fmtName, EbookPreferences: prefs},
+		)
+		if i > 0 && c.Breakdown["format"] >= prev {
+			t.Fatalf("format %s (%d) should score strictly lower than previous preference (%d)", fmtName, c.Breakdown["format"], prev)
+		}
+		prev = c.Breakdown["format"]
+	}
+
+	// Reordering preferences changes scores accordingly.
+	reordered := []string{"pdf", "epub"}
+	pdfCand := ScoreCandidate(indexers.ProwlarrRelease{Title: "Book PDF"}, 0, FormatEPUB, Evaluation{Format: "pdf", EbookPreferences: reordered})
+	epubCand := ScoreCandidate(indexers.ProwlarrRelease{Title: "Book EPUB"}, 0, FormatEPUB, Evaluation{Format: "epub", EbookPreferences: reordered})
+	if pdfCand.Breakdown["format"] <= epubCand.Breakdown["format"] {
+		t.Fatalf("reordered preference did not raise PDF (%d) above EPUB (%d)", pdfCand.Breakdown["format"], epubCand.Breakdown["format"])
+	}
+
+	// Disabled format gets format: -1000 only — no positive format points and no "quality" key.
+	disabled := ScoreCandidate(
+		indexers.ProwlarrRelease{Title: "Book AZW3", Seeders: 20},
+		0,
+		FormatEPUB,
+		Evaluation{
+			Format:           "azw3",
+			EbookPreferences: []string{"epub"},
+			Exclusions:       map[string]string{"format": `format "azw3" not allowed`},
+		},
+	)
+	if disabled.Breakdown["format"] != -1000 {
+		t.Fatalf("disabled format should score format=-1000, got %+v", disabled.Breakdown)
+	}
+	if _, hasQuality := disabled.Breakdown["quality"]; hasQuality {
+		t.Fatalf("unexpected generic quality key in breakdown: %+v", disabled.Breakdown)
+	}
+
+	// Audiobook preference: M4B scores higher than MP3.
+	m4b := ScoreCandidate(indexers.ProwlarrRelease{Title: "Book M4B"}, 0, FormatM4B, Evaluation{Format: "m4b"})
+	mp3 := ScoreCandidate(indexers.ProwlarrRelease{Title: "Book MP3"}, 0, FormatM4B, Evaluation{Format: "mp3"})
+	if m4b.Breakdown["format"] <= mp3.Breakdown["format"] {
+		t.Fatalf("M4B (%d) should score higher than MP3 (%d)", m4b.Breakdown["format"], mp3.Breakdown["format"])
+	}
+
+	// Multi-book release is marked down under multi-book and excluded.
+	multi := ScoreCandidate(
+		indexers.ProwlarrRelease{Title: "Philip.Pullman-His.Dark.Materials.01-03.His.Dark.Materials.(The.Golden.Compass.EPUB", Seeders: 50},
+		0,
+		FormatEPUB,
+		Evaluation{Format: "epub", EbookPreferences: []string{"epub"}},
+	)
+	if multi.Breakdown["multi-book"] != -1000 || !multi.IsExcluded() || multi.Score >= 0 {
+		t.Fatalf("multi-book release not excluded: %+v", multi)
 	}
 }
 
@@ -44,8 +115,8 @@ func acquisitionFixture(t *testing.T) (*Acquisition, int64, *int, *int) {
 			out = append(out, indexers.ProwlarrRelease{GUID: fmt.Sprint(i), IndexerID: 1, Title: "Book EPUB", Seeders: i + 1})
 		}
 		return out, nil
-	}, Grab: func(context.Context, indexers.ProwlarrRelease) error { grabs++; return nil }, Evaluate: func(context.Context, indexers.ProwlarrRelease) (bool, []string, error) {
-		return true, []string{"EPUB"}, nil
+	}, Grab: func(context.Context, indexers.ProwlarrRelease) error { grabs++; return nil }, Evaluate: func(context.Context, indexers.ProwlarrRelease) (Evaluation, error) {
+		return Evaluation{Format: "epub", EbookPreferences: []string{"EPUB"}}, nil
 	}}
 	return a, r.ID, &searches, &grabs
 }
@@ -147,7 +218,9 @@ func TestAsyncFailureAndSuccessRetention(t *testing.T) {
 func TestNoPositiveCandidatesDailyRecheck(t *testing.T) {
 	a, id, searches, grabs := acquisitionFixture(t)
 	ctx := context.Background()
-	a.Evaluate = func(context.Context, indexers.ProwlarrRelease) (bool, []string, error) { return false, nil, nil }
+	a.Evaluate = func(context.Context, indexers.ProwlarrRelease) (Evaluation, error) {
+		return Evaluation{Exclusions: map[string]string{"format": "not allowed"}}, nil
+	}
 	for i := 0; i < 2; i++ {
 		if err := a.Tick(ctx); err != nil {
 			t.Fatal(err)
@@ -211,8 +284,11 @@ func TestHighestPositiveCandidateWins(t *testing.T) {
 	a.Search = func(context.Context, string, string) ([]indexers.ProwlarrRelease, error) {
 		return []indexers.ProwlarrRelease{{GUID: "low", IndexerID: 1, Title: "Book EPUB"}, {GUID: "best", IndexerID: 1, Title: "Book EPUB", Seeders: 100, Verified: true}, {GUID: "excluded", IndexerID: 1, Title: "foreign EPUB", Seeders: 200}}, nil
 	}
-	a.Evaluate = func(_ context.Context, r indexers.ProwlarrRelease) (bool, []string, error) {
-		return r.GUID != "excluded", []string{"EPUB"}, nil
+	a.Evaluate = func(_ context.Context, r indexers.ProwlarrRelease) (Evaluation, error) {
+		if r.GUID == "excluded" {
+			return Evaluation{Format: "epub", EbookPreferences: []string{"EPUB"}, Exclusions: map[string]string{"language": "foreign"}}, nil
+		}
+		return Evaluation{Format: "epub", EbookPreferences: []string{"EPUB"}}, nil
 	}
 	a.Grab = func(_ context.Context, r indexers.ProwlarrRelease) error {
 		*grabs++

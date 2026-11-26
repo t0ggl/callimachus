@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -14,9 +15,21 @@ import (
 	"github.com/t0ggl/callimachus/internal/uuid"
 	"github.com/t0ggl/callimachus/pkg/database"
 	"github.com/t0ggl/callimachus/pkg/indexers"
+	"github.com/t0ggl/callimachus/pkg/metadata"
 )
 
 var errTransferFailed = errors.New("download dispatch failed")
+
+const exclusionPenalty = -1000
+
+// Evaluation captures the quality-profile evaluation and ordered format
+// preferences for a candidate release.
+type Evaluation struct {
+	Format           string
+	EbookPreferences []string
+	AudioPreferences []string
+	Exclusions       map[string]string
+}
 
 type Candidate struct {
 	Key       string                   `json:"key"`
@@ -27,17 +40,90 @@ type Candidate struct {
 	Penalty   int                      `json:"penalty"`
 }
 
-// ScoreCandidate starts at zero; quality exclusions remain hard gates.
-func ScoreCandidate(r indexers.ProwlarrRelease, year int, formats []string) Candidate {
-	c := Candidate{Key: fmt.Sprintf("%d:%s", r.IndexerID, r.GUID), Release: r, Breakdown: map[string]int{}}
-	title := strings.ToLower(r.Title)
-	for i, f := range formats {
-		if strings.Contains(title, strings.ToLower(f)) {
-			c.Format = strings.ToLower(f)
-			c.Breakdown["format"] = max(20, 30-i*5)
-			break
+func (c Candidate) excludedCriteria() []string {
+	var out []string
+	for k, v := range c.Breakdown {
+		if v < 0 {
+			out = append(out, k)
 		}
 	}
+	slices.Sort(out)
+	return out
+}
+
+// IsExcluded reports whether any hard-gate criterion marked this candidate down.
+func (c Candidate) IsExcluded() bool {
+	return len(c.excludedCriteria()) > 0
+}
+
+func formatPreferenceScore(index int) int {
+	return max(5, 30-index*5)
+}
+
+// ScoreCandidate starts at zero and records each positive signal and each
+// individual exclusion criterion in Breakdown.
+func ScoreCandidate(r indexers.ProwlarrRelease, year int, requestFormat string, eval Evaluation) Candidate {
+	c := Candidate{
+		Key:       fmt.Sprintf("%d:%s", r.IndexerID, r.GUID),
+		Release:   r,
+		Format:    strings.ToLower(strings.TrimPrefix(strings.TrimSpace(eval.Format), ".")),
+		Breakdown: map[string]int{},
+	}
+	title := strings.ToLower(r.Title)
+
+	audioPrefs := eval.AudioPreferences
+	if len(audioPrefs) == 0 {
+		audioPrefs = []string{"m4b", "mp3"}
+	}
+
+	// Fallback format detection from title when caller did not pre-detect it.
+	if c.Format == "" {
+		for _, f := range eval.EbookPreferences {
+			lf := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(f), "."))
+			if lf != "" && strings.Contains(title, lf) {
+				c.Format = lf
+				break
+			}
+		}
+	}
+	if c.Format == "" {
+		for _, f := range audioPrefs {
+			lf := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(f), "."))
+			if lf != "" && strings.Contains(title, lf) {
+				c.Format = lf
+				break
+			}
+		}
+	}
+
+	// Format criterion: either excluded (-1000) or scored by settings preference order.
+	_, formatExcluded := eval.Exclusions["format"]
+	if formatExcluded || !formatMatchesRequest(requestFormat, c.Format) {
+		c.Breakdown["format"] = exclusionPenalty
+	} else if c.Format != "" {
+		prefs := eval.EbookPreferences
+		if c.Format == "m4b" || c.Format == "mp3" {
+			prefs = audioPrefs
+		}
+		for i, f := range prefs {
+			if strings.ToLower(strings.TrimPrefix(strings.TrimSpace(f), ".")) == c.Format {
+				c.Breakdown["format"] = formatPreferenceScore(i)
+				break
+			}
+		}
+	}
+
+	// Record each non-format exclusion criterion individually.
+	for criterion := range eval.Exclusions {
+		if criterion == "format" {
+			continue
+		}
+		c.Breakdown[criterion] = exclusionPenalty
+	}
+	if _, already := c.Breakdown["multi-book"]; !already && metadata.IsMultiBookRelease(r.Title) {
+		c.Breakdown["multi-book"] = exclusionPenalty
+	}
+
 	if r.Seeders >= 50 {
 		c.Breakdown["seeders"] = 20
 	} else if r.Seeders > 0 {
@@ -62,7 +148,7 @@ type Acquisition struct {
 	DB       *database.DB
 	Search   func(context.Context, string, string) ([]indexers.ProwlarrRelease, error)
 	Grab     func(context.Context, indexers.ProwlarrRelease) error
-	Evaluate func(context.Context, indexers.ProwlarrRelease) (bool, []string, error)
+	Evaluate func(context.Context, indexers.ProwlarrRelease) (Evaluation, error)
 	mu       sync.Mutex
 	activeMu sync.Mutex
 	activeID int64
@@ -174,15 +260,11 @@ func (a *Acquisition) refresh(ctx context.Context, id int64) error {
 			invalid++
 			continue
 		}
-		ok, formats, err := a.Evaluate(ctx, r)
+		eval, err := a.Evaluate(ctx, r)
 		if err != nil {
 			return err
 		}
-		c := ScoreCandidate(r, year, formats)
-		if !ok || !formatMatchesRequest(format, c.Format) {
-			c.Breakdown["quality"] = -1000
-			c.Score -= 1000
-		}
+		c := ScoreCandidate(r, year, format, eval)
 		slog.DebugContext(ctx, "acquisition candidate scored", "request_id", id, "indexer_id", r.IndexerID, "score", c.Score)
 		candidates = append(candidates, c)
 	}
@@ -203,8 +285,8 @@ func (a *Acquisition) refresh(ctx context.Context, id int64) error {
 	for _, c := range candidates {
 		r := c.Release
 		kind, message := "candidate_scored", fmt.Sprintf("%s (indexer %d) scored %d", r.Title, r.IndexerID, c.Score)
-		if c.Breakdown["quality"] < 0 {
-			kind, message = "candidate_rejected", fmt.Sprintf("%s (indexer %d) excluded by format or quality requirements", r.Title, r.IndexerID)
+		if excluded := c.excludedCriteria(); len(excluded) > 0 {
+			kind, message = "candidate_rejected", fmt.Sprintf("%s (indexer %d) excluded (%s)", r.Title, r.IndexerID, strings.Join(excluded, ", "))
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO request_events(request_id,kind,message)
 			SELECT id,?,? FROM book_requests WHERE id=? AND dismissed=0`, kind, message, id); err != nil {
@@ -236,12 +318,17 @@ func (a *Acquisition) fail(ctx context.Context, key string) error {
 }
 
 func (a *Acquisition) dispatch(ctx context.Context, id int64, c Candidate) error {
-	ok, _, err := a.Evaluate(ctx, c.Release)
+	eval, err := a.Evaluate(ctx, c.Release)
 	if err != nil {
 		return err
 	}
-	if !ok {
-		return fmt.Errorf("release excluded by quality profile")
+	if len(eval.Exclusions) > 0 {
+		reasons := make([]string, 0, len(eval.Exclusions))
+		for k := range eval.Exclusions {
+			reasons = append(reasons, k)
+		}
+		slices.Sort(reasons)
+		return fmt.Errorf("release excluded (%s)", strings.Join(reasons, ", "))
 	}
 	qid := uuid.NewString()
 	tx, err := a.DB.BeginTx(ctx, nil)
@@ -308,8 +395,8 @@ func (a *Acquisition) download(ctx context.Context, id int64, key string) error 
 	}
 	for _, c := range candidates {
 		if c.Key == key {
-			if c.Breakdown["quality"] < 0 {
-				return fmt.Errorf("release excluded by format or quality requirements")
+			if excluded := c.excludedCriteria(); len(excluded) > 0 {
+				return fmt.Errorf("release excluded (%s)", strings.Join(excluded, ", "))
 			}
 			err = a.dispatch(ctx, id, c)
 			if errors.Is(err, errTransferFailed) {

@@ -101,8 +101,8 @@ func TestUpgradeDispatchRetainsLibraryEdition(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	a := &requests.Acquisition{DB: db, Evaluate: func(context.Context, indexers.ProwlarrRelease) (bool, []string, error) {
-		return true, []string{"epub"}, nil
+	a := &requests.Acquisition{DB: db, Evaluate: func(context.Context, indexers.ProwlarrRelease) (requests.Evaluation, error) {
+		return requests.Evaluation{Format: "epub", EbookPreferences: []string{"epub"}}, nil
 	}, Grab: func(context.Context, indexers.ProwlarrRelease) error { return nil }}
 	if err := a.Download(context.Background(), 1, "1:release"); err != nil {
 		t.Fatal(err)

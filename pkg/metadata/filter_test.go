@@ -133,6 +133,48 @@ func TestIsCollectionTitle(t *testing.T) {
 	}
 }
 
+func TestIsMultiBookRelease(t *testing.T) {
+	t.Parallel()
+
+	multiBook := []string{
+		"Philip.Pullman-His.Dark.Materials.01-03.His.Dark.Materials.(The.Golden.Compass",
+		"Philip Pullman - His Dark Materials 01-03 (EPUB)",
+		"Branden.Sanderson.Mistborn.1-3.EPUB",
+		"The Expanse [01-09] EPUB",
+		"Dune.Books.1-6.EPUB",
+		"The.Witcher.Complete.Series.EPUB",
+		"His.Dark.Materials.Box.Set.EPUB",
+		"Foundation Omnibus EPUB",
+		"Wheel of Time 01–04 M4B",
+		"Harry Potter #1-7 EPUB",
+	}
+	for _, title := range multiBook {
+		if !metadata.IsMultiBookRelease(title) {
+			t.Errorf("IsMultiBookRelease(%q) = false, want true", title)
+		}
+	}
+
+	singleBook := []string{
+		"Philip.Pullman-The.Golden.Compass.(His.Dark.Materials.01).EPUB",
+		"Philip Pullman - The Golden Compass (His Dark Materials Trilogy Book 1) [EPUB]",
+		"Dune (1965) EPUB",
+		"Book Title 2024-01-03 EPUB",
+		"Book Title 01-03-2024 EPUB",
+		"1-2-3 Magic EPUB",
+		"Catch-22 EPUB",
+		"A Trade of Blood 2089-2099 EPUB",
+		"Untitled (Part 1 of 2) M4B",
+		"Audiobook 64-128kbps MP3",
+		"Audiobook 64-128 kbps MP3",
+		"ISBN 978-0-14-028333-4 EPUB",
+	}
+	for _, title := range singleBook {
+		if metadata.IsMultiBookRelease(title) {
+			t.Errorf("IsMultiBookRelease(%q) = true, want false", title)
+		}
+	}
+}
+
 func TestProvidersFilterCollectionsAndKeepOrdinaryBooks(t *testing.T) {
 	t.Parallel()
 
