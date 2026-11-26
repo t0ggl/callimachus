@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -112,7 +113,7 @@ func (s *RequestService) SubmitRequest(ctx context.Context, input CreateRequestI
 
 	input.Format = strings.ToLower(strings.TrimSpace(input.Format))
 	if input.Format == "" {
-		input.Format = FormatBoth
+		input.Format = FormatEPUB
 	}
 	if !IsValidFormat(input.Format) {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidFormat, input.Format)
@@ -200,7 +201,7 @@ func (s *RequestService) insertRequests(ctx context.Context, input CreateRequest
 		if err != nil {
 			return nil, err
 		}
-		book := &database.Book{AuthorID: author.ID, Title: input.Title, Synopsis: &input.Synopsis, SeriesIndex: input.SeriesIndex, Monitored: !input.ManualOnly}
+		book := &database.Book{AuthorID: author.ID, Title: input.Title, Synopsis: &input.Synopsis, SeriesIndex: input.SeriesIndex}
 		if input.Year > 0 {
 			date := fmt.Sprintf("%04d", input.Year)
 			book.ReleaseDate = &date
@@ -271,7 +272,9 @@ func (s *RequestService) insertRequests(ctx context.Context, input CreateRequest
 			return nil, err
 		}
 	} else {
-		if _, err := tx.ExecContext(ctx, "UPDATE books SET monitored=1, synopsis=COALESCE(NULLIF(synopsis,''), NULLIF(?,'')), updated_at=? WHERE id=?", input.Synopsis, now, input.BookID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE books SET monitored=(monitored OR ?), audiobook_monitored=CASE WHEN ? THEN 1 ELSE audiobook_monitored END,
+			synopsis=COALESCE(NULLIF(synopsis,''), NULLIF(?,'')), updated_at=? WHERE id=?`,
+			slices.Contains(needed, FormatEPUB), slices.Contains(needed, FormatM4B), input.Synopsis, now, input.BookID); err != nil {
 			return nil, err
 		}
 	}

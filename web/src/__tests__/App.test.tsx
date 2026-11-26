@@ -820,7 +820,7 @@ describe('App Integration', () => {
     expect(within(modalReadingOrder).queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
     expect(within(modalReadingOrder).queryByRole('button', { name: /Monitor/i })).not.toBeInTheDocument();
 
-    expect(screen.queryByRole('button', { name: /Monitor Series/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Monitor series eBooks/i })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Series page' }));
 
     const readingOrder = await screen.findByRole('list', { name: 'Reading Order' });
@@ -832,7 +832,7 @@ describe('App Integration', () => {
     expect(within(detailDialog).getByText('Unowned blurb visible to guests.')).toBeInTheDocument();
     expect(within(detailDialog).getByText('No files available.')).toBeInTheDocument();
     expect(within(detailDialog).queryByRole('button', { name: 'Show Download Options' })).not.toBeInTheDocument();
-    expect(within(detailDialog).queryByRole('button', { name: /Monitor Book/i })).not.toBeInTheDocument();
+    expect(within(detailDialog).queryByRole('button', { name: /Monitor eBook/i })).not.toBeInTheDocument();
 
     const writeCalls = fetchMock.mock.calls.filter(([u, opts]) => {
       const method = opts?.method?.toUpperCase() ?? 'GET';

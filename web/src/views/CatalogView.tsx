@@ -346,7 +346,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
         id: item.book.id,
         title: item.book.title,
         subtitle: item.book.authorName,
-        monitored: item.book.monitored,
+        monitored: item.book.monitored || item.book.audiobookMonitored,
       };
     }
     if (!item.seriesId) return null;
@@ -1066,7 +1066,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
 
                       <div className="space-y-1">
                         <SeriesBadge title={book.seriesTitle} id={book.seriesId} author={book.authorName} index={book.seriesIndex} total={series.find(s => s.id === book.seriesId)?.totalBooks} onSelect={setSelectedSeries} />
-                        {book.monitored && (
+                        {(book.monitored || book.audiobookMonitored) && (
                           <span className="mt-1.5 inline-flex items-center gap-1 rounded-sm border border-blue-800/60 bg-blue-950/70 px-1.5 py-0.5 text-[10px] font-medium text-blue-200">
                             <Bell className="w-2.5 h-2.5" aria-hidden="true" />
                             Monitored
@@ -1303,7 +1303,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                                 {fmt}
                               </span>
                             ))}
-                            {book.monitored && (
+                            {(book.monitored || book.audiobookMonitored) && (
                               <span className="inline-flex items-center gap-1 rounded-sm border border-blue-800/60 bg-blue-950/70 px-1.5 py-0.5 text-[10px] font-medium text-blue-200">
                                 <Bell className="w-2.5 h-2.5" aria-hidden="true" />
                                 Monitored

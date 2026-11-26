@@ -165,14 +165,14 @@ func (c *Catalog) UpsertSeries(ctx context.Context, s *database.Series) error {
 
 // GetBookByID retrieves a book by ID.
 func (c *Catalog) GetBookByID(ctx context.Context, id string) (*database.Book, error) {
-	query := `SELECT id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, monitored, created_at, updated_at FROM books WHERE id = ?;`
+	query := `SELECT id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, monitored, COALESCE(audiobook_monitored, monitored), audiobook_monitored IS NULL, created_at, updated_at FROM books WHERE id = ?;`
 	row := c.db.QueryRowContext(ctx, query, id)
 	return scanBook(row)
 }
 
 // GetBookByAuthorAndTitle retrieves a book work by author ID and title.
 func (c *Catalog) GetBookByAuthorAndTitle(ctx context.Context, authorID, title string) (*database.Book, error) {
-	query := `SELECT id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, monitored, created_at, updated_at FROM books WHERE author_id = ? AND title = ? COLLATE NOCASE LIMIT 1;`
+	query := `SELECT id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, monitored, COALESCE(audiobook_monitored, monitored), audiobook_monitored IS NULL, created_at, updated_at FROM books WHERE author_id = ? AND title = ? COLLATE NOCASE LIMIT 1;`
 	row := c.db.QueryRowContext(ctx, query, authorID, strings.TrimSpace(title))
 	return scanBook(row)
 }
@@ -296,12 +296,12 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 	}
 
 	query := `
-		INSERT INTO books (id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, monitored, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+		INSERT INTO books (id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, monitored, audiobook_monitored, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN NULL ELSE ? END, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 	`
 	_, err = c.db.ExecContext(ctx, query,
 		book.ID, book.AuthorID, book.SeriesID, book.SeriesIndex, book.SeriesIndexDisplay,
-		book.Title, book.Subtitle, book.ReleaseDate, book.Synopsis, book.Genres, book.Monitored,
+		book.Title, book.Subtitle, book.ReleaseDate, book.Synopsis, book.Genres, book.Monitored, book.MonitorEitherFormat, book.AudiobookMonitored,
 	)
 	if err != nil {
 		if b, lookupErr := c.GetBookByAuthorAndTitle(ctx, book.AuthorID, cleanTitle); lookupErr == nil {
@@ -517,10 +517,24 @@ func (c *Catalog) UpsertMediaAsset(ctx context.Context, ma *database.MediaAsset)
 		return err
 	}
 	_, err = c.db.ExecContext(ctx, `
-		UPDATE books SET monitored = 0, updated_at = CURRENT_TIMESTAMP
-		WHERE id = (SELECT book_id FROM book_editions WHERE id = ?) AND monitored = 1
+		UPDATE books
+		SET monitored = CASE WHEN e.format IN ('m4b', 'mp3') AND books.audiobook_monitored IS NOT NULL THEN books.monitored ELSE 0 END,
+		    audiobook_monitored = CASE WHEN e.format IN ('m4b', 'mp3') THEN 0 ELSE COALESCE(books.audiobook_monitored, 0) END,
+		    updated_at = CURRENT_TIMESTAMP
+		FROM book_editions e
+		WHERE e.id = ? AND books.id = e.book_id AND (books.monitored = 1 OR books.audiobook_monitored = 1)
 	`, ma.EditionID)
 	return err
+}
+
+func markBookFormatAcquired(book *database.Book, format string) {
+	if audioFormat(format) || book.MonitorEitherFormat {
+		book.AudiobookMonitored = false
+	}
+	if !audioFormat(format) || book.MonitorEitherFormat {
+		book.Monitored = false
+	}
+	book.MonitorEitherFormat = false
 }
 
 // IngestBook performs canonical file placement and sidecar generation via OrganizeBook,
@@ -712,7 +726,7 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 	if err := c.UpsertMediaAsset(ctx, &asset); err != nil {
 		return nil, fmt.Errorf("persist media asset: %w", err)
 	}
-	dbBook.Monitored = false
+	markBookFormatAcquired(dbBook, edition.Format)
 
 	// Only remove superseded files after the new media and inventory are committed.
 	for _, old := range previous {
@@ -906,10 +920,7 @@ func (c *Catalog) ReconcileScannedBook(ctx context.Context, sb *ScannedBook) (*I
 			return nil, fmt.Errorf("reconcile media asset: %w", err)
 		}
 		assets = append(assets, asset)
-	}
-
-	if len(assets) > 0 {
-		dbBook.Monitored = false
+		markBookFormatAcquired(dbBook, ed.Format)
 	}
 	if err := c.SaveIdealMetadata(ctx, dbBook.ID, sb.Title, sb.Series, sb.SeriesIndex, IdealSourceScan); err != nil {
 		return nil, fmt.Errorf("reconcile ideal metadata: %w", err)
@@ -971,7 +982,7 @@ func scanBook(s scannable) (*database.Book, error) {
 	var createdAt, updatedAt any
 	err := s.Scan(
 		&b.ID, &b.AuthorID, &b.SeriesID, &b.SeriesIndex, &b.SeriesIndexDisplay,
-		&b.Title, &b.Subtitle, &b.ReleaseDate, &b.Synopsis, &b.Genres, &b.Monitored,
+		&b.Title, &b.Subtitle, &b.ReleaseDate, &b.Synopsis, &b.Genres, &b.Monitored, &b.AudiobookMonitored, &b.MonitorEitherFormat,
 		&createdAt, &updatedAt,
 	)
 	if err != nil {

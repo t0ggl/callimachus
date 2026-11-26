@@ -41,19 +41,21 @@ type Series struct {
 
 // Book represents an abstract intellectual work.
 type Book struct {
-	ID                 string    `json:"id" db:"id"`
-	AuthorID           string    `json:"author_id" db:"author_id"`
-	SeriesID           *string   `json:"series_id,omitempty" db:"series_id"`
-	SeriesIndex        *float64  `json:"series_index,omitempty" db:"series_index"`
-	SeriesIndexDisplay *string   `json:"series_index_display,omitempty" db:"series_index_display"`
-	Title              string    `json:"title" db:"title"`
-	Subtitle           *string   `json:"subtitle,omitempty" db:"subtitle"`
-	ReleaseDate        *string   `json:"release_date,omitempty" db:"release_date"`
-	Synopsis           *string   `json:"synopsis,omitempty" db:"synopsis"`
-	Genres             string    `json:"genres" db:"genres"` // JSON array of genres
-	Monitored          bool      `json:"monitored" db:"monitored"`
-	CreatedAt          time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at" db:"updated_at"`
+	ID                  string    `json:"id" db:"id"`
+	AuthorID            string    `json:"author_id" db:"author_id"`
+	SeriesID            *string   `json:"series_id,omitempty" db:"series_id"`
+	SeriesIndex         *float64  `json:"series_index,omitempty" db:"series_index"`
+	SeriesIndexDisplay  *string   `json:"series_index_display,omitempty" db:"series_index_display"`
+	Title               string    `json:"title" db:"title"`
+	Subtitle            *string   `json:"subtitle,omitempty" db:"subtitle"`
+	ReleaseDate         *string   `json:"release_date,omitempty" db:"release_date"`
+	Synopsis            *string   `json:"synopsis,omitempty" db:"synopsis"`
+	Genres              string    `json:"genres" db:"genres"` // JSON array of genres
+	Monitored           bool      `json:"monitored" db:"monitored"`
+	AudiobookMonitored  bool      `json:"audiobook_monitored" db:"audiobook_monitored"`
+	MonitorEitherFormat bool      `json:"-" db:"-"`
+	CreatedAt           time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // BookEdition represents a published edition of a book work.

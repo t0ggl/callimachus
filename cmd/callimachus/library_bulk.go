@@ -200,9 +200,10 @@ func (s *Server) applyBulkMonitor(ctx context.Context, monitor interface {
 		updateRes, err := s.db.ExecContext(ctx, `
 			UPDATE books
 			SET monitored = ?,
+			    audiobook_monitored = audiobook_monitored AND ?,
 			    availability_checked_at = CASE WHEN ? THEN NULL ELSE availability_checked_at END,
 			    updated_at = CURRENT_TIMESTAMP
-			WHERE id = ?`, enabled, enabled, item.ID)
+			WHERE id = ?`, enabled, enabled, enabled, item.ID)
 		if err != nil {
 			res.Error = "Unable to update book monitoring."
 			return res

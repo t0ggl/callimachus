@@ -33,6 +33,7 @@ export interface SeriesBookEntry {
   library_book_id?: string;
   state?: BookState;
   monitored?: boolean;
+  audiobookMonitored?: boolean;
 }
 
 export interface SeriesBooksData {
@@ -41,6 +42,7 @@ export interface SeriesBooksData {
   description?: string;
   status?: string;
   monitored?: boolean;
+  audiobookMonitored?: boolean;
   authors?: string[];
   total_books?: number;
   owned_count?: number;
@@ -193,6 +195,7 @@ export function SeriesDetailModal({
     updateBookEntry(index, {
       book_id: resolved.id,
       monitored: resolved.monitored,
+      audiobookMonitored: resolved.audiobookMonitored,
     });
     return resolved;
   };
@@ -210,6 +213,7 @@ export function SeriesDetailModal({
       setDetailBook({
         id: '',
         monitored: Boolean(book.monitored),
+        audiobookMonitored: book.audiobookMonitored,
         state: book.state ?? 'Not in library',
         title: book.title,
         subtitle: book.subtitle,
@@ -330,7 +334,7 @@ export function SeriesDetailModal({
         );
       }
       setData((prev) => (prev ? { ...prev, monitored: next } : prev));
-      onSeriesUpdated?.(next);
+      onSeriesUpdated?.(next || Boolean(data.audiobookMonitored));
     } catch (e) {
       setActionError((e as Error).message);
     } finally {
@@ -380,12 +384,12 @@ export function SeriesDetailModal({
                 {data.monitored !== undefined && (
                   <span
                     className={`px-2 py-0.5 rounded-sm font-medium border ${
-                      data.monitored
+                      (data.monitored || data.audiobookMonitored)
                         ? 'bg-blue-950/80 text-blue-300 border-blue-800/60'
                         : 'bg-zinc-900 text-zinc-400 border-zinc-800'
                     }`}
                   >
-                    {data.monitored ? 'Series Monitored' : 'Series Unmonitored'}
+                    {(data.monitored || data.audiobookMonitored) ? 'Series Monitored' : 'Series Unmonitored'}
                   </span>
                 )}
               </div>
@@ -476,7 +480,7 @@ export function SeriesDetailModal({
                         ) : (
                           <Bell className="w-3.5 h-3.5" aria-hidden="true" />
                         )}
-                        {data.monitored ? 'Monitoring' : 'Monitor Series'}
+                        Monitor series eBooks
                       </button>
                     )}
                     <button
@@ -659,7 +663,7 @@ export function SeriesDetailModal({
                                         }`}
                                       >
                                         <Bell className="w-3 h-3" aria-hidden="true" />
-                                        {book.monitored ? 'Monitoring' : 'Monitor'}
+                                        Monitor eBook
                                       </button>
                                     )}
                                   </>
@@ -715,6 +719,7 @@ export function SeriesDetailModal({
               description: updated.synopsis,
               series_index: updated.seriesIndex ?? null,
               monitored: updated.monitored,
+              audiobookMonitored: updated.audiobookMonitored,
               ...(updated.coverUrl ? { cover_url: updated.coverUrl } : {}),
             });
           }

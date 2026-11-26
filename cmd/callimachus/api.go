@@ -44,6 +44,7 @@ type APIBookEdition struct {
 
 type APIBook struct {
 	Monitored          bool             `json:"monitored"`
+	AudiobookMonitored bool             `json:"audiobookMonitored"`
 	State              string           `json:"state"`
 	CoverURL           string           `json:"coverUrl,omitempty"`
 	ID                 string           `json:"id"`
@@ -309,7 +310,7 @@ func (s *Server) queryBooks(ctx context.Context, r *http.Request, id string) ([]
 		SELECT b.id, b.title, COALESCE(b.subtitle, ''), b.author_id, COALESCE(a.name, ''),
 		       COALESCE(b.series_id, ''), COALESCE(s.title, ''), b.series_index,
 		       COALESCE(b.release_date, ''),
-		       COALESCE(b.synopsis, ''), b.monitored, ` + bookAvailabilitySQL + `
+		       COALESCE(b.synopsis, ''), b.monitored, COALESCE(b.audiobook_monitored, b.monitored), ` + bookAvailabilitySQL + `
 		FROM books b
 		LEFT JOIN authors a ON b.author_id = a.id
 		LEFT JOIN series s ON b.series_id = s.id
@@ -334,7 +335,7 @@ func (s *Server) queryBooks(ctx context.Context, r *http.Request, id string) ([]
 		if err := rows.Scan(
 			&b.ID, &b.Title, &b.Subtitle, &b.AuthorID, &b.AuthorName,
 			&b.SeriesID, &b.SeriesTitle, &seriesIdx,
-			&b.ReleaseDate, &b.Synopsis, &b.Monitored, &b.State,
+			&b.ReleaseDate, &b.Synopsis, &b.Monitored, &b.AudiobookMonitored, &b.State,
 		); err != nil {
 			slog.Error("scan book failed")
 			continue
@@ -502,7 +503,7 @@ func (s *Server) handleGetSeries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := `
-		SELECT s.id, s.title, COALESCE(s.description, ''), COALESCE(s.total_books, 0), s.status, s.monitored
+		SELECT s.id, s.title, COALESCE(s.description, ''), COALESCE(s.total_books, 0), s.status, (s.monitored OR s.audiobook_monitored)
 		FROM series s
 		ORDER BY s.title ASC
 	`

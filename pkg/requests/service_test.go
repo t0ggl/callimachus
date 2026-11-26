@@ -75,6 +75,45 @@ func createTestBook(t *testing.T, db *database.DB, id, title string) {
 	}
 }
 
+func TestService_DefaultsToEPUBAndKeepsAudiobooksOptIn(t *testing.T) {
+	t.Parallel()
+	db := setupTestDB(t)
+	ctx := context.Background()
+	createTestUser(t, db, "reader", "reader", auth.RoleRequester)
+	svc := NewRequestService(db)
+
+	input := CreateRequestInput{UserID: "reader", Title: "Book", Author: "Author"}
+	req, err := svc.SubmitRequest(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ebook, audio bool
+	if err := db.QueryRow(`SELECT monitored, audiobook_monitored FROM books WHERE id=?`, req.BookID).Scan(&ebook, &audio); err != nil || !ebook || audio {
+		t.Fatalf("default monitoring = (%v, %v), err=%v", ebook, audio, err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM book_requests`).Scan(&count); err != nil || count != 1 || req.Format != FormatEPUB {
+		t.Fatalf("default request = %q, count=%d, err=%v", req.Format, count, err)
+	}
+
+	input.Format = FormatM4B
+	audioRequest, err := svc.SubmitRequest(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if audioRequest.Format != FormatM4B || *audioRequest.BookID != *req.BookID {
+		t.Fatalf("expected a separate audio request for the existing book, got %+v", audioRequest)
+	}
+	input.Title = "Audio Only"
+	audioRequest, err = svc.SubmitRequest(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT monitored, audiobook_monitored FROM books WHERE id=?`, audioRequest.BookID).Scan(&ebook, &audio); err != nil || ebook || !audio {
+		t.Fatalf("audio-only monitoring = (%v, %v), err=%v", ebook, audio, err)
+	}
+}
+
 func TestService_QuotaEnforcement(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)

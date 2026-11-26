@@ -789,7 +789,7 @@ func (s *Server) executeDuplicateResolution(
 		}
 		if seriesID.Valid {
 			if _, err := tx.ExecContext(ctx, `
-				DELETE FROM series WHERE id = ? AND monitored = 0 AND discovery_checked_at IS NULL
+				DELETE FROM series WHERE id = ? AND monitored = 0 AND audiobook_monitored = 0 AND discovery_checked_at IS NULL
 				AND NOT EXISTS (SELECT 1 FROM books WHERE series_id = series.id)
 				AND NOT EXISTS (SELECT 1 FROM catalog_actions WHERE kind = 'series' AND entity_id = series.id)`, seriesID.String); err != nil {
 				slog.ErrorContext(ctx, "resolve duplicate cleanup series failed", "book", otherBookID, "error", err)

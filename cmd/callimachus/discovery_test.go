@@ -565,7 +565,7 @@ func TestDiscoverSurfacesSeriesAndFiltersSeriesOmnibus(t *testing.T) {
 	for _, query := range []string{
 		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','mock')`,
 		`INSERT INTO authors(id,name,sort_name) VALUES('a-pp','Philip Pullman','Pullman, Philip')`,
-		`INSERT INTO series(id,title,hardcover_id,total_books,monitored) VALUES('s-hdm','His Dark Materials',42,3,1)`,
+		`INSERT INTO series(id,title,hardcover_id,total_books,audiobook_monitored) VALUES('s-hdm','His Dark Materials',42,3,1)`,
 		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b-gc','a-pp','The Golden Compass','s-hdm',1)`,
 		`INSERT INTO book_editions(id,book_id,format) VALUES('e-gc','b-gc','epub')`,
 		`INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES('m-gc','e-gc','gc.epub',1)`,

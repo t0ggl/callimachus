@@ -25,19 +25,21 @@ type seriesBook struct {
 	LibraryBookID      string   `json:"library_book_id,omitempty"`
 	State              string   `json:"state"`
 	Monitored          bool     `json:"monitored"`
+	AudiobookMonitored bool     `json:"audiobookMonitored"`
 }
 
 type seriesBooksResponse struct {
-	ID          string       `json:"id,omitempty"`
-	Title       string       `json:"title"`
-	Description string       `json:"description,omitempty"`
-	Status      string       `json:"status,omitempty"`
-	Monitored   bool         `json:"monitored"`
-	Authors     []string     `json:"authors"`
-	TotalBooks  int          `json:"total_books"`
-	OwnedCount  int          `json:"owned_count"`
-	Books       []seriesBook `json:"books"`
-	Complete    bool         `json:"complete"`
+	ID                 string       `json:"id,omitempty"`
+	Title              string       `json:"title"`
+	Description        string       `json:"description,omitempty"`
+	Status             string       `json:"status,omitempty"`
+	Monitored          bool         `json:"monitored"`
+	AudiobookMonitored bool         `json:"audiobookMonitored"`
+	Authors            []string     `json:"authors"`
+	TotalBooks         int          `json:"total_books"`
+	OwnedCount         int          `json:"owned_count"`
+	Books              []seriesBook `json:"books"`
+	Complete           bool         `json:"complete"`
 }
 
 func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +58,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 	seriesTitle := title
 	var seriesDescription, seriesStatus string
 	var seriesTotalBooks int
-	var seriesMonitored bool
+	var seriesMonitored, seriesAudiobookMonitored bool
 	books := make([]seriesBook, 0)
 	var known []metadata.BookMetadata
 	lookup := true
@@ -84,7 +86,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 			if series.TotalBooks != nil {
 				seriesTotalBooks = *series.TotalBooks
 			}
-			err = s.db.QueryRowContext(r.Context(), `SELECT monitored FROM series WHERE id=?`, seriesID).Scan(&seriesMonitored)
+			err = s.db.QueryRowContext(r.Context(), `SELECT monitored, audiobook_monitored FROM series WHERE id=?`, seriesID).Scan(&seriesMonitored, &seriesAudiobookMonitored)
 			if err != nil {
 				http.Error(w, "Unable to load series", 500)
 				return
@@ -130,7 +132,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 		rows, err := s.db.QueryContext(r.Context(), `
 			SELECT b.id, b.title, COALESCE(b.subtitle, ''), a.name, b.series_index,
 			       COALESCE(b.release_date, ''),
-			       COALESCE(b.synopsis, ''), b.monitored, `+bookAvailabilitySQL+`
+			       COALESCE(b.synopsis, ''), b.monitored, COALESCE(b.audiobook_monitored, b.monitored), `+bookAvailabilitySQL+`
 			FROM books b
 			JOIN authors a ON a.id=b.author_id
 			WHERE b.series_id=?
@@ -144,7 +146,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 			var id, author string
 			if err := rows.Scan(
 				&id, &b.Title, &b.Subtitle, &author, &b.SeriesIndex,
-				&b.PublishDate, &b.Description, &b.Monitored, &b.State,
+				&b.PublishDate, &b.Description, &b.Monitored, &b.AudiobookMonitored, &b.State,
 			); err != nil {
 				rows.Close()
 				http.Error(w, "Unable to load series", 500)
@@ -310,16 +312,17 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(seriesBooksResponse{
-		ID:          seriesID,
-		Title:       seriesTitle,
-		Description: seriesDescription,
-		Status:      seriesStatus,
-		Monitored:   seriesMonitored,
-		Authors:     authors,
-		TotalBooks:  totalBooks,
-		OwnedCount:  ownedCount,
-		Books:       books,
-		Complete:    complete,
+		ID:                 seriesID,
+		Title:              seriesTitle,
+		Description:        seriesDescription,
+		Status:             seriesStatus,
+		Monitored:          seriesMonitored,
+		AudiobookMonitored: seriesAudiobookMonitored,
+		Authors:            authors,
+		TotalBooks:         totalBooks,
+		OwnedCount:         ownedCount,
+		Books:              books,
+		Complete:           complete,
 	})
 }
 
