@@ -310,7 +310,7 @@ func (s *Server) queryBooks(ctx context.Context, r *http.Request, id string) ([]
 		SELECT b.id, b.title, COALESCE(b.subtitle, ''), b.author_id, COALESCE(a.name, ''),
 		       COALESCE(b.series_id, ''), COALESCE(s.title, ''), b.series_index,
 		       COALESCE(b.release_date, ''),
-		       COALESCE(b.synopsis, ''), b.monitored, COALESCE(b.audiobook_monitored, b.monitored), ` + bookAvailabilitySQL + `
+		       COALESCE(b.synopsis, ''), b.ebook_monitored, COALESCE(b.audiobook_monitored, b.ebook_monitored), ` + bookAvailabilitySQL + `
 		FROM books b
 		LEFT JOIN authors a ON b.author_id = a.id
 		LEFT JOIN series s ON b.series_id = s.id

@@ -61,15 +61,15 @@ func createTestBook(t *testing.T, db *database.DB, id, title string) {
 	if err != nil {
 		// Ignore if already exists
 	}
-	_, err = db.Exec(`INSERT INTO books (id, title, author_id, monitored) VALUES (?, ?, 'author-1', 0)`, id, title)
+	_, err = db.Exec(`INSERT INTO books (id, title, author_id, ebook_monitored) VALUES (?, ?, 'author-1', 0)`, id, title)
 	if err != nil {
 		t.Fatalf("failed to insert test book: %v", err)
 	}
-	_, err = db.Exec(`INSERT INTO book_editions (id, book_id, format, monitored) VALUES (?, ?, 'epub', 0)`, id+"-epub", id)
+	_, err = db.Exec(`INSERT INTO book_editions (id, book_id, format) VALUES (?, ?, 'epub')`, id+"-epub", id)
 	if err != nil {
 		t.Fatalf("failed to insert test book edition epub: %v", err)
 	}
-	_, err = db.Exec(`INSERT INTO book_editions (id, book_id, format, monitored) VALUES (?, ?, 'm4b', 0)`, id+"-m4b", id)
+	_, err = db.Exec(`INSERT INTO book_editions (id, book_id, format) VALUES (?, ?, 'm4b')`, id+"-m4b", id)
 	if err != nil {
 		t.Fatalf("failed to insert test book edition m4b: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestService_DefaultsToEPUBAndKeepsAudiobooksOptIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	var ebook, audio bool
-	if err := db.QueryRow(`SELECT monitored, audiobook_monitored FROM books WHERE id=?`, req.BookID).Scan(&ebook, &audio); err != nil || !ebook || audio {
+	if err := db.QueryRow(`SELECT ebook_monitored, audiobook_monitored FROM books WHERE id=?`, req.BookID).Scan(&ebook, &audio); err != nil || !ebook || audio {
 		t.Fatalf("default monitoring = (%v, %v), err=%v", ebook, audio, err)
 	}
 	var count int
@@ -109,7 +109,7 @@ func TestService_DefaultsToEPUBAndKeepsAudiobooksOptIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT monitored, audiobook_monitored FROM books WHERE id=?`, audioRequest.BookID).Scan(&ebook, &audio); err != nil || ebook || !audio {
+	if err := db.QueryRow(`SELECT ebook_monitored, audiobook_monitored FROM books WHERE id=?`, audioRequest.BookID).Scan(&ebook, &audio); err != nil || ebook || !audio {
 		t.Fatalf("audio-only monitoring = (%v, %v), err=%v", ebook, audio, err)
 	}
 }
@@ -369,15 +369,12 @@ func TestService_ManualOnlyDoesNotEnableMonitoring(t *testing.T) {
 		t.Fatalf("manual SubmitRequest failed: %v", err)
 	}
 
-	var bookMonitored, editionMonitored bool
-	if err := db.QueryRowContext(ctx, `SELECT monitored FROM books WHERE id='book-manual'`).Scan(&bookMonitored); err != nil {
+	var bookMonitored bool
+	if err := db.QueryRowContext(ctx, `SELECT ebook_monitored FROM books WHERE id='book-manual'`).Scan(&bookMonitored); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(ctx, `SELECT monitored FROM book_editions WHERE id='book-manual-epub'`).Scan(&editionMonitored); err != nil {
-		t.Fatal(err)
-	}
-	if bookMonitored || editionMonitored {
-		t.Fatalf("expected ManualOnly request not to monitor book or edition, got book=%v edition=%v", bookMonitored, editionMonitored)
+	if bookMonitored {
+		t.Fatalf("expected ManualOnly request not to monitor the eBook, got %v", bookMonitored)
 	}
 
 	if _, err := svc.SubmitRequest(ctx, CreateRequestInput{
@@ -389,14 +386,11 @@ func TestService_ManualOnlyDoesNotEnableMonitoring(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("standard SubmitRequest failed: %v", err)
 	}
-	if err := db.QueryRowContext(ctx, `SELECT monitored FROM books WHERE id='book-auto'`).Scan(&bookMonitored); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT ebook_monitored FROM books WHERE id='book-auto'`).Scan(&bookMonitored); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(ctx, `SELECT monitored FROM book_editions WHERE id='book-auto-epub'`).Scan(&editionMonitored); err != nil {
-		t.Fatal(err)
-	}
-	if !bookMonitored || !editionMonitored {
-		t.Fatalf("expected standard request to monitor book and edition, got book=%v edition=%v", bookMonitored, editionMonitored)
+	if !bookMonitored {
+		t.Fatalf("expected standard request to monitor the eBook, got %v", bookMonitored)
 	}
 }
 

@@ -68,8 +68,25 @@ func TestLibraryScanDiscoveryAndMissingFiles(t *testing.T) {
 		}
 		return matches[0].LibraryBookID
 	}
-	if discover() == "" {
+	bookID := discover()
+	if bookID == "" {
 		t.Fatal("local match missing")
+	}
+	ctx := context.Background()
+	book, err := catalog.New(db).GetBookByID(ctx, bookID)
+	if err != nil || book.Monitored || book.AudiobookMonitored {
+		t.Fatalf("scan enabled book monitoring: %+v, %v", book, err)
+	}
+	s.acquisition = &requests.Acquisition{DB: db, Search: func(context.Context, string, string) ([]indexers.ProwlarrRelease, error) {
+		t.Fatal("scan triggered an automatic release search")
+		return nil, nil
+	}}
+	if err := s.newCatalogMonitor().Tick(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var requestsCount int
+	if err := db.QueryRow("SELECT count(*) FROM book_requests").Scan(&requestsCount); err != nil || requestsCount != 0 {
+		t.Fatalf("scan queued %d acquisition requests: %v", requestsCount, err)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
@@ -183,8 +200,8 @@ func TestLibraryScanPreservesBookMatchedByCatalogMonitor(t *testing.T) {
 	}
 	for _, asset := range imported.MediaAssets {
 		edition, err := c.GetEditionByID(ctx, asset.EditionID)
-		if err != nil || !edition.Monitored || edition.BookID != book.ID {
-			t.Fatalf("monitored edition was not preserved: %+v, %v", edition, err)
+		if err != nil || edition.BookID != book.ID {
+			t.Fatalf("edition was not preserved: %+v, %v", edition, err)
 		}
 		assets, err := c.GetMediaAssetsByEditionID(ctx, edition.ID)
 		if err != nil || len(assets) != 0 {
@@ -225,33 +242,33 @@ func TestLibraryScanPurgesHiddenPathAssetsWithoutDeletingCatalog(t *testing.T) {
 		// Stale pre-#53 .agents entry
 		{`INSERT INTO authors(id,name,sort_name) VALUES('a-agents','.agents','.agents')`, nil},
 		{`INSERT INTO series(id,title) VALUES('s-red-rising','Red Rising')`, nil},
-		{`INSERT INTO books(id,author_id,series_id,series_index,title,monitored) VALUES('b-red-rising','a-agents','s-red-rising',1,'Red Rising #1',1)`, nil},
-		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-red-rising','b-red-rising','epub',1)`, nil},
+		{`INSERT INTO books(id,author_id,series_id,series_index,title,ebook_monitored) VALUES('b-red-rising','a-agents','s-red-rising',1,'Red Rising #1',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format) VALUES('e-red-rising','b-red-rising','epub')`, nil},
 		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-red-rising','e-red-rising',?,7,1)`, []any{hiddenAgentsPath}},
 
 		// Visible author + nested hidden directory
 		{`INSERT INTO authors(id,name,sort_name) VALUES('a-visible','Visible Author','Author, Visible')`, nil},
 		{`INSERT INTO series(id,title) VALUES('s-hidden','.hidden')`, nil},
-		{`INSERT INTO books(id,author_id,series_id,title,monitored) VALUES('b-hidden-vol','a-visible','s-hidden','Hidden Volume',1)`, nil},
-		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-hidden-vol','b-hidden-vol','epub',1)`, nil},
+		{`INSERT INTO books(id,author_id,series_id,title,ebook_monitored) VALUES('b-hidden-vol','a-visible','s-hidden','Hidden Volume',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format) VALUES('e-hidden-vol','b-hidden-vol','epub')`, nil},
 		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-hidden-vol','e-hidden-vol',?,7,1)`, []any{hiddenSubdirPath}},
 
 		// Dotfile under visible directory
-		{`INSERT INTO books(id,author_id,title,monitored) VALUES('b-dotfile','a-visible','Dotfile Book',1)`, nil},
-		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-dotfile','b-dotfile','epub',1)`, nil},
+		{`INSERT INTO books(id,author_id,title,ebook_monitored) VALUES('b-dotfile','a-visible','Dotfile Book',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format) VALUES('e-dotfile','b-dotfile','epub')`, nil},
 		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-dotfile','e-dotfile',?,7,1)`, []any{hiddenDotfilePath}},
 
 		// Legitimate unowned entry
 		{`INSERT INTO authors(id,name,sort_name) VALUES('a-unowned','Unowned Author','Author, Unowned')`, nil},
 		{`INSERT INTO series(id,title) VALUES('s-unowned','Unowned Series')`, nil},
-		{`INSERT INTO books(id,author_id,series_id,title,monitored) VALUES('b-unowned','a-unowned','s-unowned','Unowned Book',1)`, nil},
-		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-unowned','b-unowned','epub',1)`, nil},
+		{`INSERT INTO books(id,author_id,series_id,title,ebook_monitored) VALUES('b-unowned','a-unowned','s-unowned','Unowned Book',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format) VALUES('e-unowned','b-unowned','epub')`, nil},
 
 		// Legitimate requested entry that also happened to have a hidden-path asset
 		{`INSERT INTO users(id,username,email,role,auth_source) VALUES('u-req','requester','req@example.test','requester','local')`, nil},
 		{`INSERT INTO authors(id,name,sort_name) VALUES('a-req','Requested Author','Author, Requested')`, nil},
-		{`INSERT INTO books(id,author_id,title,monitored) VALUES('b-req','a-req','Requested Book',1)`, nil},
-		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-req','b-req','epub',1)`, nil},
+		{`INSERT INTO books(id,author_id,title,ebook_monitored) VALUES('b-req','a-req','Requested Book',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format) VALUES('e-req','b-req','epub')`, nil},
 		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-req','e-req',?,7,1)`, []any{hiddenRequestedPath}},
 		{`INSERT INTO book_requests(id,user_id,book_id,title,author,format,status) VALUES(1,'u-req','b-req','Requested Book','Requested Author','epub','searching')`, nil},
 
@@ -261,8 +278,8 @@ func TestLibraryScanPurgesHiddenPathAssetsWithoutDeletingCatalog(t *testing.T) {
 
 		// Asset outside LibraryRoot must remain untouched
 		{`INSERT INTO authors(id,name,sort_name) VALUES('a-outside','Outside Author','Author, Outside')`, nil},
-		{`INSERT INTO books(id,author_id,title,monitored) VALUES('b-outside','a-outside','Outside Book',1)`, nil},
-		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-outside','b-outside','epub',1)`, nil},
+		{`INSERT INTO books(id,author_id,title,ebook_monitored) VALUES('b-outside','a-outside','Outside Book',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format) VALUES('e-outside','b-outside','epub')`, nil},
 		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-outside','e-outside',?,7,1)`, []any{outsideAgentsPath}},
 	}
 	for _, st := range stmts {
@@ -523,24 +540,24 @@ func TestLibraryScanPreservesSharedCatalogEntriesWhenPurgingHiddenAsset(t *testi
 	}{
 		{`INSERT INTO authors(id,name,sort_name) VALUES('a-shared','Shared Author','Author, Shared')`, nil},
 		{`INSERT INTO series(id,title) VALUES('s-shared','Shared Series')`, nil},
-		{`INSERT INTO books(id,author_id,series_id,title,monitored) VALUES('b-shared','a-shared','s-shared','Shared Book',1)`, nil},
-		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-shared-m4b','b-shared','m4b',1)`, nil},
+		{`INSERT INTO books(id,author_id,series_id,title,ebook_monitored) VALUES('b-shared','a-shared','s-shared','Shared Book',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format) VALUES('e-shared-m4b','b-shared','m4b')`, nil},
 		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-shared-m4b','e-shared-m4b',?,7,1)`, []any{sharedM4B}},
-		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-shared-epub','b-shared','epub',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format) VALUES('e-shared-epub','b-shared','epub')`, nil},
 		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-shared-epub','e-shared-epub',?,7,1)`, []any{sharedHiddenEPUB}},
 
 		{`INSERT INTO authors(id,name,sort_name) VALUES('a-mixed','Mixed Author','Author, Mixed')`, nil},
 		{`INSERT INTO series(id,title) VALUES('s-mixed','Mixed Series')`, nil},
-		{`INSERT INTO books(id,author_id,series_id,title,monitored) VALUES('b-mixed-hidden','a-mixed','s-mixed','Hidden In Mixed',1)`, nil},
-		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-mixed-hidden','b-mixed-hidden','epub',1)`, nil},
+		{`INSERT INTO books(id,author_id,series_id,title,ebook_monitored) VALUES('b-mixed-hidden','a-mixed','s-mixed','Hidden In Mixed',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format) VALUES('e-mixed-hidden','b-mixed-hidden','epub')`, nil},
 		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-mixed-hidden','e-mixed-hidden',?,7,1)`, []any{mixedHiddenEPUB}},
-		{`INSERT INTO books(id,author_id,series_id,title,monitored) VALUES('b-mixed-unowned','a-mixed','s-mixed','Unowned In Mixed',1)`, nil},
+		{`INSERT INTO books(id,author_id,series_id,title,ebook_monitored) VALUES('b-mixed-unowned','a-mixed','s-mixed','Unowned In Mixed',1)`, nil},
 
 		// Queued edition & pending catalog action must not be deleted
 		{`INSERT INTO authors(id,name,sort_name) VALUES('a-queued','Queued Author','Author, Queued')`, nil},
 		{`INSERT INTO catalog_actions(kind,entity_id,action) VALUES('authors','a-queued','discover')`, nil},
-		{`INSERT INTO books(id,author_id,title,monitored) VALUES('b-queued','a-queued','Queued Book',1)`, nil},
-		{`INSERT INTO book_editions(id,book_id,format,monitored) VALUES('e-queued','b-queued','epub',1)`, nil},
+		{`INSERT INTO books(id,author_id,title,ebook_monitored) VALUES('b-queued','a-queued','Queued Book',1)`, nil},
+		{`INSERT INTO book_editions(id,book_id,format) VALUES('e-queued','b-queued','epub')`, nil},
 		{`INSERT INTO media_assets(id,edition_id,file_path,file_size,is_verified) VALUES('m-queued','e-queued',?,7,1)`, []any{queuedHiddenEPUB}},
 		{`INSERT INTO download_queue(id,edition_id,download_client_task_id,title,protocol,status) VALUES('dq-1','e-queued','task-1','Queued Book','torrent','downloading')`, nil},
 	}

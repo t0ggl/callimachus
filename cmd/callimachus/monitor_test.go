@@ -216,7 +216,7 @@ func TestSeriesMonitoringDefaultsToEbooksAndCanOptIntoAudio(t *testing.T) {
 	for _, query := range []string{
 		`INSERT INTO authors(id,name,sort_name) VALUES('a','Author','Author')`,
 		`INSERT INTO series(id,title,author_id,hardcover_id) VALUES('s','Sequence','a',42)`,
-		`INSERT INTO books(id,author_id,title,series_id,monitored) VALUES('b','a','First Book','s',0)`,
+		`INSERT INTO books(id,author_id,title,series_id,ebook_monitored) VALUES('b','a','First Book','s',0)`,
 	} {
 		if _, err := db.Exec(query); err != nil {
 			t.Fatal(err)
@@ -284,7 +284,7 @@ func TestSeriesMonitoringDefaultsToEbooksAndCanOptIntoAudio(t *testing.T) {
 		t.Fatal(err)
 	}
 	var ebook, audio bool
-	if err := db.QueryRow(`SELECT monitored, audiobook_monitored FROM books WHERE id='b'`).Scan(&ebook, &audio); err != nil || ebook || audio {
+	if err := db.QueryRow(`SELECT ebook_monitored, audiobook_monitored FROM books WHERE id='b'`).Scan(&ebook, &audio); err != nil || ebook || audio {
 		t.Fatalf("owned formats still monitored: ebook=%v audio=%v (err=%v)", ebook, audio, err)
 	}
 }
@@ -444,7 +444,7 @@ func TestBookResolveAndMonitorEndpoints(t *testing.T) {
 	}
 	var bookMonitored, seriesMonitored bool
 	var checkedAt *string
-	if err := db.QueryRow(`SELECT b.monitored, b.availability_checked_at, s.monitored FROM books b JOIN series s ON s.id=b.series_id WHERE b.id=?`, resolved.ID).Scan(&bookMonitored, &checkedAt, &seriesMonitored); err != nil {
+	if err := db.QueryRow(`SELECT b.ebook_monitored, b.availability_checked_at, s.monitored FROM books b JOIN series s ON s.id=b.series_id WHERE b.id=?`, resolved.ID).Scan(&bookMonitored, &checkedAt, &seriesMonitored); err != nil {
 		t.Fatal(err)
 	}
 	if !bookMonitored || checkedAt != nil || seriesMonitored {
@@ -458,7 +458,7 @@ func TestBookResolveAndMonitorEndpoints(t *testing.T) {
 	if w := request("PUT", "/api/books/"+resolved.ID+"/monitor", `{"monitored":false}`, auth.RoleAdmin); w.Code != http.StatusOK {
 		t.Fatalf("disable book monitor: %d %s", w.Code, w.Body.String())
 	}
-	if err := db.QueryRow(`SELECT b.monitored, s.monitored FROM books b JOIN series s ON s.id=b.series_id WHERE b.id=?`, resolved.ID).Scan(&bookMonitored, &seriesMonitored); err != nil {
+	if err := db.QueryRow(`SELECT b.ebook_monitored, s.monitored FROM books b JOIN series s ON s.id=b.series_id WHERE b.id=?`, resolved.ID).Scan(&bookMonitored, &seriesMonitored); err != nil {
 		t.Fatal(err)
 	}
 	if bookMonitored || seriesMonitored {
@@ -487,7 +487,7 @@ func TestCatalogEntitySeriesMergesHardcoverBooks(t *testing.T) {
 		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','mock')`,
 		`INSERT INTO authors(id,name,sort_name) VALUES('a','Author One','One, Author')`,
 		`INSERT INTO series(id,title,monitored) VALUES('s','Sequence',1)`,
-		`INSERT INTO books(id,author_id,series_id,series_index,title,release_date,monitored) VALUES('b1','a','s',1,'Book One','2020-01-01',0)`,
+		`INSERT INTO books(id,author_id,series_id,series_index,title,release_date,ebook_monitored) VALUES('b1','a','s',1,'Book One','2020-01-01',0)`,
 		`INSERT INTO book_editions(id,book_id,format) VALUES('e1','b1','epub')`,
 		`INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES('m1','e1','/library/BookOne.epub',123)`,
 	} {
@@ -567,7 +567,7 @@ func TestCatalogEntityFutureDateFormats(t *testing.T) {
 	if err := s.catalogMonitor.Tick(context.Background(), time.Date(2028, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO books(id,author_id,title,release_date,monitored)
+	if _, err := db.Exec(`INSERT INTO books(id,author_id,title,release_date,ebook_monitored)
 		SELECT 'past', id, 'Past Book', '2020-01-15', 0 FROM authors WHERE name='Author'`); err != nil {
 		t.Fatal(err)
 	}
@@ -612,7 +612,7 @@ func TestBookResolveAndCatalogEntityScopedSeriesIdentity(t *testing.T) {
 		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','mock')`,
 		`INSERT INTO authors(id,name,sort_name) VALUES('a-monroe','Grace Monroe','Monroe, Grace'),('a-erikson','Steven Erikson','Erikson, Steven')`,
 		`INSERT INTO series(id,title,author_id,hardcover_id,monitored) VALUES('s-monroe','The Witness','a-monroe',701,0)`,
-		`INSERT INTO books(id,author_id,series_id,series_index,title,monitored) VALUES('b-monroe','a-monroe','s-monroe',1,'A Different Witness',0)`,
+		`INSERT INTO books(id,author_id,series_id,series_index,title,ebook_monitored) VALUES('b-monroe','a-monroe','s-monroe',1,'A Different Witness',0)`,
 	} {
 		if _, err := db.Exec(query); err != nil {
 			t.Fatal(err)

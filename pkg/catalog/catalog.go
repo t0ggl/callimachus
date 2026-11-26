@@ -165,14 +165,14 @@ func (c *Catalog) UpsertSeries(ctx context.Context, s *database.Series) error {
 
 // GetBookByID retrieves a book by ID.
 func (c *Catalog) GetBookByID(ctx context.Context, id string) (*database.Book, error) {
-	query := `SELECT id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, monitored, COALESCE(audiobook_monitored, monitored), audiobook_monitored IS NULL, created_at, updated_at FROM books WHERE id = ?;`
+	query := `SELECT id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, ebook_monitored, COALESCE(audiobook_monitored, ebook_monitored), audiobook_monitored IS NULL, created_at, updated_at FROM books WHERE id = ?;`
 	row := c.db.QueryRowContext(ctx, query, id)
 	return scanBook(row)
 }
 
 // GetBookByAuthorAndTitle retrieves a book work by author ID and title.
 func (c *Catalog) GetBookByAuthorAndTitle(ctx context.Context, authorID, title string) (*database.Book, error) {
-	query := `SELECT id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, monitored, COALESCE(audiobook_monitored, monitored), audiobook_monitored IS NULL, created_at, updated_at FROM books WHERE author_id = ? AND title = ? COLLATE NOCASE LIMIT 1;`
+	query := `SELECT id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, ebook_monitored, COALESCE(audiobook_monitored, ebook_monitored), audiobook_monitored IS NULL, created_at, updated_at FROM books WHERE author_id = ? AND title = ? COLLATE NOCASE LIMIT 1;`
 	row := c.db.QueryRowContext(ctx, query, authorID, strings.TrimSpace(title))
 	return scanBook(row)
 }
@@ -296,7 +296,7 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 	}
 
 	query := `
-		INSERT INTO books (id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, monitored, audiobook_monitored, created_at, updated_at)
+		INSERT INTO books (id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, ebook_monitored, audiobook_monitored, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN NULL ELSE ? END, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 	`
 	_, err = c.db.ExecContext(ctx, query,
@@ -322,7 +322,7 @@ func (c *Catalog) UpsertBook(ctx context.Context, b *database.Book) error {
 		b.Genres = "[]"
 	}
 	query := `
-		INSERT INTO books (id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, monitored, created_at, updated_at)
+		INSERT INTO books (id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, ebook_monitored, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			author_id = excluded.author_id,
@@ -334,7 +334,7 @@ func (c *Catalog) UpsertBook(ctx context.Context, b *database.Book) error {
 			release_date = excluded.release_date,
 			synopsis = excluded.synopsis,
 			genres = excluded.genres,
-			monitored = excluded.monitored,
+			ebook_monitored = excluded.ebook_monitored,
 			updated_at = CURRENT_TIMESTAMP;
 	`
 	_, err := c.db.ExecContext(ctx, query,
@@ -346,21 +346,21 @@ func (c *Catalog) UpsertBook(ctx context.Context, b *database.Book) error {
 
 // GetEditionByID retrieves a book edition by ID.
 func (c *Catalog) GetEditionByID(ctx context.Context, id string) (*database.BookEdition, error) {
-	query := `SELECT id, book_id, format, isbn13, asin, hardcover_id, openlibrary_id, goodreads_id, publisher, publication_date, language, monitored, created_at, updated_at FROM book_editions WHERE id = ?;`
+	query := `SELECT id, book_id, format, isbn13, asin, hardcover_id, openlibrary_id, goodreads_id, publisher, publication_date, language, created_at, updated_at FROM book_editions WHERE id = ?;`
 	row := c.db.QueryRowContext(ctx, query, id)
 	return scanEdition(row)
 }
 
 // GetEditionByBookAndFormat retrieves an edition by book ID and format.
 func (c *Catalog) GetEditionByBookAndFormat(ctx context.Context, bookID, format string) (*database.BookEdition, error) {
-	query := `SELECT id, book_id, format, isbn13, asin, hardcover_id, openlibrary_id, goodreads_id, publisher, publication_date, language, monitored, created_at, updated_at FROM book_editions WHERE book_id = ? AND format = ? LIMIT 1;`
+	query := `SELECT id, book_id, format, isbn13, asin, hardcover_id, openlibrary_id, goodreads_id, publisher, publication_date, language, created_at, updated_at FROM book_editions WHERE book_id = ? AND format = ? LIMIT 1;`
 	row := c.db.QueryRowContext(ctx, query, bookID, strings.ToLower(format))
 	return scanEdition(row)
 }
 
 // GetEditionsByBookID retrieves all editions for a book work.
 func (c *Catalog) GetEditionsByBookID(ctx context.Context, bookID string) ([]database.BookEdition, error) {
-	query := `SELECT id, book_id, format, isbn13, asin, hardcover_id, openlibrary_id, goodreads_id, publisher, publication_date, language, monitored, created_at, updated_at FROM book_editions WHERE book_id = ?;`
+	query := `SELECT id, book_id, format, isbn13, asin, hardcover_id, openlibrary_id, goodreads_id, publisher, publication_date, language, created_at, updated_at FROM book_editions WHERE book_id = ?;`
 	rows, err := c.db.QueryContext(ctx, query, bookID)
 	if err != nil {
 		return nil, err
@@ -396,15 +396,14 @@ func (c *Catalog) GetOrCreateEdition(ctx context.Context, ed *database.BookEditi
 	if ed.Language == "" {
 		ed.Language = "en"
 	}
-	ed.Monitored = true
 
 	query := `
-		INSERT INTO book_editions (id, book_id, format, isbn13, asin, hardcover_id, openlibrary_id, goodreads_id, publisher, publication_date, language, monitored, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+		INSERT INTO book_editions (id, book_id, format, isbn13, asin, hardcover_id, openlibrary_id, goodreads_id, publisher, publication_date, language, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 	`
 	_, err = c.db.ExecContext(ctx, query,
 		ed.ID, ed.BookID, ed.Format, ed.ISBN13, ed.ASIN, ed.HardcoverID, ed.OpenLibraryID, ed.GoodreadsID,
-		ed.Publisher, ed.PublicationDate, ed.Language, ed.Monitored,
+		ed.Publisher, ed.PublicationDate, ed.Language,
 	)
 	if err != nil {
 		if e, lookupErr := c.GetEditionByBookAndFormat(ctx, ed.BookID, cleanFormat); lookupErr == nil {
@@ -426,8 +425,8 @@ func (c *Catalog) UpsertEdition(ctx context.Context, ed *database.BookEdition) e
 		ed.Language = "en"
 	}
 	query := `
-		INSERT INTO book_editions (id, book_id, format, isbn13, asin, hardcover_id, openlibrary_id, goodreads_id, publisher, publication_date, language, monitored, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		INSERT INTO book_editions (id, book_id, format, isbn13, asin, hardcover_id, openlibrary_id, goodreads_id, publisher, publication_date, language, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			format = excluded.format,
 			isbn13 = excluded.isbn13,
@@ -438,12 +437,11 @@ func (c *Catalog) UpsertEdition(ctx context.Context, ed *database.BookEdition) e
 			publisher = excluded.publisher,
 			publication_date = excluded.publication_date,
 			language = excluded.language,
-			monitored = excluded.monitored,
 			updated_at = CURRENT_TIMESTAMP;
 	`
 	_, err := c.db.ExecContext(ctx, query,
 		ed.ID, ed.BookID, ed.Format, ed.ISBN13, ed.ASIN, ed.HardcoverID, ed.OpenLibraryID, ed.GoodreadsID,
-		ed.Publisher, ed.PublicationDate, ed.Language, ed.Monitored,
+		ed.Publisher, ed.PublicationDate, ed.Language,
 	)
 	return err
 }
@@ -518,11 +516,11 @@ func (c *Catalog) UpsertMediaAsset(ctx context.Context, ma *database.MediaAsset)
 	}
 	_, err = c.db.ExecContext(ctx, `
 		UPDATE books
-		SET monitored = CASE WHEN e.format IN ('m4b', 'mp3') AND books.audiobook_monitored IS NOT NULL THEN books.monitored ELSE 0 END,
+		SET ebook_monitored = CASE WHEN e.format IN ('m4b', 'mp3') AND books.audiobook_monitored IS NOT NULL THEN books.ebook_monitored ELSE 0 END,
 		    audiobook_monitored = CASE WHEN e.format IN ('m4b', 'mp3') THEN 0 ELSE COALESCE(books.audiobook_monitored, 0) END,
 		    updated_at = CURRENT_TIMESTAMP
 		FROM book_editions e
-		WHERE e.id = ? AND books.id = e.book_id AND (books.monitored = 1 OR books.audiobook_monitored = 1)
+		WHERE e.id = ? AND books.id = e.book_id AND (books.ebook_monitored = 1 OR books.audiobook_monitored = 1)
 	`, ma.EditionID)
 	return err
 }
@@ -999,7 +997,7 @@ func scanEdition(s scannable) (*database.BookEdition, error) {
 	err := s.Scan(
 		&ed.ID, &ed.BookID, &ed.Format, &ed.ISBN13, &ed.ASIN,
 		&ed.HardcoverID, &ed.OpenLibraryID, &ed.GoodreadsID,
-		&ed.Publisher, &ed.PublicationDate, &ed.Language, &ed.Monitored,
+		&ed.Publisher, &ed.PublicationDate, &ed.Language,
 		&createdAt, &updatedAt,
 	)
 	if err != nil {

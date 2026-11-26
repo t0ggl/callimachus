@@ -51,7 +51,7 @@ type Book struct {
 	ReleaseDate         *string   `json:"release_date,omitempty" db:"release_date"`
 	Synopsis            *string   `json:"synopsis,omitempty" db:"synopsis"`
 	Genres              string    `json:"genres" db:"genres"` // JSON array of genres
-	Monitored           bool      `json:"monitored" db:"monitored"`
+	Monitored           bool      `json:"monitored" db:"ebook_monitored"`
 	AudiobookMonitored  bool      `json:"audiobook_monitored" db:"audiobook_monitored"`
 	MonitorEitherFormat bool      `json:"-" db:"-"`
 	CreatedAt           time.Time `json:"created_at" db:"created_at"`
@@ -71,7 +71,6 @@ type BookEdition struct {
 	Publisher       *string   `json:"publisher,omitempty" db:"publisher"`
 	PublicationDate *string   `json:"publication_date,omitempty" db:"publication_date"`
 	Language        string    `json:"language" db:"language"`
-	Monitored       bool      `json:"monitored" db:"monitored"`
 	CreatedAt       time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at" db:"updated_at"`
 }

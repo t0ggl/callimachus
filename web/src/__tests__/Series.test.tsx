@@ -636,7 +636,7 @@ it('opens unowned book details, inline Download options, and inline Monitor for 
   expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(1);
   await user.click(within(downloadDialog).getByRole('button', { name: 'Close' }));
 
-  // 3. Inline Monitor next to "Scheduled" resolves book & persists books.monitored.
+  // 3. Inline Monitor next to "Scheduled" resolves book & persists eBook monitoring.
   const monitorBtn = within(scheduledItem).getByRole('button', { name: 'Monitor eBook' });
   expect(monitorBtn).toHaveAttribute('aria-pressed', 'false');
   await user.click(monitorBtn);

@@ -243,14 +243,15 @@ CREATE TABLE books (
     release_date TEXT,                         -- ISO-8601 date YYYY-MM-DD
     synopsis TEXT,
     genres TEXT NOT NULL DEFAULT '[]',         -- JSON array of genre strings
-    monitored INTEGER NOT NULL DEFAULT 1,      -- 1 = true, 0 = false
+    ebook_monitored INTEGER NOT NULL DEFAULT 1,
+    audiobook_monitored INTEGER DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX idx_books_author_id ON books(author_id);
 CREATE INDEX idx_books_series_id ON books(series_id);
 CREATE INDEX idx_books_series_order ON books(series_id, series_index);
-CREATE INDEX idx_books_monitored ON books(monitored);
+CREATE INDEX idx_books_monitored ON books(ebook_monitored);
 
 -- 5. Book Editions (Physical / Digital Formats)
 CREATE TABLE book_editions (
@@ -265,7 +266,6 @@ CREATE TABLE book_editions (
     publisher TEXT,
     publication_date TEXT,
     language TEXT NOT NULL DEFAULT 'en',       -- ISO 639-1 code
-    monitored INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

@@ -76,7 +76,8 @@ erDiagram
         string series_index_display
         string release_date
         string synopsis
-        boolean monitored
+        boolean ebook_monitored
+        boolean audiobook_monitored
     }
 
     NARRATOR {
@@ -99,7 +100,6 @@ erDiagram
         string publisher
         string language
         string cover_url
-        boolean is_monitored
     }
 
     EDITION_NARRATOR {
@@ -225,14 +225,15 @@ Represents the intellectual work (independent of physical or digital format).
 | `series_index_display`| `TEXT` | `NULL` | Display label (e.g. `Novella 2.5`) |
 | `release_date` | `TEXT` | `NULL` | YYYY-MM-DD publication date |
 | `synopsis` | `TEXT` | `NULL` | Overview / blurb |
-| `monitored` | `INTEGER`| `NOT NULL DEFAULT 1` | `1` to automatically monitor for releases |
+| `ebook_monitored` | `INTEGER` | `NOT NULL DEFAULT 1` | Monitor for missing eBook releases |
+| `audiobook_monitored` | `INTEGER` | `DEFAULT 0` | Monitor for missing audiobook releases. `NULL` retains legacy either-format monitoring. |
 | `created_at` | `TEXT` | `NOT NULL` | ISO 8601 UTC timestamp |
 | `updated_at` | `TEXT` | `NOT NULL` | ISO 8601 UTC timestamp |
 
 *Indices:*
 - `CREATE INDEX idx_books_author_id ON books(author_id);`
 - `CREATE INDEX idx_books_series_id ON books(series_id, series_index);`
-- `CREATE INDEX idx_books_monitored ON books(monitored);`
+- `CREATE INDEX idx_books_monitored ON books(ebook_monitored);`
 
 ---
 
@@ -253,7 +254,6 @@ Represents a concrete published edition of a book work.
 | `publication_date`| `TEXT` | `NULL` | Edition-specific release date |
 | `language` | `TEXT` | `NOT NULL DEFAULT 'en'` | ISO 639-1 language code |
 | `cover_url` | `TEXT` | `NULL` | High-res cover image URL |
-| `is_monitored`| `INTEGER`| `NOT NULL DEFAULT 1` | Whether this edition is tracked |
 | `created_at` | `TEXT` | `NOT NULL` | ISO 8601 UTC timestamp |
 | `updated_at` | `TEXT` | `NOT NULL` | ISO 8601 UTC timestamp |
 

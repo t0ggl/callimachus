@@ -43,7 +43,7 @@ func TestLibraryBulkRBACAndValidation(t *testing.T) {
 
 	if _, err := s.db.Exec(`
 		INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'Author One', 'One, Author');
-		INSERT INTO books (id, author_id, title, monitored) VALUES ('b1', 'a1', 'Book One', 0);
+		INSERT INTO books (id, author_id, title, ebook_monitored) VALUES ('b1', 'a1', 'Book One', 0);
 	`); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestLibraryBulkMonitorBooksAndSeriesWithPartialFailures(t *testing.T) {
 	if _, err := s.db.Exec(`
 		INSERT INTO authors (id, name, sort_name) VALUES ('a1', 'Author One', 'One, Author');
 		INSERT INTO series (id, title, monitored) VALUES ('s1', 'Obsidian Archive', 0);
-		INSERT INTO books (id, author_id, series_id, title, monitored) VALUES
+		INSERT INTO books (id, author_id, series_id, title, ebook_monitored) VALUES
 			('b1', 'a1', NULL, 'Standalone Book', 0),
 			('b2', 'a1', 's1', 'Owned Series Book', 0),
 			('b3', 'a1', 's1', 'Upcoming Series Book', 0);
@@ -156,13 +156,13 @@ func TestLibraryBulkMonitorBooksAndSeriesWithPartialFailures(t *testing.T) {
 
 	// Verify DB state: b1 monitored, s1 monitored, unowned series book b3 monitored, owned b2 stays unmonitored.
 	var b1Mon, b2Mon, b3Mon, s1Mon bool
-	if err := s.db.QueryRow(`SELECT monitored FROM books WHERE id = 'b1'`).Scan(&b1Mon); err != nil || !b1Mon {
+	if err := s.db.QueryRow(`SELECT ebook_monitored FROM books WHERE id = 'b1'`).Scan(&b1Mon); err != nil || !b1Mon {
 		t.Fatalf("b1 monitored = %v, err = %v", b1Mon, err)
 	}
-	if err := s.db.QueryRow(`SELECT monitored FROM books WHERE id = 'b2'`).Scan(&b2Mon); err != nil || b2Mon {
+	if err := s.db.QueryRow(`SELECT ebook_monitored FROM books WHERE id = 'b2'`).Scan(&b2Mon); err != nil || b2Mon {
 		t.Fatalf("owned b2 monitored = %v, want false, err = %v", b2Mon, err)
 	}
-	if err := s.db.QueryRow(`SELECT monitored FROM books WHERE id = 'b3'`).Scan(&b3Mon); err != nil || !b3Mon {
+	if err := s.db.QueryRow(`SELECT ebook_monitored FROM books WHERE id = 'b3'`).Scan(&b3Mon); err != nil || !b3Mon {
 		t.Fatalf("unowned series book b3 monitored = %v, want true, err = %v", b3Mon, err)
 	}
 	if err := s.db.QueryRow(`SELECT monitored FROM series WHERE id = 's1'`).Scan(&s1Mon); err != nil || !s1Mon {
@@ -186,7 +186,7 @@ func TestLibraryBulkMonitorBooksAndSeriesWithPartialFailures(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("unmonitor status = %d: %s", res.Code, res.Body.String())
 	}
-	if err := s.db.QueryRow(`SELECT monitored FROM books WHERE id = 'b1'`).Scan(&b1Mon); err != nil || b1Mon {
+	if err := s.db.QueryRow(`SELECT ebook_monitored FROM books WHERE id = 'b1'`).Scan(&b1Mon); err != nil || b1Mon {
 		t.Fatalf("b1 monitored after unmonitor = %v, want false", b1Mon)
 	}
 	if err := s.db.QueryRow(`SELECT monitored FROM series WHERE id = 's1'`).Scan(&s1Mon); err != nil || s1Mon {
