@@ -173,7 +173,22 @@ func TestDismissFinishedAndCancelLinkedConversion(t *testing.T) {
 			t.Cleanup(h.sessionMgr.Close)
 			mux := http.NewServeMux()
 			h.RegisterRoutes(mux)
-			if w := activityRequest(mux, "DELETE", id, "reader", auth.RoleRequester); w.Code != 204 {
+			w := activityRequest(mux, "DELETE", id, "reader", auth.RoleRequester)
+			if status == "available" {
+				if w.Code != http.StatusConflict {
+					t.Fatalf("expected 409 for completed activity, got %d %s", w.Code, w.Body)
+				}
+				list, err := svc.ListRequests(context.Background(), RequestFilter{})
+				if err != nil || len(list) != 1 {
+					t.Fatalf("completed request should remain listed: %+v %v", list, err)
+				}
+				var stored string
+				if err := a.DB.QueryRow("SELECT status FROM book_requests WHERE id=?", id).Scan(&stored); err != nil || stored != "available" {
+					t.Fatalf("request status = %s %v", stored, err)
+				}
+				return
+			}
+			if w.Code != 204 {
 				t.Fatalf("delete: %d %s", w.Code, w.Body)
 			}
 			list, err := svc.ListRequests(context.Background(), RequestFilter{})

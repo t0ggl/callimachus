@@ -6,7 +6,10 @@ import (
 	"time"
 )
 
-var ErrImportFinishing = errors.New("import is finishing; try again when it completes")
+var (
+	ErrImportFinishing   = errors.New("import is finishing; try again when it completes")
+	ErrCompletedActivity = errors.New("completed activity cannot be removed")
+)
 
 type Event struct {
 	ID         int64     `json:"id"`
@@ -41,10 +44,11 @@ func (s *RequestService) dismiss(ctx context.Context, id int64) error {
 	defer tx.Rollback()
 
 	// Once publishing to the library starts, allow it to finish before dismissal.
+	// Completed activities are kept as a permanent log and cannot be dismissed.
 	result, err := tx.ExecContext(ctx, `UPDATE book_requests SET dismissed=1,
 		status=CASE WHEN status IN ('searching','downloading') THEN 'cancelled' ELSE status END,
 		updated_at=CURRENT_TIMESTAMP
-		WHERE id=? AND dismissed=0
+		WHERE id=? AND dismissed=0 AND status != 'available'
 		AND NOT EXISTS(SELECT 1 FROM download_queue q WHERE q.request_id=book_requests.id AND q.status='importing')
 		AND NOT EXISTS(SELECT 1 FROM conversion_queue c JOIN download_queue q ON q.id=c.download_id
 			WHERE q.request_id=book_requests.id AND c.status='processing' AND c.current_stage='moving')`, id)
@@ -53,11 +57,15 @@ func (s *RequestService) dismiss(ctx context.Context, id int64) error {
 	}
 	if n, _ := result.RowsAffected(); n == 0 {
 		var dismissed bool
-		if err := tx.QueryRowContext(ctx, "SELECT dismissed FROM book_requests WHERE id=?", id).Scan(&dismissed); err != nil {
+		var status string
+		if err := tx.QueryRowContext(ctx, "SELECT dismissed, status FROM book_requests WHERE id=?", id).Scan(&dismissed, &status); err != nil {
 			return err
 		}
 		if dismissed {
 			return nil
+		}
+		if status == StatusAvailable {
+			return ErrCompletedActivity
 		}
 		return ErrImportFinishing
 	}

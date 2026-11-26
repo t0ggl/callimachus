@@ -17,13 +17,13 @@ func (s *Server) handleDismissActivity(w http.ResponseWriter, r *http.Request) {
 	switch r.PathValue("kind") {
 	case "downloads":
 		query = `UPDATE download_queue SET dismissed=1, updated_at=CURRENT_TIMESTAMP,
-			status=CASE WHEN status IN ('completed','failed','error') THEN status ELSE 'cancelled' END
-			WHERE id=? AND request_id IS NULL AND status!='importing'
+			status=CASE WHEN status IN ('failed','error') THEN status ELSE 'cancelled' END
+			WHERE id=? AND request_id IS NULL AND status NOT IN ('importing','completed')
 			AND NOT EXISTS(SELECT 1 FROM conversion_queue WHERE download_id=download_queue.id AND status='processing' AND current_stage='moving')`
 	case "conversions":
 		query = `UPDATE conversion_queue SET dismissed=1, updated_at=CURRENT_TIMESTAMP,
-			status=CASE WHEN status IN ('completed','failed') THEN status ELSE 'cancelled' END
-			WHERE id=? AND download_id IS NULL AND NOT(status='processing' AND current_stage='moving')`
+			status=CASE WHEN status='failed' THEN status ELSE 'cancelled' END
+			WHERE id=? AND download_id IS NULL AND status!='completed' AND NOT(status='processing' AND current_stage='moving')`
 	default:
 		http.NotFound(w, r)
 		return
@@ -34,7 +34,7 @@ func (s *Server) handleDismissActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if n, _ := result.RowsAffected(); n == 0 {
-		http.Error(w, "Activity is unavailable or its import is finishing", http.StatusConflict)
+		http.Error(w, "Activity is unavailable, already completed, or its import is finishing", http.StatusConflict)
 		return
 	}
 	if r.PathValue("kind") == "downloads" {

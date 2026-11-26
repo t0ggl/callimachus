@@ -62,21 +62,25 @@ it('opens an audiobook request on its own tab and can switch using its book cont
   expect(fetchMock).toHaveBeenCalledWith('/api/requests/1/candidates', undefined);
 });
 
-it('shows two format rows and cancels or removes them independently', async () => {
+it('cancels in-flight rows, removes failed rows, and keeps completed rows non-deletable', async () => {
   const user = userEvent.setup({ delay: null });
   const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
   vi.stubGlobal('fetch', fetchMock);
-  render(<ActivityView {...base} canRequest requests={[ebook, audio]} downloads={[
+  const failed = { ...ebook, id: '3', title: 'Foundation', requestType: 'ebook', status: 'error', stage: 'searching' } as const;
+  render(<ActivityView {...base} canRequest canManageJobs requests={[ebook, audio, failed]} downloads={[
     { ...testDownloads[0], id: 'ebook-download', editionId: 'shared-legacy-edition', requestId: '1', status: 'downloading' },
     { ...testDownloads[0], id: 'audio-download', editionId: 'shared-legacy-edition', requestId: '2', status: 'completed' },
   ]} />);
-  expect(screen.getAllByRole('listitem')).toHaveLength(2);
+  expect(screen.getAllByRole('listitem')).toHaveLength(3);
+  expect(screen.queryByRole('button', { name: /Remove Dune Audiobook/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Cancel Dune Audiobook/i })).not.toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'Cancel Dune eBook' }));
   expect(fetchMock).toHaveBeenCalledWith('/api/requests/1', { method: 'DELETE' });
+  await waitFor(() => expect(screen.getAllByRole('listitem')).toHaveLength(2));
+  await user.click(screen.getByRole('button', { name: 'Remove Foundation eBook' }));
+  expect(fetchMock).toHaveBeenCalledWith('/api/requests/3', { method: 'DELETE' });
   await waitFor(() => expect(screen.getAllByRole('listitem')).toHaveLength(1));
-  await user.click(screen.getByRole('button', { name: 'Remove Dune Audiobook' }));
-  expect(fetchMock).toHaveBeenCalledWith('/api/requests/2', { method: 'DELETE' });
-  expect(await screen.findByText(/No activity yet/)).toBeInTheDocument();
+  expect(within(screen.getByTestId('activity-request:2')).getByText('Completed')).toBeInTheDocument();
 });
 
 it('opens book details with current stage and lazily reveals the timestamped search log', async () => {
