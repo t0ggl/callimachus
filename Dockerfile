@@ -14,7 +14,7 @@ COPY web ./web
 RUN make build-frontend
 
 # Stage 2: Build Go Server & Worker
-FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS backend-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:5f1b98fa02fe396ebce2a0227a0e08309e11792915b9dd2e1f71053d7e7e6666 AS backend-builder
 WORKDIR /app
 
 COPY Makefile go.mod go.sum ./
