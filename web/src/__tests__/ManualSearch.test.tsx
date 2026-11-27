@@ -81,3 +81,19 @@ it('reuses the eBook request, creates the audiobook request once, and ignores la
   expect(await screen.findByText('Dune M4B')).toBeInTheDocument();
   expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
 });
+
+it('omits format score when format is unknown and avoids leading punctuation on empty breakdown', async () => {
+  const unknown = {
+    key: '1:u',
+    release: { title: 'Dune', size: 1048576, seeders: 0 },
+    format: '',
+    score: 0,
+    penalty: 0,
+    breakdown: {},
+  };
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [unknown] }));
+  render(<ManualSearch requestId="9" onClose={vi.fn()} />);
+  expect(await screen.findByText('Unknown')).toBeInTheDocument();
+  expect(screen.getByText('failure: 0')).toBeInTheDocument();
+  expect(screen.queryByText(/format:/)).not.toBeInTheDocument();
+});

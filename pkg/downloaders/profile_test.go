@@ -187,6 +187,13 @@ func TestQualityProfile_EvaluateRelease_Formats(t *testing.T) {
 			wantAccepted: false,
 			reasonSubstr: "format",
 		},
+		{
+			name: "Undetermined format is not rejected as format mismatch",
+			candidate: ReleaseCandidate{
+				Title: "Synthetic Author - Synthetic Book Without Format Tag",
+			},
+			wantAccepted: true,
+		},
 	}
 
 	for _, tc := range tests {
