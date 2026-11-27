@@ -37,8 +37,11 @@ RUN make build-backend
 # Stage 3: Runtime
 FROM debian:13.8-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS runner
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata ffmpeg curl calibre \
-    && rm -rf /var/lib/apt/lists/*
-ENV QT_QPA_PLATFORM=offscreen
+    && rm -rf /var/lib/apt/lists/* \
+    && install -d -o 1000 -g 1000 /config /books
+ENV QT_QPA_PLATFORM=offscreen \
+    XDG_CONFIG_HOME=/tmp/callimachus-config \
+    XDG_CACHE_HOME=/tmp/callimachus-cache
 
 WORKDIR /app
 COPY --from=backend-builder /app/bin/callimachus /usr/local/bin/callimachus
@@ -47,8 +50,6 @@ COPY --from=backend-builder /app/bin/callimachus-worker /usr/local/bin/callimach
 VOLUME ["/config", "/books"]
 EXPOSE 8080
 
-# Container runs as root by default to preserve host-mounted /config and /books permissions.
-# nosemgrep: dockerfile.security.missing-user-entrypoint.missing-user-entrypoint
+USER 1000:1000
 ENTRYPOINT ["/usr/local/bin/callimachus"]
-# nosemgrep: dockerfile.security.missing-user.missing-user
 CMD ["--config", "/config"]

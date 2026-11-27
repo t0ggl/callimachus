@@ -2,11 +2,12 @@ BIN_DIR ?= bin
 VERSION ?= dev
 BUILD_VERSION ?= $(VERSION)
 COMMIT_TAG ?= none
+DOCKER_BUILD_NETWORK ?= default
 export GOOS ?= $(TARGETOS)
 export GOARCH ?= $(TARGETARCH)
 LDFLAGS := -w -s -X main.version=$(BUILD_VERSION) -X main.commit=$(COMMIT_TAG)
 
-.PHONY: test sast test-backend test-frontend install-frontend install-backend build build-frontend build-backend
+.PHONY: test sast test-backend test-frontend test-container install-frontend install-backend build build-frontend build-backend
 
 test: sast
 	$(MAKE) install-backend test-backend install-frontend test-frontend
@@ -20,6 +21,10 @@ test-backend:
 
 test-frontend:
 	npm --prefix web test
+
+test-container:
+	docker build --network $(DOCKER_BUILD_NETWORK) -t callimachus-readonly-test .
+	bash scripts/test-container.sh callimachus-readonly-test
 
 install-frontend:
 	npm --prefix web ci
