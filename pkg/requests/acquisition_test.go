@@ -331,3 +331,49 @@ func TestFailurePenaltyMakesMaximumScoreNegative(t *testing.T) {
 		t.Fatalf("maximum-score failure: %+v %v", cs, err)
 	}
 }
+
+func TestManualDownloadOverridesExclusionsWhileAutoRequiresPositiveScore(t *testing.T) {
+	a, id, _, grabs := acquisitionFixture(t)
+	ctx := context.Background()
+	a.Search = func(context.Context, string, string) ([]indexers.ProwlarrRelease, error) {
+		return []indexers.ProwlarrRelease{
+			{GUID: "excluded", IndexerID: 1, Title: "Book AZW3 Oversized", Size: 200 * 1024 * 1024, Seeders: 10},
+			{GUID: "zero", IndexerID: 1, Title: "Book Unknown"},
+		}, nil
+	}
+	a.Evaluate = func(_ context.Context, r indexers.ProwlarrRelease) (Evaluation, error) {
+		if r.GUID == "excluded" {
+			return Evaluation{
+				Format:           "azw3",
+				EbookPreferences: []string{"epub"},
+				Exclusions: map[string]string{
+					"format": `format "azw3" not allowed`,
+					"size":   "release exceeds max size",
+				},
+			}, nil
+		}
+		return Evaluation{EbookPreferences: []string{"epub"}}, nil
+	}
+	var grabbed string
+	a.Grab = func(_ context.Context, r indexers.ProwlarrRelease) error {
+		*grabs++
+		grabbed = r.GUID
+		return nil
+	}
+
+	// Automatic acquisition skips both zero-score and excluded (negative-score) candidates.
+	if err := a.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if *grabs != 0 {
+		t.Fatalf("automatic acquisition should not grab non-positive candidates, got %d grabs", *grabs)
+	}
+
+	// Manual download overrides exclusions (e.g. format, size) and dispatches the selected candidate.
+	if err := a.Download(ctx, id, "1:excluded"); err != nil {
+		t.Fatalf("manual download of excluded candidate failed: %v", err)
+	}
+	if *grabs != 1 || grabbed != "excluded" {
+		t.Fatalf("expected manual grab of excluded candidate, got grabs=%d guid=%q", *grabs, grabbed)
+	}
+}

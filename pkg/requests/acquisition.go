@@ -317,18 +317,20 @@ func (a *Acquisition) fail(ctx context.Context, key string) error {
 	return err
 }
 
-func (a *Acquisition) dispatch(ctx context.Context, id int64, c Candidate) error {
-	eval, err := a.Evaluate(ctx, c.Release)
-	if err != nil {
-		return err
-	}
-	if len(eval.Exclusions) > 0 {
-		reasons := make([]string, 0, len(eval.Exclusions))
-		for k := range eval.Exclusions {
-			reasons = append(reasons, k)
+func (a *Acquisition) dispatch(ctx context.Context, id int64, c Candidate, allowExcluded bool) error {
+	if !allowExcluded {
+		eval, err := a.Evaluate(ctx, c.Release)
+		if err != nil {
+			return err
 		}
-		slices.Sort(reasons)
-		return fmt.Errorf("release excluded (%s)", strings.Join(reasons, ", "))
+		if len(eval.Exclusions) > 0 {
+			reasons := make([]string, 0, len(eval.Exclusions))
+			for k := range eval.Exclusions {
+				reasons = append(reasons, k)
+			}
+			slices.Sort(reasons)
+			return fmt.Errorf("release excluded (%s)", strings.Join(reasons, ", "))
+		}
 	}
 	qid := uuid.NewString()
 	tx, err := a.DB.BeginTx(ctx, nil)
@@ -395,10 +397,7 @@ func (a *Acquisition) download(ctx context.Context, id int64, key string) error 
 	}
 	for _, c := range candidates {
 		if c.Key == key {
-			if excluded := c.excludedCriteria(); len(excluded) > 0 {
-				return fmt.Errorf("release excluded (%s)", strings.Join(excluded, ", "))
-			}
-			err = a.dispatch(ctx, id, c)
+			err = a.dispatch(ctx, id, c, true)
 			if errors.Is(err, errTransferFailed) {
 				if e := a.fail(ctx, key); e != nil {
 					return e
@@ -489,7 +488,7 @@ func (a *Acquisition) process(ctx context.Context, id int64) error {
 		if attempts >= 3 {
 			break
 		}
-		if c.Score <= 0 || c.Penalty < 0 {
+		if c.Score <= 0 || c.Penalty < 0 || c.IsExcluded() {
 			continue
 		}
 		attempts++
@@ -498,7 +497,7 @@ func (a *Acquisition) process(ctx context.Context, id int64) error {
 				return err
 			}
 		}
-		if err = a.dispatch(ctx, id, c); err == nil {
+		if err = a.dispatch(ctx, id, c, false); err == nil {
 			return nil
 		}
 		if !errors.Is(err, errTransferFailed) {
