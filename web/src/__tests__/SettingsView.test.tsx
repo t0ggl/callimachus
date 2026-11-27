@@ -158,6 +158,8 @@ describe('SettingsView Environment Overrides', () => {
 
     expect(payload.library).toEqual({
       completedDownloadRoot: "",
+      intakeRoot: "",
+      intakePollInterval: "30s",
       stagingPollInterval: '15s',
       indexerSyncInterval: '15m0s',
       bundleSeriesInLibrary: true,
@@ -843,4 +845,59 @@ describe('Stored API key visibility and persistence', () => {
     expect(payload.metadata).not.toHaveProperty('google_books_api_key');
     expect(payload.metadata).not.toHaveProperty('hardcover_api_key');
   });
+});
+
+it('saves intake changes and lets users clear the directory to disable imports', async () => {
+  const user = userEvent.setup({ delay: null });
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<SettingsView indexers={[]} qualityProfile={baseQuality} onSaveSettings={save} />);
+  await user.click(screen.getByTestId('tab-settings-library'));
+  const root = screen.getByLabelText('Intake Directory');
+  const interval = screen.getByLabelText('Intake Poll Interval');
+  expect(root).toHaveAccessibleDescription(/leave empty to disable/i);
+  expect(interval).toHaveValue('30s');
+
+  await user.type(root, '/books-to-import');
+  await user.clear(interval);
+  await user.type(interval, '45s');
+  await user.click(screen.getByTestId('save-settings-btn'));
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+    library: expect.objectContaining({ intakeRoot: '/books-to-import', intakePollInterval: '45s' }),
+  }));
+  await screen.findByTestId('settings-save-success');
+
+  await user.clear(root);
+  await user.click(screen.getByTestId('save-settings-btn'));
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+    library: expect.objectContaining({ intakeRoot: '' }),
+  }));
+});
+
+it('shows locked intake values and omits them when saving', async () => {
+  const user = userEvent.setup({ delay: null });
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<SettingsView
+    indexers={[]}
+    qualityProfile={baseQuality}
+    librarySettings={{ ...baseLibrary, intakeRoot: '/mounted-intake', intakePollInterval: '2m0s' }}
+    overrides={{
+      intake_root: {
+        envVar: 'CALLIMACHUS_INTAKE_ROOT', isOverridden: true, overriddenBy: 'CALLIMACHUS_INTAKE_ROOT',
+      },
+      intake_poll_interval: {
+        envVar: 'CALLIMACHUS_INTAKE_POLL_INTERVAL', isOverridden: true, overriddenBy: 'CALLIMACHUS_INTAKE_POLL_INTERVAL',
+      },
+    }}
+    onSaveSettings={save}
+  />);
+  await user.click(screen.getByTestId('tab-settings-library'));
+  expect(screen.getByLabelText('Intake Directory')).toHaveValue('/mounted-intake');
+  expect(screen.getByLabelText('Intake Directory')).toBeDisabled();
+  expect(screen.getByLabelText('Intake Poll Interval')).toHaveValue('2m0s');
+  expect(screen.getByLabelText('Intake Poll Interval')).toBeDisabled();
+  expect(screen.getByTestId('override-note-intake_root')).toHaveTextContent('CALLIMACHUS_INTAKE_ROOT');
+  expect(screen.getByTestId('override-note-intake_poll_interval')).toHaveTextContent('CALLIMACHUS_INTAKE_POLL_INTERVAL');
+  await user.click(screen.getByTestId('save-settings-btn'));
+  expect(save.mock.calls[0][0].library).not.toHaveProperty('intakeRoot');
+  expect(save.mock.calls[0][0].library).not.toHaveProperty('intakePollInterval');
 });

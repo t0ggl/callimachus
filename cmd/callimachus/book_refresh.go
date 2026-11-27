@@ -160,7 +160,7 @@ func (s *Server) matchBookMetadata(ctx context.Context, rec *refreshBookRecord) 
 		return metadata.BookMetadata{}, fmt.Errorf("load metadata settings: %w", err)
 	}
 
-	if !cfg.Settings.OpenLibraryEnabled && cfg.Settings.HardcoverAPIKey == "" && cfg.Settings.GoogleBooksAPIKey == "" {
+	if !cfg.Settings.OpenLibraryEnabled && cfg.Settings.HardcoverAPIKey == "" && cfg.Settings.GoogleBooksAPIKey == "" && !slices.ContainsFunc(rec.editions, func(ed refreshEditionRow) bool { return strings.TrimSpace(ed.asin) != "" }) {
 		return metadata.BookMetadata{}, fmt.Errorf("%w", errRefreshProvidersUnavailable)
 	}
 

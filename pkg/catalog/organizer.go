@@ -36,6 +36,8 @@ var (
 
 // BookDetails contains the domain metadata required for canonical organization.
 type BookDetails struct {
+	noReplace         bool
+	Narrators         []string                    `json:"narrators,omitempty"`
 	BookID            string                      `json:"book_id,omitempty"`
 	Title             string                      `json:"title"`
 	Subtitle          string                      `json:"subtitle,omitempty"`
@@ -143,6 +145,15 @@ func OrganizeBook(libraryRoot string, book BookDetails, mediaSrcPath string, cov
 		return nil, fmt.Errorf("create title directory %s: %w", titleDir, err)
 	}
 
+	if book.noReplace {
+		if _, err := os.Lstat(mediaPath); !os.IsNotExist(err) {
+			if err != nil {
+				return nil, err
+			}
+			return nil, ErrDuplicateIntake
+		}
+	}
+
 	// Prepare sidecars and any EPUB metadata rewrite before replacing an existing media file.
 	staging, err := os.MkdirTemp(titleDir, ".callimachus-stage-")
 	if err != nil {
@@ -197,18 +208,42 @@ func OrganizeBook(libraryRoot string, book BookDetails, mediaSrcPath string, cov
 		return nil, fmt.Errorf("generate companion sidecar %s: %w", opfPath, err)
 	}
 
-	// Handle companion cover image
+	// Intake publishes media exclusively before touching any existing companions.
+	if book.noReplace {
+		stagedMedia := filepath.Join(staging, "media"+ext)
+		if err := AtomicMove(publishSrcPath, stagedMedia); err != nil {
+			return nil, err
+		}
+		if err := os.Link(stagedMedia, mediaPath); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				return nil, ErrDuplicateIntake
+			}
+			return nil, fmt.Errorf("publish intake media: %w", err)
+		}
+		publishSrcPath = stagedMedia
+	}
+
 	coverPath := filepath.Join(titleDir, basename+".jpg")
 	var finalCoverPath string
 	if ensureCover(publishSrcPath, coverPath, coverData) {
 		finalCoverPath = coverPath
+	} else if book.noReplace {
+		if err := writeIntakeCover(coverPath, book); err != nil {
+			return nil, errors.Join(err, os.Remove(mediaPath))
+		}
+		finalCoverPath = coverPath
 	}
 
 	if err := AtomicMove(filepath.Join(staging, "metadata.opf"), opfPath); err != nil {
+		if book.noReplace {
+			err = errors.Join(err, os.Remove(mediaPath))
+		}
 		return nil, err
 	}
-	if err := AtomicMove(publishSrcPath, mediaPath); err != nil {
-		return nil, fmt.Errorf("atomic move media file: %w", err)
+	if !book.noReplace {
+		if err := AtomicMove(publishSrcPath, mediaPath); err != nil {
+			return nil, fmt.Errorf("atomic move media file: %w", err)
+		}
 	}
 	if removeOriginalSrc {
 		if err := os.Remove(mediaSrcPath); err != nil && !os.IsNotExist(err) {

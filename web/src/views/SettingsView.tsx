@@ -35,6 +35,8 @@ export interface SettingsUpdatePayload {
   library?: {
     rootPath?: string;
     completedDownloadRoot?: string;
+    intakeRoot?: string;
+    intakePollInterval?: string;
     stagingPollInterval?: string;
     indexerSyncInterval?: string;
     bundleSeriesInLibrary?: boolean;
@@ -363,6 +365,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       metadata: metadataPayload,
       library: {
         ...(!isOverridden("completed_download_root") ? { completedDownloadRoot: librarySettings.completedDownloadRoot ?? "" } : {}),
+        ...(!isOverridden('intake_root') ? { intakeRoot: librarySettings.intakeRoot ?? '' } : {}),
+        ...(!isOverridden('intake_poll_interval')
+          ? { intakePollInterval: librarySettings.intakePollInterval ?? '30s' }
+          : {}),
         ...(!isOverridden('library_root') ? { rootPath: librarySettings.rootPath } : {}),
         ...(!isOverridden('staging_poll_interval')
           ? { stagingPollInterval: librarySettings.stagingPollInterval }
@@ -909,6 +915,43 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 className={inputClass(isOverridden('library_root'))}
               />
               <OverrideNote settingKey="library_root" />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="intake-root" className="block text-zinc-400 font-medium">Intake Directory</label>
+                </div>
+                <input
+                  id="intake-root"
+                  type="text"
+                  value={librarySettings.intakeRoot ?? ''}
+                  disabled={isOverridden('intake_root')}
+                  onChange={(e) => setLibrarySettings((prev) => ({ ...prev, intakeRoot: e.target.value }))}
+                  className={inputClass(isOverridden('intake_root'))}
+                  aria-describedby={isOverridden('intake_root') ? 'intake-root-help override-note-intake_root' : 'intake-root-help'}
+                />
+                <p id="intake-root-help" className="mt-1.5 text-xs text-zinc-400">
+                  Drop books here for automatic import. Imported files are removed from this directory. Leave empty to disable.
+                </p>
+                <OverrideNote settingKey="intake_root" />
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="intake-poll-interval" className="block text-zinc-400 font-medium">Intake Poll Interval</label>
+                </div>
+                <input
+                  id="intake-poll-interval"
+                  type="text"
+                  value={librarySettings.intakePollInterval ?? '30s'}
+                  disabled={isOverridden('intake_poll_interval')}
+                  onChange={(e) => setLibrarySettings((prev) => ({ ...prev, intakePollInterval: e.target.value }))}
+                  className={inputClass(isOverridden('intake_poll_interval'))}
+                  aria-describedby={isOverridden('intake_poll_interval') ? 'intake-interval-help override-note-intake_poll_interval' : 'intake-interval-help'}
+                />
+                <p id="intake-interval-help" className="mt-1.5 text-xs text-zinc-400">Time between scans, such as 30s or 5m.</p>
+                <OverrideNote settingKey="intake_poll_interval" />
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

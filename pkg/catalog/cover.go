@@ -182,7 +182,7 @@ func ensureCover(source, target string, supplied []byte) bool {
 	}
 	data, err := coverJPEG(supplied)
 	if err != nil {
-		raw, extractErr := embeddedCover(source)
+		raw, extractErr := EmbeddedCover(source)
 		if extractErr != nil {
 			return false
 		}
@@ -207,7 +207,8 @@ func ensureCover(source, target string, supplied []byte) bool {
 	return os.Rename(f.Name(), target) == nil
 }
 
-func embeddedCover(source string) ([]byte, error) {
+// EmbeddedCover reads artwork embedded in a supported media file.
+func EmbeddedCover(source string) ([]byte, error) {
 	switch strings.ToLower(filepath.Ext(source)) {
 	case ".epub":
 		ep, err := epub.OpenNative(source)

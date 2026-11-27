@@ -62,27 +62,29 @@ type Server struct {
 	monitorDone         chan struct{}
 	monitorWake         chan struct{}
 	refreshBookMetadata func(context.Context, string) error
-	acquisition        *requests.Acquisition
-	acquisitionCancel  context.CancelFunc
-	acquisitionDone    chan struct{}
-	cfg                Config
-	displayVersion     string
-	baseOverrides      config.Overrides
-	settingsMu         sync.Mutex
-	metadataRepairMu   sync.Mutex
-	db                 *database.DB
-	sessionMgr         *auth.SessionManager
-	maintenance        config.MaintenanceConfig
-	maintenanceDone    chan struct{}
-	fallbackAuth       *auth.FallbackAuthenticator
-	syncer             *indexers.Syncer
-	prowlarrHTTPClient *http.Client
-	coverHTTPClient    *http.Client
-	stagingMon         *downloaders.StagingMonitor
-	dispatcher         *notify.Dispatcher
-	httpServer         *http.Server
-	listener           net.Listener
-	staticFS           fs.FS
+	acquisition         *requests.Acquisition
+	acquisitionCancel   context.CancelFunc
+	acquisitionDone     chan struct{}
+	cfg                 Config
+	displayVersion      string
+	baseOverrides       config.Overrides
+	settingsMu          sync.Mutex
+	metadataRepairMu    sync.Mutex
+	db                  *database.DB
+	sessionMgr          *auth.SessionManager
+	maintenance         config.MaintenanceConfig
+	maintenanceDone     chan struct{}
+	fallbackAuth        *auth.FallbackAuthenticator
+	syncer              *indexers.Syncer
+	prowlarrHTTPClient  *http.Client
+	coverHTTPClient     *http.Client
+	stagingMon          *downloaders.StagingMonitor
+	intakeWake          chan struct{}
+	intakeDone          chan struct{}
+	dispatcher          *notify.Dispatcher
+	httpServer          *http.Server
+	listener            net.Listener
+	staticFS            fs.FS
 }
 
 // NewServer initializes a new Server instance with all components and routes configured.
@@ -249,6 +251,7 @@ func NewServer(cfg Config) (*Server, error) {
 		fallbackAuth:   fallbackAuth,
 		syncer:         syncer,
 		stagingMon:     stagingMon,
+		intakeWake:     make(chan struct{}, 1),
 		dispatcher:     dispatcher,
 		staticFS:       staticFS,
 	}
@@ -327,6 +330,12 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start background indexer syncer
 	s.syncer.Start(ctx)
 
+	s.intakeDone = make(chan struct{})
+	go func() {
+		defer close(s.intakeDone)
+		s.runIntake(workerCtx)
+	}()
+
 	// Start background staging monitor
 	if err := s.stagingMon.Start(ctx); err != nil {
 		slog.WarnContext(ctx, "staging monitor could not start")
@@ -362,6 +371,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		<-s.acquisitionDone
 		if s.monitorDone != nil {
 			<-s.monitorDone
+		}
+		if s.intakeDone != nil {
+			<-s.intakeDone
 		}
 		if s.maintenanceDone != nil {
 			<-s.maintenanceDone

@@ -31,6 +31,8 @@ const (
 	KeyProwlarrAPIKey         = "prowlarr_api_key"
 	KeyProwlarrSyncInterval   = "prowlarr_sync_interval"
 	KeyIndexerSyncInterval    = "indexer_sync_interval"
+	KeyIntakeRoot             = "intake_root"
+	KeyIntakePollInterval     = "intake_poll_interval"
 	KeyStagingPollInterval    = "staging_poll_interval"
 	KeyQualityProfileName     = "quality_profile_name"
 	KeyAllowedLanguages       = "allowed_languages"
@@ -97,6 +99,8 @@ var registry = []SettingSpec{
 	{Key: KeyProwlarrAPIKey, Kind: KindString, Secret: true},
 	{Key: KeyProwlarrSyncInterval, Kind: KindDuration, Default: "1h"},
 	{Key: KeyIndexerSyncInterval, Kind: KindDuration, Default: "15m"},
+	{Key: KeyIntakeRoot, Kind: KindString},
+	{Key: KeyIntakePollInterval, Kind: KindDuration, Default: "30s"},
 	{Key: KeyStagingPollInterval, Kind: KindDuration, Default: "5s"},
 	{Key: KeyQualityProfileName, Kind: KindString, Default: "Standard Audiobook"},
 	{Key: KeyAllowedLanguages, Kind: KindStringList, Default: "en"},
@@ -136,6 +140,8 @@ type OverrideInfo struct {
 
 // Settings holds the effective resolved application configuration.
 type Settings struct {
+	IntakeRoot             string        `json:"intakeRoot"`
+	IntakePollInterval     time.Duration `json:"intakePollInterval"`
 	LogLevel               slog.Level    `json:"logLevel"`
 	BundleSeriesInLibrary  bool          `json:"bundleSeriesInLibrary"`
 	DefaultSearchFormat    string        `json:"defaultSearchFormat"`
@@ -557,6 +563,8 @@ func callerOverridesMap(c Overrides) map[string]string {
 
 func materializeSettings(vals map[string]string) Settings {
 	return Settings{
+		IntakeRoot:             vals[KeyIntakeRoot],
+		IntakePollInterval:     parseDurationOr(vals[KeyIntakePollInterval], 30*time.Second),
 		GoogleBooksAPIKey:      vals[KeyGoogleBooksAPIKey],
 		HardcoverAPIKey:        vals[KeyHardcoverAPIKey],
 		OpenLibraryEnabled:     parseBoolOr(vals[KeyOpenLibraryEnabled], true),

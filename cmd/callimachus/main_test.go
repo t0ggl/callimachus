@@ -543,6 +543,8 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 	testutil.PrepareTestDBFile(t, dbPath)
 
 	t.Setenv("CALLIMACHUS_LIBRARY_ROOT", "/env/books")
+	t.Setenv("CALLIMACHUS_INTAKE_ROOT", "/env/intake")
+	t.Setenv("CALLIMACHUS_INTAKE_POLL_INTERVAL", "45s")
 	t.Setenv("CALLIMACHUS_PROWLARR_URL", "http://env-prowlarr:9696")
 	t.Setenv("CALLIMACHUS_PROWLARR_API_KEY", "secret-prowlarr-key")
 	t.Setenv("CALLIMACHUS_MAX_AUDIOBOOK_SIZE_MB", "4096")
@@ -563,7 +565,7 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 
 	// 1. Seed DB with conflicting value for an overridden setting to confirm env wins
 	if _, err := srv.db.ExecContext(context.Background(),
-		`INSERT INTO settings (key, value) VALUES ('library_root', '/db/should-not-win')`,
+		`INSERT INTO settings (key, value) VALUES ('library_root', '/db/should-not-win'), ('intake_root', '/db/intake'), ('intake_poll_interval', '1m')`,
 	); err != nil {
 		t.Fatalf("seed db setting: %v", err)
 	}
@@ -600,6 +602,18 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 		t.Fatalf("decode GET /api/settings: %v", err)
 	}
 
+	if got.Library.IntakeRoot != "/env/intake" || got.Library.IntakePollInterval != "45s" {
+		t.Fatalf("effective intake settings = %+v", got.Library)
+	}
+	for key, env := range map[string]string{
+		"intake_root":          "CALLIMACHUS_INTAKE_ROOT",
+		"intake_poll_interval": "CALLIMACHUS_INTAKE_POLL_INTERVAL",
+	} {
+		if ov := got.Overrides[key]; !ov.IsOverridden || ov.OverriddenBy != env {
+			t.Fatalf("intake override for %s = %+v", key, ov)
+		}
+	}
+
 	if got.Library.RootPath != "/env/books" {
 		t.Errorf("Library.RootPath = %q, want /env/books", got.Library.RootPath)
 	}
@@ -622,7 +636,7 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 
 	// 4. Authenticated PUT /api/settings persists non-overridden fields and protects overridden ones
 	putBody := `{
-		"library": {"rootPath": "/ui/attempted-override", "stagingPollInterval": "10s"},
+		"library": {"rootPath": "/ui/attempted-override", "stagingPollInterval": "10s", "intakeRoot": "/ui/intake", "intakePollInterval": "-1s"},
 		"prowlarr": {"url": "http://ui-attempted:9696", "apiKey": "attempted-key-override"},
 		"qualityProfile": {"allowedFormats": ["EPUB", "M4B", "MP3"], "maxAudiobookSizeMb": 1024}
 	}`
@@ -652,6 +666,17 @@ func TestServer_SettingsEnvOverridesAndWriteProtection(t *testing.T) {
 	}
 	if updated.QualityProfile.MaxAudiobookSizeMb != 4096 {
 		t.Errorf("after PUT, MaxAudiobookSizeMb = %d, want 4096", updated.QualityProfile.MaxAudiobookSizeMb)
+	}
+
+	if updated.Library.IntakeRoot != "/env/intake" || updated.Library.IntakePollInterval != "45s" {
+		t.Fatalf("intake override changed: %+v", updated.Library)
+	}
+	var storedIntakeRoot, storedIntakeInterval string
+	if err := srv.db.QueryRow(`SELECT
+		(SELECT value FROM settings WHERE key='intake_root'),
+		(SELECT value FROM settings WHERE key='intake_poll_interval')`).Scan(&storedIntakeRoot, &storedIntakeInterval); err != nil ||
+		storedIntakeRoot != "/db/intake" || storedIntakeInterval != "1m" {
+		t.Fatalf("intake overrides wrote DB values %q, %q (%v)", storedIntakeRoot, storedIntakeInterval, err)
 	}
 
 	// Non-overridden fields persisted
@@ -1364,10 +1389,10 @@ func TestSettingsAPIKeys_AdminVisibilitySaveClearAndLogRedaction(t *testing.T) {
 
 	// Seed initial stored API keys in SQLite
 	for k, v := range map[string]string{
-		config.KeyProwlarrURL:        "http://prowlarr.local:9696",
-		config.KeyProwlarrAPIKey:     "prowlarr-secret-1",
-		config.KeyHardcoverAPIKey:    "hardcover-secret-1",
-		config.KeyGoogleBooksAPIKey:  "google-secret-1",
+		config.KeyProwlarrURL:       "http://prowlarr.local:9696",
+		config.KeyProwlarrAPIKey:    "prowlarr-secret-1",
+		config.KeyHardcoverAPIKey:   "hardcover-secret-1",
+		config.KeyGoogleBooksAPIKey: "google-secret-1",
 	} {
 		if _, err := srv.db.ExecContext(context.Background(), `INSERT INTO settings (key, value) VALUES (?, ?)`, k, v); err != nil {
 			t.Fatalf("seed %s: %v", k, err)

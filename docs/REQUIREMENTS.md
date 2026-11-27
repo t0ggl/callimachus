@@ -163,6 +163,26 @@ It adopts the proven management paradigm of the `*arr` stack (Radarr, Sonarr, Li
 - Release blocklist: permanently blacklists failed or corrupt torrent info-hashes to avoid redownload loops.
 - Roadmap: Anna's Archive (MD5/IPFS lookup) and Z-Library direct acquisition.
 
+### 6.4 Manual Intake
+
+Set **Intake Directory** in Library & Storage or mount a writable directory and set
+`CALLIMACHUS_INTAKE_ROOT`. The default **Intake Poll Interval** is 30 seconds and can
+be changed with `CALLIMACHUS_INTAKE_POLL_INTERVAL`. An empty directory setting disables
+the scanner. The intake directory must be separate from the library and completed-download directory.
+
+Place standalone books as individual files and use one folder per multipart audiobook.
+Number the tracks and use numbered disc subfolders for multidisc books. Prepare large
+copies outside intake or in a hidden directory, then move them into intake when finished.
+The scanner requires two unchanged observations at least one poll interval apart.
+
+Run `callimachus-worker` with the same intake, library, and database mounts for
+ebook conversion and audiobook muxing. The server and worker need writable temporary
+space for media working copies. Successful imports remove their source media and
+any directories that become empty. Unchanged failed or duplicate files stay in place
+and are skipped on subsequent scans. Replace the file with corrected media or
+update its modification time to retry.
+Check Activity for conversion errors and the server logs for direct intake errors.
+
 ---
 
 ## 7. Canonical Library Layout

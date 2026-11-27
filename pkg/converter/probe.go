@@ -22,6 +22,8 @@ type AudioProbe struct {
 	Artist      string  `json:"artist,omitempty"`
 	Album       string  `json:"album,omitempty"`
 	Composer    string  `json:"composer,omitempty"` // Narrator
+	ASIN        string  `json:"asin,omitempty"`
+	AlbumArtist string  `json:"album_artist,omitempty"`
 	Date        string  `json:"date,omitempty"`
 }
 
@@ -165,6 +167,8 @@ func ParseFFprobeJSON(filePath string, data []byte) (*AudioProbe, error) {
 	probe.Title = findTag(audioStream.Tags, res.Format.Tags, "title")
 	probe.Artist = findTag(audioStream.Tags, res.Format.Tags, "artist", "album_artist")
 	probe.Album = findTag(audioStream.Tags, res.Format.Tags, "album")
+	probe.AlbumArtist = findTag(audioStream.Tags, res.Format.Tags, "album_artist")
+	probe.ASIN = findTag(audioStream.Tags, res.Format.Tags, "asin", "audible_asin")
 	probe.Composer = findTag(audioStream.Tags, res.Format.Tags, "composer", "narrator")
 	probe.Date = findTag(audioStream.Tags, res.Format.Tags, "date", "year")
 

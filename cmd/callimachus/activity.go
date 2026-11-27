@@ -30,7 +30,7 @@ func (s *Server) handleDismissActivity(w http.ResponseWriter, r *http.Request) {
 		query = `UPDATE conversion_queue SET dismissed=1, updated_at=CURRENT_TIMESTAMP,
 			status=CASE WHEN status='failed' THEN status ELSE 'cancelled' END
 			WHERE id=? AND download_id IS NULL AND status!='completed' AND NOT(status='processing' AND current_stage='moving')
-			RETURNING edition_id`
+			RETURNING CASE WHEN intake_context='' THEN edition_id END`
 	default:
 		http.NotFound(w, r)
 		return

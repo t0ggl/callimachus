@@ -460,6 +460,10 @@ func (c *Catalog) mergeExistingBook(ctx context.Context, existing *database.Book
 
 // GetOrCreateBook finds an existing book by author/title, series/index, or normalized title, or inserts a new one.
 func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*database.Book, error) {
+	return c.getOrCreateBook(ctx, book, false)
+}
+
+func (c *Catalog) getOrCreateBook(ctx context.Context, book *database.Book, excludeInheritedMonitoring bool) (*database.Book, error) {
 	rawTitle := strings.TrimSpace(book.Title)
 	cleanTitle := metadata.SanitizeTitle(rawTitle)
 	if cleanTitle == "" {
@@ -546,12 +550,12 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 	}
 
 	query := `
-		INSERT INTO books (id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, ebook_monitored, audiobook_monitored, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN NULL ELSE ? END, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+		INSERT INTO books (id, author_id, series_id, series_index, series_index_display, title, subtitle, release_date, synopsis, genres, ebook_monitored, audiobook_monitored, ebook_monitoring_excluded, audiobook_monitoring_excluded, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN NULL ELSE ? END, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 	`
 	_, err = c.db.ExecContext(ctx, query,
 		book.ID, book.AuthorID, book.SeriesID, book.SeriesIndex, book.SeriesIndexDisplay,
-		book.Title, book.Subtitle, book.ReleaseDate, book.Synopsis, book.Genres, book.Monitored, book.MonitorEitherFormat, book.AudiobookMonitored,
+		book.Title, book.Subtitle, book.ReleaseDate, book.Synopsis, book.Genres, book.Monitored, book.MonitorEitherFormat, book.AudiobookMonitored, excludeInheritedMonitoring, excludeInheritedMonitoring,
 	)
 	if err != nil {
 		if b, lookupErr := c.GetBookByAuthorAndTitle(ctx, book.AuthorID, cleanTitle); lookupErr == nil {
@@ -787,7 +791,7 @@ func markBookFormatAcquired(book *database.Book, format string) {
 
 // IngestBook performs canonical file placement and sidecar generation via OrganizeBook,
 // and records the Author, Series, Book, BookEdition, and MediaAsset in the database.
-func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookDetails, mediaSrcPath string, coverData []byte) (*IngestResult, error) {
+func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookDetails, mediaSrcPath string, coverData []byte) (_ *IngestResult, ingestErr error) {
 	if strings.EqualFold(filepath.Ext(mediaSrcPath), ".epub") {
 		if ep, err := epub.OpenNative(mediaSrcPath); err == nil {
 			meta := ep.Metadata()
@@ -836,7 +840,7 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 			return nil, err
 		}
 		for _, ed := range editions {
-			if audioFormat(ed.Format) == audioFormat(strings.TrimPrefix(filepath.Ext(mediaSrcPath), ".")) {
+			if !book.noReplace && audioFormat(ed.Format) == audioFormat(strings.TrimPrefix(filepath.Ext(mediaSrcPath), ".")) {
 				assets, err := c.GetMediaAssetsByEditionID(ctx, ed.ID)
 				if err != nil {
 					return nil, err
@@ -850,81 +854,24 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 		return nil, fmt.Errorf("organize book: %w", err)
 	}
 
+	if book.noReplace {
+		defer func() {
+			if ingestErr != nil {
+				ingestErr = errors.Join(ingestErr, os.Remove(org.MediaPath))
+			}
+		}()
+	}
+
 	fi, err := os.Stat(org.MediaPath)
 	if err != nil {
 		return nil, fmt.Errorf("stat destination media file: %w", err)
 	}
 
-	// 1. Author
-	author, err := c.GetOrCreateAuthor(ctx, book.Author)
+	author, series, dbBook, err := c.resolveImportBook(ctx, book)
 	if err != nil {
-		return nil, fmt.Errorf("persist author: %w", err)
+		return nil, err
 	}
-
-	// 2. Series (if present)
-	var series *database.Series
-	if book.Series != "" {
-		s, err := c.GetOrCreateSeries(ctx, book.Series, author.ID, book.HardcoverSeriesID)
-		if err != nil {
-			return nil, fmt.Errorf("persist series: %w", err)
-		}
-		series = s
-	}
-
-	// 3. Book
-	var seriesID *string
-	if series != nil {
-		seriesID = &series.ID
-	}
-	var releaseDate *string
-	if d := metadata.NormalizeReleaseDate(book.PublishDate, book.Year); d != "" {
-		releaseDate = &d
-	}
-
-	var indexDisplay *string
-	if book.SeriesIndex != nil {
-		d := SeriesIndexLabel(book.SeriesIndex)
-		indexDisplay = &d
-	}
-	var subtitle *string
-	if book.Subtitle != "" {
-		sub := book.Subtitle
-		subtitle = &sub
-	}
-	var synopsis *string
-	if book.Description != "" {
-		syn := book.Description
-		synopsis = &syn
-	}
-
-	incomingBook := &database.Book{
-		AuthorID:           author.ID,
-		SeriesID:           seriesID,
-		SeriesIndex:        book.SeriesIndex,
-		SeriesIndexDisplay: indexDisplay,
-		Title:              book.Title,
-		Subtitle:           subtitle,
-		ReleaseDate:        releaseDate,
-		Synopsis:           synopsis,
-	}
-
-	var dbBook *database.Book
-	if book.BookID != "" {
-		dbBook, err = c.GetBookByID(ctx, book.BookID)
-		if err != nil {
-			return nil, err
-		}
-		if backfillBookFields(dbBook, incomingBook) {
-			if err := c.UpsertBook(ctx, dbBook); err != nil {
-				return nil, fmt.Errorf("persist book: %w", err)
-			}
-		}
-	} else {
-		dbBook, err = c.GetOrCreateBook(ctx, incomingBook)
-		if err != nil {
-			return nil, fmt.Errorf("persist book: %w", err)
-		}
-	}
+	releaseDate := importReleaseDate(book)
 	if err := c.SaveSeriesMemberships(ctx, dbBook.ID, dbBook.AuthorID, book.SeriesMemberships, IdealSourceImport); err != nil {
 		return nil, err
 	}
@@ -984,6 +931,12 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 		return nil, err
 	}
 
+	if audioFormat(format) && len(book.Narrators) > 0 {
+		if err := c.saveIntakeNarrators(ctx, edition.ID, book.Narrators); err != nil {
+			return nil, err
+		}
+	}
+
 	// 5. Media Asset
 	asset := database.MediaAsset{
 		ID:         uuid.NewString(),
@@ -1037,6 +990,83 @@ func (c *Catalog) IngestBook(ctx context.Context, libraryRoot string, book BookD
 		Edition:     edition,
 		MediaAssets: []database.MediaAsset{asset},
 	}, nil
+}
+
+func importReleaseDate(book BookDetails) *string {
+	if d := metadata.NormalizeReleaseDate(book.PublishDate, book.Year); d != "" {
+		return &d
+	}
+	return nil
+}
+
+func (c *Catalog) resolveImportBook(ctx context.Context, book BookDetails) (*database.Author, *database.Series, *database.Book, error) {
+	// 1. Author
+	author, err := c.GetOrCreateAuthor(ctx, book.Author)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("persist author: %w", err)
+	}
+
+	// 2. Series (if present)
+	var series *database.Series
+	if book.Series != "" {
+		s, err := c.GetOrCreateSeries(ctx, book.Series, author.ID, book.HardcoverSeriesID)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("persist series: %w", err)
+		}
+		series = s
+	}
+
+	// 3. Book
+	var seriesID *string
+	if series != nil {
+		seriesID = &series.ID
+	}
+	releaseDate := importReleaseDate(book)
+	var indexDisplay *string
+	if book.SeriesIndex != nil {
+		d := SeriesIndexLabel(book.SeriesIndex)
+		indexDisplay = &d
+	}
+	var subtitle *string
+	if book.Subtitle != "" {
+		sub := book.Subtitle
+		subtitle = &sub
+	}
+	var synopsis *string
+	if book.Description != "" {
+		syn := book.Description
+		synopsis = &syn
+	}
+
+	incomingBook := &database.Book{
+		AuthorID:           author.ID,
+		SeriesID:           seriesID,
+		SeriesIndex:        book.SeriesIndex,
+		SeriesIndexDisplay: indexDisplay,
+		Title:              book.Title,
+		Subtitle:           subtitle,
+		ReleaseDate:        releaseDate,
+		Synopsis:           synopsis,
+	}
+
+	var dbBook *database.Book
+	if book.BookID != "" {
+		dbBook, err = c.GetBookByID(ctx, book.BookID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if backfillBookFields(dbBook, incomingBook) {
+			if err := c.UpsertBook(ctx, dbBook); err != nil {
+				return nil, nil, nil, fmt.Errorf("persist book: %w", err)
+			}
+		}
+	} else {
+		dbBook, err = c.getOrCreateBook(ctx, incomingBook, book.noReplace)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("persist book: %w", err)
+		}
+	}
+	return author, series, dbBook, nil
 }
 
 // ReconcileScannedBook stores/updates a ScannedBook discovered by the library scanner into the database.

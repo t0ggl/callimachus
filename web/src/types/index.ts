@@ -347,6 +347,8 @@ export interface SettingOverrideInfo {
 export type SettingsOverridesMap = Record<string, SettingOverrideInfo>;
 
 export interface LibrarySettings {
+  intakeRoot?: string;
+  intakePollInterval?: string;
   completedDownloadRoot?: string;
   rootPath: string;
   stagingPollInterval: string;
