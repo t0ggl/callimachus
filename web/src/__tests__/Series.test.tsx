@@ -5,6 +5,7 @@ import { SeriesBadge } from '../components/SeriesBadge';
 import { SeriesDetailModal } from '../components/SeriesDetailModal';
 import { DiscoveryResults } from '../components/DiscoveryResults';
 import { CatalogView } from '../views/CatalogView';
+import { ActivityRefreshContext, BookActivityContext } from '../utils/activity';
 import { Book } from '../types';
 
 afterEach(() => {
@@ -750,6 +751,83 @@ it('lets guests inspect unowned book details read-only and allows requesters to 
   await user.click(within(reqDetail).getByRole('button', { name: 'Show Download Options' }));
   expect(await screen.findByRole('dialog', { name: 'Download Options' })).toBeInTheDocument();
   expect(fetchMock.mock.calls.filter(([u]) => u === '/api/books/resolve')).toHaveLength(1);
+});
+
+it('cancels in-progress downloads and unmonitors individual books in SeriesDetailModal', async () => {
+  const user = userEvent.setup({ delay: null });
+  const refreshActivity = vi.fn();
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.startsWith('/api/series/books?')) {
+      return Response.json({
+        id: 'ser-1',
+        title: 'Sequence',
+        authors: ['Author One'],
+        monitored: true,
+        total_books: 3,
+        owned_count: 1,
+        complete: true,
+        books: [
+          { book_id: 'b-dl', library_book_id: 'b-dl', title: 'Downloading Entry', authors: ['Author One'], series_index: 1, state: 'Downloading', monitored: true, formats: [] },
+          { book_id: 'b-mon', title: 'Monitored Entry', authors: ['Author One'], series_index: 2, state: 'Not in library', monitored: true, formats: [] },
+          { book_id: 'b-owned', library_book_id: 'b-owned', title: 'Owned Entry', authors: ['Author One'], series_index: 3, state: 'In library', monitored: false, audiobookMonitored: true, formats: ['EPUB'] },
+        ],
+      });
+    }
+    if (url === '/api/books/b-dl/cancel' && init?.method === 'POST') {
+      return Response.json({ id: 'b-dl', monitored: false, audiobookMonitored: false, state: 'Not in library', cancelledRequests: 1, cancelledDownloads: 0, cancelledConversions: 0 });
+    }
+    if (url === '/api/books/b-mon/cancel' && init?.method === 'POST') {
+      return Response.json({ id: 'b-mon', monitored: false, audiobookMonitored: false, state: 'Not in library', cancelledRequests: 0, cancelledDownloads: 0, cancelledConversions: 0 });
+    }
+    if (url === '/api/books/b-owned/cancel' && init?.method === 'POST') {
+      return Response.json({ id: 'b-owned', monitored: false, audiobookMonitored: false, state: 'In library', cancelledRequests: 0, cancelledDownloads: 0, cancelledConversions: 0 });
+    }
+    throw new Error(`Unexpected fetch ${url} (${init?.method ?? 'GET'})`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  const { rerender } = render(
+    <ActivityRefreshContext.Provider value={refreshActivity}>
+      <BookActivityContext.Provider value={[]}>
+        <SeriesDetailModal title="Sequence" canRequest onClose={vi.fn()} />
+      </BookActivityContext.Provider>
+    </ActivityRefreshContext.Provider>
+  );
+
+  const list = await screen.findByRole('list', { name: 'Series reading order' });
+  const [dlRow, monRow, ownedRow] = within(list).getAllByRole('listitem');
+
+  // Downloading book has Cancel & Unmonitor
+  await user.click(within(dlRow).getByRole('button', { name: 'Cancel download and unmonitor Downloading Entry' }));
+  await waitFor(() => {
+    expect(within(dlRow).getByText('Not in library')).toBeInTheDocument();
+  });
+  expect(within(dlRow).getByRole('button', { name: 'Download' })).toBeInTheDocument();
+  expect(within(dlRow).queryByRole('button', { name: /Cancel download and unmonitor/i })).not.toBeInTheDocument();
+
+  // Monitored book has Unmonitor
+  await user.click(within(monRow).getByRole('button', { name: 'Unmonitor Monitored Entry' }));
+  await waitFor(() => {
+    expect(within(monRow).queryByRole('button', { name: 'Unmonitor Monitored Entry' })).not.toBeInTheDocument();
+  });
+
+  // Owned book with audiobookMonitored has Unmonitor
+  await user.click(within(ownedRow).getByRole('button', { name: 'Unmonitor Owned Entry' }));
+  await waitFor(() => {
+    expect(within(ownedRow).queryByRole('button', { name: 'Unmonitor Owned Entry' })).not.toBeInTheDocument();
+  });
+  expect(refreshActivity).toHaveBeenCalledTimes(3);
+
+  // Guests do not see cancel/unmonitor controls
+  rerender(
+    <ActivityRefreshContext.Provider value={refreshActivity}>
+      <BookActivityContext.Provider value={[]}>
+        <SeriesDetailModal title="Sequence" canManage={false} canRequest={false} onClose={vi.fn()} />
+      </BookActivityContext.Provider>
+    </ActivityRefreshContext.Provider>
+  );
+  expect(screen.queryByRole('button', { name: /Cancel download and unmonitor/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Unmonitor/i })).not.toBeInTheDocument();
 });
 
 

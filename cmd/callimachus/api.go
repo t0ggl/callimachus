@@ -227,6 +227,7 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/discover", s.handleDiscover)
 	mux.Handle("POST /api/books/resolve", auth.RequireRole(auth.RoleRequester)(http.HandlerFunc(s.handleResolveBook)))
 	mux.Handle("PUT /api/books/{id}/monitor", auth.RequireRole(auth.RoleRequester)(http.HandlerFunc(s.handleBookMonitor)))
+	mux.Handle("POST /api/books/{id}/cancel", auth.RequireRole(auth.RoleRequester)(http.HandlerFunc(s.handleCancelBook)))
 	mux.Handle("POST /api/books/{id}/refresh", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleRefreshBookMetadata)))
 	mux.HandleFunc("GET /api/books/{id}/cover", s.handleBookCover)
 	mux.Handle("POST /api/books/{id}/cover", auth.RequireRole(auth.RoleCurator)(http.HandlerFunc(s.handleUploadBookCover)))

@@ -1,5 +1,5 @@
 import { createContext } from 'react';
-import { AcquisitionStage, BookRequest, ConversionJob, DownloadItem, ImportLog } from '../types';
+import { AcquisitionStage, BookRequest, BookState, ConversionJob, DownloadItem, ImportLog } from '../types';
 
 export interface ActivityData {
   conversionJobs: ConversionJob[];
@@ -100,3 +100,85 @@ export function activityItems({ conversionJobs, downloads, logs, requests = [] }
 }
 
 export const BookActivityContext = createContext<ActivityItem[]>([]);
+export const ActivityRefreshContext = createContext<(() => void) | null>(null);
+
+export interface CancelBookResult {
+  id: string;
+  monitored: boolean;
+  audiobookMonitored: boolean;
+  state: BookState;
+  cancelledRequests: number;
+  cancelledDownloads: number;
+  cancelledConversions: number;
+}
+
+export function isInProgressBookState(state?: BookState): boolean {
+  return state === 'Downloading' || state === 'Searching' || state === 'Requested';
+}
+
+export function getActiveBookItems(bookId: string | undefined, activity: ActivityItem[]): ActivityItem[] {
+  if (!bookId) return [];
+  return activity.filter((item) => item.bookId === bookId && !isFinished(item));
+}
+
+export function hasActiveBookDownload(
+  bookId: string | undefined,
+  state: BookState | undefined,
+  activity: ActivityItem[],
+): boolean {
+  return isInProgressBookState(state) || getActiveBookItems(bookId, activity).length > 0;
+}
+
+export function activityCancelPath(
+  item: ActivityItem,
+  options: { allowRequest: boolean; canManageJobs: boolean },
+): string | undefined {
+  if (item.phase === 'Completed') return undefined;
+  if (item.request && options.allowRequest) {
+    return `/api/requests/${encodeURIComponent(item.request.id)}`;
+  }
+  if (options.canManageJobs) {
+    if (item.downloadId) return `/api/activity/downloads/${encodeURIComponent(item.downloadId)}`;
+    if (item.conversionId) return `/api/activity/conversions/${encodeURIComponent(item.conversionId)}`;
+  }
+  return undefined;
+}
+
+async function readAPIError(response: Response, fallback: string): Promise<string> {
+  try {
+    const contentType = response.headers?.get?.('Content-Type') ?? '';
+    if (contentType.includes('application/json')) {
+      const payload = (await response.json()) as { error?: string };
+      if (payload?.error?.trim()) return payload.error.trim();
+    } else if (typeof response.text === 'function') {
+      const text = (await response.text()).trim();
+      if (text) return text;
+    }
+  } catch {
+    // Fall through to generic message.
+  }
+  return fallback;
+}
+
+export async function cancelAndUnmonitorBook(bookId: string): Promise<CancelBookResult> {
+  const response = await fetch(`/api/books/${encodeURIComponent(bookId)}/cancel`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    const fallback =
+      response.status === 403
+        ? 'You do not have permission to cancel this download.'
+        : response.status === 409
+          ? 'Import is finishing; try again when it completes.'
+          : 'Unable to cancel download and unmonitor book. Try again.';
+    throw new Error(await readAPIError(response, fallback));
+  }
+  return (await response.json()) as CancelBookResult;
+}
+
+export async function cancelActivityPath(path: string): Promise<void> {
+  const response = await fetch(path, { method: 'DELETE' });
+  if (!response.ok && response.status !== 404) {
+    throw new Error(await readAPIError(response, 'Unable to cancel activity. Try again.'));
+  }
+}

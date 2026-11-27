@@ -525,4 +525,47 @@ describe('book discovery', () => {
     expect(within(seriesList).getByText('Monitored')).toBeInTheDocument();
     expect(add).not.toHaveBeenCalled();
   });
+
+  it('cancels an in-progress discovery download and re-enables Add', async () => {
+    const user = userEvent.setup({ delay: null });
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/discover?')) {
+        return Response.json([
+          {
+            title: 'Hyperion',
+            authors: ['Dan Simmons'],
+            year: 1989,
+            book_id: 'book-hyp',
+            requested_formats: ['epub'],
+            request_status: 'downloading',
+          },
+        ]);
+      }
+      if (url === '/api/books/book-hyp/cancel' && init?.method === 'POST') {
+        return Response.json({
+          id: 'book-hyp',
+          monitored: false,
+          audiobookMonitored: false,
+          state: 'Not in library',
+          cancelledRequests: 1,
+          cancelledDownloads: 0,
+          cancelledConversions: 0,
+        });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<DiscoveryResults query="Hyperion" defaultSearchFormat="ebook" canRequest onSubmitRequest={vi.fn()} />);
+
+    const cancelBtn = await screen.findByRole('button', { name: 'Cancel download and unmonitor Hyperion' });
+    expect(screen.getByRole('button', { name: 'Added Hyperion' })).toBeDisabled();
+    await user.click(cancelBtn);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Add Hyperion' })).toBeEnabled();
+    });
+    expect(screen.queryByRole('button', { name: 'Cancel download and unmonitor Hyperion' })).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith('/api/books/book-hyp/cancel', { method: 'POST' });
+  });
 });

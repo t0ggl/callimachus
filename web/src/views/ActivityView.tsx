@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useContext, useEffect, useState } from 'react';
 import {
   Activity,
   AlertCircle,
@@ -18,7 +18,15 @@ import {
   X,
 } from 'lucide-react';
 import { Book, BookRequest } from '../types';
-import { activityItems, ActivityData, ActivityItem, isFinished, percent } from '../utils/activity';
+import {
+  activityCancelPath,
+  activityItems,
+  ActivityData,
+  ActivityItem,
+  ActivityRefreshContext,
+  isFinished,
+  percent,
+} from '../utils/activity';
 import { AcquisitionProgress } from '../components/AcquisitionProgress';
 import { BookDetailModal } from '../components/BookDetailModal';
 import { ManualSearch } from '../components/ManualSearch';
@@ -113,13 +121,14 @@ function ActivityThumbnail({ coverUrl, format }: { coverUrl?: string; format?: s
   );
 }
 
-function ActivityDetails({ item, onClose, canManage, canRequest, isAdmin, onMetadataApplied }: {
+function ActivityDetails({ item, onClose, canManage, canRequest, isAdmin, onMetadataApplied, onItemCancelled }: {
   item: ActivityItem;
   onClose: () => void;
   canManage?: boolean;
   canRequest?: boolean;
   isAdmin?: boolean;
   onMetadataApplied?: () => void;
+  onItemCancelled?: (itemId: string) => void;
 }) {
   const [book, setBook] = useState<Book | null>(null);
   const [bookRevision, setBookRevision] = useState(0);
@@ -146,7 +155,8 @@ function ActivityDetails({ item, onClose, canManage, canRequest, isAdmin, onMeta
     onBookUpdated={(updated) => setBook(updated)}
     onBookDeleted={() => { onClose(); onMetadataApplied?.(); }}
     onMetadataApplied={() => { setBookRevision((value) => value + 1); onMetadataApplied?.(); }}
-    activity={<AcquisitionProgress key={item.id} item={item} />}
+    activity={<AcquisitionProgress key={item.id} item={item} canManage={canManage} canRequest={canRequest}
+      onCancelled={() => { onItemCancelled?.(item.id); onMetadataApplied?.(); onClose(); }} />}
   />;
 }
 
@@ -167,6 +177,7 @@ const FORMAT_FILTERS: { id: FormatFilter; label: string }[] = [
 ];
 
 export const ActivityView: React.FC<ActivityViewProps> = (props) => {
+  const refreshActivity = useContext(ActivityRefreshContext);
   const [manual, setManual] = useState<BookRequest | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [removed, setRemoved] = useState<string[]>([]);
@@ -209,6 +220,8 @@ export const ActivityView: React.FC<ActivityViewProps> = (props) => {
         throw new Error(message || 'Unable to remove activity. Try again.');
       }
       setRemoved(previous => [...previous, id]);
+      props.onMetadataApplied?.();
+      refreshActivity?.();
     } catch (error) {
       setErrors(previous => ({ ...previous, [id]: error instanceof Error ? error.message : 'Unable to remove activity.' }));
     } finally {
@@ -387,11 +400,7 @@ export const ActivityView: React.FC<ActivityViewProps> = (props) => {
             <ul aria-label="Book activity" className="divide-y divide-zinc-800/80 @4xl:grid @4xl:col-span-full @4xl:grid-cols-subgrid">
               {filteredItems.map(item => {
                 const allowRequest = Boolean(props.canRequest ?? props.canManageJobs);
-                const isCompleted = item.phase === 'Completed';
-                const path = isCompleted ? undefined :
-                  item.request && allowRequest ? `/api/requests/${encodeURIComponent(item.request.id)}` : props.canManageJobs ?
-                    item.downloadId ? `/api/activity/downloads/${encodeURIComponent(item.downloadId)}` :
-                      item.conversionId ? `/api/activity/conversions/${encodeURIComponent(item.conversionId)}` : undefined : undefined;
+                const path = activityCancelPath(item, { allowRequest, canManageJobs: Boolean(props.canManageJobs) });
                 const busy = pending.includes(item.id);
                 const action = busy ? 'Working…' : isFinished(item) ? 'Remove' : 'Cancel';
                 const tone = phaseStyle(item.phase);
@@ -500,6 +509,7 @@ export const ActivityView: React.FC<ActivityViewProps> = (props) => {
                         disabled={busy}
                         onClick={() => void dismiss(item.id, path)}
                         aria-label={[action, item.title, item.format].filter(Boolean).join(' ')}
+                        title={!isFinished(item) ? 'Cancel download and unmonitor book' : undefined}
                         className={isFinished(item)
                           ? secondaryButton
                           : `inline-flex items-center justify-center gap-1.5 min-h-11 sm:min-h-9 rounded-md border border-red-900/60 bg-red-950/30 px-2.5 py-1 text-xs font-medium text-red-300 transition-colors hover:bg-red-950/60 hover:text-red-200 disabled:opacity-50 disabled:cursor-not-allowed ${focusRing}`
@@ -523,6 +533,8 @@ export const ActivityView: React.FC<ActivityViewProps> = (props) => {
       book={manual.bookId ? { id: manual.bookId, title: manual.title, author: manual.author } : undefined}
       onClose={() => setManual(null)} />}
     {detail && <ActivityDetails key={detail.id} item={detail} canManage={props.canManageJobs} canRequest={Boolean(props.canRequest ?? props.canManageJobs)} isAdmin={props.isAdmin}
-      onMetadataApplied={props.onMetadataApplied} onClose={() => setSelected(null)} />}
+      onMetadataApplied={props.onMetadataApplied}
+      onItemCancelled={(itemId) => setRemoved(previous => (previous.includes(itemId) ? previous : [...previous, itemId]))}
+      onClose={() => setSelected(null)} />}
   </section>;
 };

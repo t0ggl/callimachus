@@ -148,4 +148,11 @@ func TestActivityScopeAndStandaloneDismissal(t *testing.T) {
 	if err := db.QueryRow("SELECT dismissed FROM conversion_queue WHERE id='standalone-done-job'").Scan(&dismissed); err != nil || dismissed != 0 {
 		t.Fatalf("completed conversion should not be dismissed: %d %v", dismissed, err)
 	}
+	var ebookMonitored, ebookExcluded bool
+	if err := db.QueryRow("SELECT ebook_monitored, ebook_monitoring_excluded FROM books WHERE id='b'").Scan(&ebookMonitored, &ebookExcluded); err != nil {
+		t.Fatal(err)
+	}
+	if ebookMonitored || !ebookExcluded {
+		t.Fatalf("standalone conversion cancellation should unmonitor and exclude book: monitored=%v excluded=%v", ebookMonitored, ebookExcluded)
+	}
 }

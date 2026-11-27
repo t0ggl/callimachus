@@ -1,9 +1,27 @@
 import { useContext, useEffect, useId, useState } from 'react';
-import { AlertCircle, Loader2 } from 'lucide-react';
+import { AlertCircle, Loader2, XCircle } from 'lucide-react';
 import { RequestEvent } from '../types';
-import { ActivityItem, BookActivityContext, isFinished, stages } from '../utils/activity';
+import {
+  activityCancelPath,
+  ActivityItem,
+  ActivityRefreshContext,
+  BookActivityContext,
+  cancelActivityPath,
+  isFinished,
+  stages,
+} from '../utils/activity';
 
-export function BookAcquisition({ bookId }: { bookId: string }) {
+export function BookAcquisition({
+  bookId,
+  canManage,
+  canRequest,
+  onCancelled,
+}: {
+  bookId: string;
+  canManage?: boolean;
+  canRequest?: boolean;
+  onCancelled?: (item: ActivityItem) => void;
+}) {
   const activity = useContext(BookActivityContext);
   const [seenIds, setSeenIds] = useState<string[]>([]);
   const items = activity.filter(item => item.bookId === bookId);
@@ -13,16 +31,40 @@ export function BookAcquisition({ bookId }: { bookId: string }) {
     setSeenIds([...seenIds, ...newIds]);
   }
   return items.filter(item => !isFinished(item) || seenIds.includes(item.id)).map(item => (
-    <AcquisitionProgress key={item.id} item={item} />
+    <AcquisitionProgress
+      key={item.id}
+      item={item}
+      canManage={canManage}
+      canRequest={canRequest}
+      onCancelled={onCancelled}
+    />
   ));
 }
 
-export function AcquisitionProgress({ item }: { item: ActivityItem }) {
+export function AcquisitionProgress({
+  item,
+  canManage,
+  canRequest,
+  onCancelled,
+}: {
+  item: ActivityItem;
+  canManage?: boolean;
+  canRequest?: boolean;
+  onCancelled?: (item: ActivityItem) => void;
+}) {
   const logId = useId();
+  const refreshActivity = useContext(ActivityRefreshContext);
   const [showLog, setShowLog] = useState(false);
   const [events, setEvents] = useState<RequestEvent[] | null>(null);
   const [logError, setLogError] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelled, setCancelled] = useState(false);
+  const [cancelError, setCancelError] = useState('');
   const requestId = item.request?.id;
+  const allowRequest = Boolean(canRequest ?? canManage);
+  const cancelPath = !cancelled && !isFinished(item)
+    ? activityCancelPath(item, { allowRequest, canManageJobs: Boolean(canManage) })
+    : undefined;
 
   useEffect(() => {
     if (!showLog || !requestId) return;
@@ -50,18 +92,62 @@ export function AcquisitionProgress({ item }: { item: ActivityItem }) {
     };
   }, [showLog, requestId]);
 
+  const handleCancel = async () => {
+    if (!cancelPath || cancelling) return;
+    setCancelling(true);
+    setCancelError('');
+    try {
+      await cancelActivityPath(cancelPath);
+      setCancelled(true);
+      onCancelled?.(item);
+      refreshActivity?.();
+    } catch (error) {
+      setCancelError(error instanceof Error ? error.message : 'Unable to cancel download. Try again.');
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   const current = stages.findIndex(step => step.id === item.stage);
 
   return (
     <section aria-label="Acquisition progress" className="space-y-4 border-t border-zinc-800 pt-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold text-zinc-100">{item.format || 'Acquisition'} · {item.phase}</h3>
-        {requestId && <button type="button" aria-expanded={showLog} aria-controls={logId}
-          className="inline-flex items-center justify-center min-h-11 sm:min-h-9 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-medium text-blue-300 transition-colors hover:bg-zinc-700 hover:text-blue-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300"
-          onClick={() => setShowLog(visible => !visible)}>
-          {showLog ? 'Hide Search Log' : 'View Search Log'}
-        </button>}
+        <h3 className="text-sm font-semibold text-zinc-100">{item.format || 'Acquisition'} · {cancelled ? 'Cancelled' : item.phase}</h3>
+        <div className="flex flex-wrap items-center gap-2">
+          {requestId && <button type="button" aria-expanded={showLog} aria-controls={logId}
+            className="inline-flex items-center justify-center min-h-11 sm:min-h-9 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-medium text-blue-300 transition-colors hover:bg-zinc-700 hover:text-blue-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300"
+            onClick={() => setShowLog(visible => !visible)}>
+            {showLog ? 'Hide Search Log' : 'View Search Log'}
+          </button>}
+          {cancelPath && (
+            <button
+              type="button"
+              disabled={cancelling}
+              onClick={() => void handleCancel()}
+              aria-label={`Cancel download and unmonitor ${item.title}${item.format ? ` (${item.format})` : ''}`}
+              className="inline-flex items-center justify-center gap-1.5 min-h-11 sm:min-h-9 rounded-md border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-xs font-medium text-red-300 transition-colors hover:bg-red-950/60 hover:text-red-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {cancelling ? (
+                <Loader2 className="w-3.5 h-3.5 motion-safe:animate-spin shrink-0" aria-hidden="true" />
+              ) : (
+                <XCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              )}
+              {cancelling ? 'Cancelling…' : 'Cancel & Unmonitor'}
+            </button>
+          )}
+        </div>
       </div>
+      {cancelled && (
+        <p role="status" className="text-xs text-zinc-300">
+          Download cancelled and book unmonitored.
+        </p>
+      )}
+      {cancelError && (
+        <p role="alert" className="text-xs text-red-300">
+          {cancelError}
+        </p>
+      )}
       <ol aria-label="Acquisition stages" className="grid grid-cols-2 gap-x-3 gap-y-3 sm:grid-cols-3 lg:grid-cols-6">
         {stages.map((step, index) => <li key={step.id} aria-current={index === current ? 'step' : undefined}
           className={`space-y-1.5 text-xs ${index === current ? 'font-semibold text-blue-200' : index < current ? 'text-zinc-300' : 'text-zinc-400'}`}>

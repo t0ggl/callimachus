@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import type { Book, BookState, ProviderSeriesMembership, SeriesSelection } from '../types';
 import {
   X,
+  XCircle,
   Layers,
   BookOpen,
   User,
@@ -11,12 +12,21 @@ import {
   ArrowUpRight,
   Download,
   Bell,
+  BellOff,
   Loader2,
 } from 'lucide-react';
 import { EntityLink, entityURL } from './EntityLink';
 import { BookDetailModal, resolveCatalogBook, type ResolveBookInput } from './BookDetailModal';
 export { resolveCatalogBook, type ResolveBookInput };
 import { ManualSearch } from './ManualSearch';
+import {
+  ActivityRefreshContext,
+  BookActivityContext,
+  cancelAndUnmonitorBook,
+  getActiveBookItems,
+  hasActiveBookDownload,
+  isInProgressBookState,
+} from '../utils/activity';
 
 export interface SeriesBookEntry {
   book_id?: string;
@@ -104,6 +114,8 @@ export function SeriesDetailModal({
   isAdmin,
 }: SeriesDetailModalProps) {
   const allowRequest = Boolean(canRequest ?? canManage);
+  const activity = useContext(BookActivityContext);
+  const refreshActivity = useContext(ActivityRefreshContext);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [data, setData] = useState<SeriesBooksData | null>(null);
   const [error, setError] = useState('');
@@ -309,6 +321,31 @@ export function SeriesDetailModal({
       updateBookEntry(index, { book_id: bookId, monitored: next });
     } catch (e) {
       setActionError((e as Error).message);
+    } finally {
+      setBusyIndex(null);
+    }
+  };
+
+  const handleCancelOrUnmonitorBook = async (book: SeriesBookEntry, index: number) => {
+    setBusyIndex(index);
+    setActionError('');
+    try {
+      let bookId = book.library_book_id || book.book_id;
+      if (!bookId) {
+        const resolved = await ensureBookRecord(book, index);
+        bookId = resolved.id;
+      }
+      const result = await cancelAndUnmonitorBook(bookId);
+      updateBookEntry(index, {
+        book_id: bookId,
+        library_book_id: result.state === 'In library' ? (book.library_book_id || bookId) : undefined,
+        monitored: result.monitored,
+        audiobookMonitored: result.audiobookMonitored,
+        state: result.state,
+      });
+      refreshActivity?.();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Unable to cancel download and unmonitor book.');
     } finally {
       setBusyIndex(null);
     }
@@ -561,6 +598,10 @@ export function SeriesDetailModal({
                       const formats = book.formats ?? [];
                       const state = book.state ?? (book.library_book_id ? 'In library' : 'Not in library');
                       const isOwned = state === 'In library';
+                      const bookId = book.library_book_id || book.book_id;
+                      const bookActiveItems = getActiveBookItems(bookId, activity);
+                      const inProgress = hasActiveBookDownload(bookId, state, activity);
+                      const monitored = Boolean(book.monitored || book.audiobookMonitored);
                       const rowBusy = busyIndex === i;
 
                       return (
@@ -639,13 +680,26 @@ export function SeriesDetailModal({
 
                               <div className="flex flex-wrap items-center gap-1.5">
                                 {isOwned ? (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-[11px] font-medium bg-emerald-950/80 text-emerald-300 border border-emerald-800/60">
-                                    <Check className="w-3 h-3" aria-hidden="true" />
-                                    In library
-                                  </span>
+                                  <>
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-[11px] font-medium bg-emerald-950/80 text-emerald-300 border border-emerald-800/60">
+                                      <Check className="w-3 h-3" aria-hidden="true" />
+                                      In library
+                                    </span>
+                                    {bookActiveItems.length > 0 && (
+                                      <span className="px-2 py-0.5 rounded-sm text-[11px] font-medium bg-blue-950/80 text-blue-300 border border-blue-800/60">
+                                        {bookActiveItems[0].phase}
+                                      </span>
+                                    )}
+                                  </>
                                 ) : (
                                   <>
-                                    <span className="px-2 py-0.5 rounded-sm text-[11px] font-medium bg-zinc-900 text-zinc-400 border border-zinc-800">
+                                    <span
+                                      className={`px-2 py-0.5 rounded-sm text-[11px] font-medium border ${
+                                        isInProgressBookState(state)
+                                          ? 'bg-blue-950/80 text-blue-300 border-blue-800/60'
+                                          : 'bg-zinc-900 text-zinc-400 border-zinc-800'
+                                      }`}
+                                    >
                                       {state}
                                     </span>
                                     {allowRequest && state === 'Not in library' && (
@@ -676,6 +730,38 @@ export function SeriesDetailModal({
                                       </button>
                                     )}
                                   </>
+                                )}
+                                {allowRequest && inProgress && (
+                                  <button
+                                    type="button"
+                                    disabled={rowBusy}
+                                    aria-label={`Cancel download and unmonitor ${book.title}`}
+                                    onClick={() => void handleCancelOrUnmonitorBook(book, i)}
+                                    className="inline-flex items-center gap-1 rounded-sm border border-red-900/60 bg-red-950/30 px-2 py-0.5 text-[11px] font-medium text-red-300 hover:bg-red-950/60 hover:text-red-200 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-50"
+                                  >
+                                    {rowBusy ? (
+                                      <Loader2 className="w-3 h-3 motion-safe:animate-spin" aria-hidden="true" />
+                                    ) : (
+                                      <XCircle className="w-3 h-3" aria-hidden="true" />
+                                    )}
+                                    {rowBusy ? 'Cancelling…' : 'Cancel & Unmonitor'}
+                                  </button>
+                                )}
+                                {allowRequest && !inProgress && monitored && (
+                                  <button
+                                    type="button"
+                                    disabled={rowBusy}
+                                    aria-label={`Unmonitor ${book.title}`}
+                                    onClick={() => void handleCancelOrUnmonitorBook(book, i)}
+                                    className="inline-flex items-center gap-1 rounded-sm border border-red-900/60 bg-red-950/30 px-2 py-0.5 text-[11px] font-medium text-red-300 hover:bg-red-950/60 hover:text-red-200 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-50"
+                                  >
+                                    {rowBusy ? (
+                                      <Loader2 className="w-3 h-3 motion-safe:animate-spin" aria-hidden="true" />
+                                    ) : (
+                                      <BellOff className="w-3 h-3" aria-hidden="true" />
+                                    )}
+                                    {rowBusy ? 'Updating…' : 'Unmonitor'}
+                                  </button>
                                 )}
                               </div>
                             </div>
@@ -730,6 +816,7 @@ export function SeriesDetailModal({
               series_index: membership ? membership.index : updated.seriesMemberships ? books[idx].series_index : updated.seriesIndex ?? null,
               monitored: updated.monitored,
               audiobookMonitored: updated.audiobookMonitored,
+              ...(updated.state ? { state: updated.state } : {}),
               ...(updated.coverUrl ? { cover_url: updated.coverUrl } : {}),
             });
           }

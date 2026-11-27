@@ -15,10 +15,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/config"
 	"github.com/t0ggl/callimachus/pkg/database"
 	"github.com/t0ggl/callimachus/pkg/metadata"
+	"github.com/t0ggl/callimachus/pkg/requests"
 )
 
 func (s *Server) newCatalogMonitor() *catalog.Monitor {
@@ -767,5 +769,306 @@ func (s *Server) handleBookMonitor(w http.ResponseWriter, r *http.Request) {
 		"id":                 id,
 		"monitored":          monitored,
 		"audiobookMonitored": audiobookMonitored,
+	})
+}
+
+func (s *Server) handleCancelBook(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		http.Error(w, "Database unavailable", http.StatusInternalServerError)
+		return
+	}
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok || user == nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		trimmed := strings.TrimPrefix(r.URL.Path, "/api/books/")
+		if strings.HasSuffix(trimmed, "/cancel") {
+			id = strings.TrimSpace(strings.TrimSuffix(trimmed, "/cancel"))
+		}
+	}
+	if id == "" || strings.Contains(id, "/") {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid book id"})
+		return
+	}
+
+	ctx := r.Context()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to cancel book"})
+		return
+	}
+	defer tx.Rollback()
+
+	var releaseDate string
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(release_date, '') FROM books WHERE id = ?`, id).Scan(&releaseDate)
+	if errors.Is(err, sql.ErrNoRows) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "book not found"})
+		return
+	}
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to load book"})
+		return
+	}
+
+	type activeReq struct {
+		id        int64
+		userID    string
+		finishing bool
+	}
+	reqRows, err := tx.QueryContext(ctx, `
+		SELECT r.id, r.user_id,
+		       (EXISTS(SELECT 1 FROM download_queue q WHERE q.request_id=r.id AND q.status='importing')
+		        OR EXISTS(SELECT 1 FROM conversion_queue c JOIN download_queue q ON q.id=c.download_id
+		                  WHERE q.request_id=r.id AND c.status='processing' AND c.current_stage='moving'))
+		FROM book_requests r
+		WHERE r.book_id=? AND r.dismissed=0 AND r.status != ?`, id, requests.StatusAvailable)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to inspect active requests"})
+		return
+	}
+	var activeRequests []activeReq
+	for reqRows.Next() {
+		var item activeReq
+		if err := reqRows.Scan(&item.id, &item.userID, &item.finishing); err != nil {
+			reqRows.Close()
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to inspect active requests"})
+			return
+		}
+		activeRequests = append(activeRequests, item)
+	}
+	if err := reqRows.Err(); err != nil {
+		reqRows.Close()
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to inspect active requests"})
+		return
+	}
+	reqRows.Close()
+
+	type activeJob struct {
+		id        string
+		finishing bool
+	}
+	dlRows, err := tx.QueryContext(ctx, `
+		SELECT q.id,
+		       (q.status='importing'
+		        OR EXISTS(SELECT 1 FROM conversion_queue c WHERE c.download_id=q.id AND c.status='processing' AND c.current_stage='moving'))
+		FROM download_queue q
+		JOIN book_editions e ON e.id=q.edition_id
+		WHERE e.book_id=? AND q.request_id IS NULL AND q.dismissed=0 AND q.status NOT IN ('completed','cancelled')`, id)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to inspect active downloads"})
+		return
+	}
+	var standaloneDownloads []activeJob
+	for dlRows.Next() {
+		var item activeJob
+		if err := dlRows.Scan(&item.id, &item.finishing); err != nil {
+			dlRows.Close()
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to inspect active downloads"})
+			return
+		}
+		standaloneDownloads = append(standaloneDownloads, item)
+	}
+	if err := dlRows.Err(); err != nil {
+		dlRows.Close()
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to inspect active downloads"})
+		return
+	}
+	dlRows.Close()
+
+	convRows, err := tx.QueryContext(ctx, `
+		SELECT c.id, (c.status='processing' AND c.current_stage='moving')
+		FROM conversion_queue c
+		JOIN book_editions e ON e.id=c.edition_id
+		WHERE e.book_id=? AND c.download_id IS NULL AND c.dismissed=0 AND c.status NOT IN ('completed','cancelled')`, id)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to inspect active conversions"})
+		return
+	}
+	var standaloneConversions []activeJob
+	for convRows.Next() {
+		var item activeJob
+		if err := convRows.Scan(&item.id, &item.finishing); err != nil {
+			convRows.Close()
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to inspect active conversions"})
+			return
+		}
+		standaloneConversions = append(standaloneConversions, item)
+	}
+	if err := convRows.Err(); err != nil {
+		convRows.Close()
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to inspect active conversions"})
+		return
+	}
+	convRows.Close()
+
+	isCurator := auth.HasRole(user.Role, auth.RoleCurator)
+	for _, req := range activeRequests {
+		if !isCurator && req.userID != user.ID && req.userID != "catalog-monitor" {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
+			return
+		}
+		if req.finishing {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": requests.ErrImportFinishing.Error()})
+			return
+		}
+	}
+	if (len(standaloneDownloads) > 0 || len(standaloneConversions) > 0) && !isCurator {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
+		return
+	}
+	for _, job := range standaloneDownloads {
+		if job.finishing {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": requests.ErrImportFinishing.Error()})
+			return
+		}
+	}
+	for _, job := range standaloneConversions {
+		if job.finishing {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": requests.ErrImportFinishing.Error()})
+			return
+		}
+	}
+
+	var cancelledReqIDs []int64
+	for _, req := range activeRequests {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE book_requests
+			SET dismissed=1,
+			    status=CASE WHEN status IN ('searching','downloading') THEN 'cancelled' ELSE status END,
+			    updated_at=CURRENT_TIMESTAMP
+			WHERE id=? AND dismissed=0 AND status != ?`, req.id, requests.StatusAvailable); err != nil {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to cancel book request"})
+			return
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE conversion_queue SET status='cancelled',updated_at=CURRENT_TIMESTAMP
+			WHERE status IN ('pending','processing') AND download_id IN (SELECT id FROM download_queue WHERE request_id=?)`, req.id); err != nil {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to cancel conversion"})
+			return
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE download_queue SET status='cancelled',updated_at=CURRENT_TIMESTAMP
+			WHERE request_id=? AND status NOT IN ('completed','failed','error','cancelled')`, req.id); err != nil {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to cancel download"})
+			return
+		}
+		cancelledReqIDs = append(cancelledReqIDs, req.id)
+	}
+
+	for _, dl := range standaloneDownloads {
+		if _, err := tx.ExecContext(ctx, `UPDATE download_queue SET dismissed=1, updated_at=CURRENT_TIMESTAMP,
+			status=CASE WHEN status IN ('failed','error') THEN status ELSE 'cancelled' END
+			WHERE id=?`, dl.id); err != nil {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to cancel download"})
+			return
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE conversion_queue SET status='cancelled',updated_at=CURRENT_TIMESTAMP
+			WHERE download_id=? AND status IN ('pending','processing')`, dl.id); err != nil {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to cancel conversion"})
+			return
+		}
+	}
+
+	for _, conv := range standaloneConversions {
+		if _, err := tx.ExecContext(ctx, `UPDATE conversion_queue SET dismissed=1, updated_at=CURRENT_TIMESTAMP,
+			status=CASE WHEN status='failed' THEN status ELSE 'cancelled' END
+			WHERE id=?`, conv.id); err != nil {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to cancel conversion"})
+			return
+		}
+	}
+
+	disabled := false
+	monitored, audiobookMonitored, err := database.SetBookMonitoring(ctx, tx, id, &disabled, &disabled)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to update book monitoring"})
+		return
+	}
+
+	var rawState string
+	if err := tx.QueryRowContext(ctx, `SELECT `+bookAvailabilitySQL+` FROM books b WHERE b.id=?`, id).Scan(&rawState); err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to read updated book state"})
+		return
+	}
+	today := time.Now().UTC().Format(time.DateOnly)
+	state := bookAvailability(rawState, cmp.Or(metadata.NormalizeReleaseDate(releaseDate, 0), releaseDate), 0, today)
+
+	if err := tx.Commit(); err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unable to save cancellation"})
+		return
+	}
+
+	if s.acquisition != nil {
+		for _, reqID := range cancelledReqIDs {
+			s.acquisition.Stop(reqID)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"id":                   id,
+		"monitored":            monitored,
+		"audiobookMonitored":   audiobookMonitored,
+		"state":                state,
+		"cancelledRequests":    len(cancelledReqIDs),
+		"cancelledDownloads":   len(standaloneDownloads),
+		"cancelledConversions": len(standaloneConversions),
 	})
 }

@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { EntityView } from '../views/EntityView';
+import { ActivityRefreshContext, BookActivityContext } from '../utils/activity';
 import type { Book } from '../types';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -345,5 +346,100 @@ it('omits standalone section when all author books belong to series and omits se
   const seriesHeadings = await screen.findAllByRole('heading', { level: 3 });
   expect(seriesHeadings.map((h) => h.textContent)).toEqual(['Only Series']);
   expect(screen.queryByRole('heading', { name: 'Standalone Books' })).not.toBeInTheDocument();
+});
+
+it.each([
+  { kind: 'series' as const, name: 'Sequence', list: 'Reading Order' },
+  { kind: 'authors' as const, name: 'Author One', list: 'Sequence' },
+])('cancels in-progress downloads and unmonitors individual books in $kind view', async ({ kind, name, list }) => {
+  const user = userEvent.setup({ delay: null });
+  const refreshActivity = vi.fn();
+  const onMetadataApplied = vi.fn();
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.startsWith('/api/catalog/entity?')) {
+      return Response.json({
+        monitored: true,
+        books: [
+          { id: 'b-dl', title: 'Downloading Book', authorName: 'Author One', seriesId: 's1', seriesTitle: 'Sequence', seriesIndex: 1, state: 'Downloading', monitored: true, audiobookMonitored: false, formats: [] },
+          { id: 'b-mon', title: 'Monitored Book', authorName: 'Author One', seriesId: 's1', seriesTitle: 'Sequence', seriesIndex: 2, state: 'Not in library', monitored: true, audiobookMonitored: true, formats: [] },
+          { id: 'b-owned-audio', title: 'Owned With Audio Download', authorName: 'Author One', seriesId: 's1', seriesTitle: 'Sequence', seriesIndex: 3, state: 'In library', monitored: false, audiobookMonitored: true, formats: ['EPUB'] },
+          { id: 'b-conflict', title: 'Importing Book', authorName: 'Author One', seriesId: 's1', seriesTitle: 'Sequence', seriesIndex: 4, state: 'Downloading', monitored: true, formats: [] },
+        ],
+      });
+    }
+    if (url === '/api/books/b-dl/cancel' && init?.method === 'POST') {
+      return Response.json({ id: 'b-dl', monitored: false, audiobookMonitored: false, state: 'Not in library', cancelledRequests: 1, cancelledDownloads: 0, cancelledConversions: 0 });
+    }
+    if (url === '/api/books/b-mon/cancel' && init?.method === 'POST') {
+      return Response.json({ id: 'b-mon', monitored: false, audiobookMonitored: false, state: 'Not in library', cancelledRequests: 0, cancelledDownloads: 0, cancelledConversions: 0 });
+    }
+    if (url === '/api/books/b-owned-audio/cancel' && init?.method === 'POST') {
+      return Response.json({ id: 'b-owned-audio', monitored: false, audiobookMonitored: false, state: 'In library', cancelledRequests: 1, cancelledDownloads: 0, cancelledConversions: 0 });
+    }
+    if (url === '/api/books/b-conflict/cancel' && init?.method === 'POST') {
+      return Response.json({ error: 'import is finishing; try again when it completes' }, { status: 409 });
+    }
+    throw new Error(`Unexpected fetch ${url} (${init?.method ?? 'GET'})`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  const activeItems = [
+    {
+      id: 'request:99',
+      bookId: 'b-owned-audio',
+      title: 'Owned With Audio Download',
+      format: 'Audiobook',
+      phase: 'Downloading',
+      stage: 'downloading' as const,
+      request: { id: '99', bookId: 'b-owned-audio', title: 'Owned With Audio Download', author: 'Author One', requestedBy: 'u1', requestType: 'audiobook' as const, status: 'downloading' as const, requestedAt: '' },
+    },
+  ];
+
+  const { rerender } = render(
+    <ActivityRefreshContext.Provider value={refreshActivity}>
+      <BookActivityContext.Provider value={activeItems}>
+        <EntityView kind={kind} name={name} canManage={false} canRequest onMetadataApplied={onMetadataApplied} />
+      </BookActivityContext.Provider>
+    </ActivityRefreshContext.Provider>
+  );
+
+  const bookList = await screen.findByRole('list', { name: list });
+  const [dlRow, monRow, ownedAudioRow, conflictRow] = within(bookList).getAllByRole('listitem');
+
+  // 1. Cancel & Unmonitor on downloading book
+  await user.click(within(dlRow).getByRole('button', { name: 'Cancel download and unmonitor Downloading Book' }));
+  await waitFor(() => {
+    expect(within(dlRow).getByText('Not in library')).toBeInTheDocument();
+  });
+  expect(within(dlRow).queryByRole('button', { name: /Cancel download and unmonitor/i })).not.toBeInTheDocument();
+  expect(within(dlRow).getByRole('button', { name: 'Download' })).toBeInTheDocument();
+
+  // 2. Unmonitor on monitored (non-downloading) book
+  await user.click(within(monRow).getByRole('button', { name: 'Unmonitor Monitored Book' }));
+  await waitFor(() => {
+    expect(within(monRow).queryByRole('button', { name: 'Unmonitor Monitored Book' })).not.toBeInTheDocument();
+  });
+
+  // 3. Cancel & Unmonitor on In library book with active secondary-format download
+  expect(within(ownedAudioRow).getByText('Downloading')).toBeInTheDocument();
+  await user.click(within(ownedAudioRow).getByRole('button', { name: 'Cancel download and unmonitor Owned With Audio Download' }));
+  expect(fetchMock).toHaveBeenCalledWith('/api/books/b-owned-audio/cancel', { method: 'POST' });
+
+  // 4. Error handling on 409 conflict
+  await user.click(within(conflictRow).getByRole('button', { name: 'Cancel download and unmonitor Importing Book' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('import is finishing');
+  expect(within(conflictRow).getByRole('button', { name: 'Cancel download and unmonitor Importing Book' })).toBeEnabled();
+  expect(refreshActivity).toHaveBeenCalledTimes(3);
+  expect(onMetadataApplied).toHaveBeenCalledTimes(3);
+
+  // 5. Guests cannot see cancel or unmonitor buttons
+  rerender(
+    <ActivityRefreshContext.Provider value={refreshActivity}>
+      <BookActivityContext.Provider value={activeItems}>
+        <EntityView kind={kind} name={name} canManage={false} canRequest={false} />
+      </BookActivityContext.Provider>
+    </ActivityRefreshContext.Provider>
+  );
+  expect(within(conflictRow).queryByRole('button', { name: /Cancel download and unmonitor/i })).not.toBeInTheDocument();
 });
 

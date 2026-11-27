@@ -1,7 +1,8 @@
 import { EntityLink } from './EntityLink';
-import { useState, useEffect, useRef } from 'react';
-import { Check, Plus, Loader2, BookOpen, AlertCircle, CheckCircle2, Search, Layers } from 'lucide-react';
+import { useContext, useState, useEffect, useRef } from 'react';
+import { Check, Plus, Loader2, BookOpen, AlertCircle, CheckCircle2, Search, Layers, XCircle } from 'lucide-react';
 import { ProviderSeriesMembership, RequestMetadata, RequestType, SeriesSelection } from '../types';
+import { ActivityRefreshContext, cancelAndUnmonitorBook } from '../utils/activity';
 import { SeriesBadge } from './SeriesBadge';
 import { SeriesDetailModal } from './SeriesDetailModal';
 
@@ -26,6 +27,7 @@ type Match = {
   title: string;
   authors?: string[];
   year: number;
+  book_id?: string;
   library_book_id?: string;
   requested_formats?: string[];
   request_status?: string;
@@ -182,6 +184,7 @@ function DiscoveryCover({ coverUrl, title, isSeries = false }: { coverUrl?: stri
 
 export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canManage, canRequest, isAdmin, onSubmitRequest, onOpenBook }: Props) {
   const allowRequest = canRequest ?? (canManage !== undefined ? canManage : true);
+  const refreshActivity = useContext(ActivityRefreshContext);
   const [selectedSeries, setSelectedSeries] = useState<SeriesSelection | null>(null);
   const [selectedFormat, setSelectedFormat] = useState<RequestType>();
   const format = selectedFormat ?? defaultSearchFormat;
@@ -196,12 +199,14 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
   const loadMoreControllerRef = useRef<AbortController | null>(null);
   const [retry, setRetry] = useState(0);
   const [addingKey, setAddingKey] = useState<string | null>(null);
+  const [cancellingKey, setCancellingKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [errorSource, setErrorSource] = useState<'search' | 'more' | 'add' | null>(null);
   const [message, setMessage] = useState('');
   const [searched, setSearched] = useState(false);
   const [addedFormats, setAddedFormats] = useState<Record<string, RequestFormat[]>>({});
+  const [cancelledKeys, setCancelledKeys] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     const controller = new AbortController();
@@ -219,6 +224,7 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
     setErrorSource(null);
     setMessage('');
     setSearched(false);
+    setCancelledKeys({});
     const trimmed = query.trim();
     setBusy(Boolean(trimmed));
     if (!trimmed) return;
@@ -370,6 +376,12 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
         series_memberships: m.series_memberships,
         synopsis: m.description,
       });
+      setCancelledKeys((prev) => {
+        if (!prev[itemKey]) return prev;
+        const next = { ...prev };
+        delete next[itemKey];
+        return next;
+      });
       setAddedFormats((prev) => {
         const existing = prev[itemKey] ?? [];
         const merged = Array.from(new Set<RequestFormat>([...existing, ...targetFormats]));
@@ -381,6 +393,30 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
       setErrorSource('add');
     } finally {
       setAddingKey(null);
+    }
+  };
+
+  const cancelDiscoveryBook = async (m: Match, itemKey: string, bookId: string) => {
+    setCancellingKey(itemKey);
+    setError('');
+    setErrorSource(null);
+    setMessage('');
+    try {
+      await cancelAndUnmonitorBook(bookId);
+      setCancelledKeys((prev) => ({ ...prev, [itemKey]: true }));
+      setAddedFormats((prev) => {
+        if (!prev[itemKey]) return prev;
+        const next = { ...prev };
+        delete next[itemKey];
+        return next;
+      });
+      setMessage(`Cancelled download and unmonitored ${m.title}.`);
+      refreshActivity?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unable to cancel download and unmonitor book.');
+      setErrorSource('add');
+    } finally {
+      setCancellingKey(null);
     }
   };
 
@@ -604,12 +640,16 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
           {visibleMatches.map((m, i) => {
             const authors = m.authors ?? [];
             const itemKey = `${m.title}\0${authors.join(', ')}`;
+            const serverRequested = cancelledKeys[itemKey] ? [] : normalizeRequestedFormats(m.requested_formats);
             const requestedForBook = new Set<RequestFormat>([
-              ...normalizeRequestedFormats(m.requested_formats),
+              ...serverRequested,
               ...(addedFormats[itemKey] ?? []),
             ]);
             const isAdded = requiredFormats(format).every((f) => requestedForBook.has(f));
             const isAddingThis = addingKey === itemKey;
+            const isCancellingThis = cancellingKey === itemKey;
+            const cancelBookId = m.book_id || m.library_book_id;
+            const canCancelMatch = Boolean(allowRequest && requestedForBook.size > 0 && cancelBookId);
 
             return (
               <li
@@ -684,52 +724,70 @@ export function DiscoveryResults({ query, defaultSearchFormat = 'ebook', canMana
                   </div>
                 </div>
 
-                {m.library_book_id ? (
-                  <button
-                    type="button"
-                    onClick={() => onOpenBook?.(m.library_book_id!)}
-                    className="shrink-0 self-center inline-flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-300 border border-emerald-800/60 hover:border-emerald-700/80 transition-colors whitespace-nowrap focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
-                  >
-                    <Check aria-hidden="true" className="w-3.5 h-3.5 shrink-0" />
-                    <span>In Library</span>
-                    <span className="sr-only">: {m.title}</span>
-                  </button>
-                ) : allowRequest ? (
-                  <button
-                    type="button"
-                    disabled={busy || Boolean(addingKey) || isAdded}
-                    onClick={() => void add(m)}
-                    aria-label={
-                      isAdded
-                        ? `Added ${m.title}`
-                        : isAddingThis
-                          ? `Adding ${m.title}`
-                          : `Add ${m.title}`
-                    }
-                    className={`shrink-0 self-center inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium transition-colors whitespace-nowrap focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 ${
-                      isAdded
-                        ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 cursor-default'
-                        : 'bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white border border-blue-500/40 shadow-xs disabled:opacity-50 disabled:cursor-not-allowed'
-                    }`}
-                  >
-                    {isAdded ? (
-                      <>
-                        <Check aria-hidden="true" className="w-3.5 h-3.5 shrink-0" />
-                        <span>Added</span>
-                      </>
-                    ) : isAddingThis ? (
-                      <>
-                        <Loader2 aria-hidden="true" className="w-3.5 h-3.5 shrink-0 animate-spin" />
-                        <span>Adding…</span>
-                      </>
-                    ) : (
-                      <>
-                        <Plus aria-hidden="true" className="w-3.5 h-3.5 shrink-0" />
-                        <span>Add</span>
-                      </>
-                    )}
-                  </button>
-                ) : null}
+                <div className="shrink-0 self-center flex flex-wrap items-center gap-1.5">
+                  {canCancelMatch && cancelBookId && (
+                    <button
+                      type="button"
+                      disabled={busy || Boolean(addingKey) || Boolean(cancellingKey)}
+                      onClick={() => void cancelDiscoveryBook(m, itemKey, cancelBookId)}
+                      aria-label={`Cancel download and unmonitor ${m.title}`}
+                      className="inline-flex items-center justify-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium border border-red-900/60 bg-red-950/30 text-red-300 hover:bg-red-950/60 hover:text-red-200 transition-colors whitespace-nowrap focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isCancellingThis ? (
+                        <Loader2 aria-hidden="true" className="w-3.5 h-3.5 shrink-0 motion-safe:animate-spin" />
+                      ) : (
+                        <XCircle aria-hidden="true" className="w-3.5 h-3.5 shrink-0" />
+                      )}
+                      <span>{isCancellingThis ? 'Cancelling…' : 'Cancel & Unmonitor'}</span>
+                    </button>
+                  )}
+                  {m.library_book_id ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenBook?.(m.library_book_id!)}
+                      className="shrink-0 self-center inline-flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-300 border border-emerald-800/60 hover:border-emerald-700/80 transition-colors whitespace-nowrap focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
+                    >
+                      <Check aria-hidden="true" className="w-3.5 h-3.5 shrink-0" />
+                      <span>In Library</span>
+                      <span className="sr-only">: {m.title}</span>
+                    </button>
+                  ) : allowRequest ? (
+                    <button
+                      type="button"
+                      disabled={busy || Boolean(addingKey) || Boolean(cancellingKey) || isAdded}
+                      onClick={() => void add(m)}
+                      aria-label={
+                        isAdded
+                          ? `Added ${m.title}`
+                          : isAddingThis
+                            ? `Adding ${m.title}`
+                            : `Add ${m.title}`
+                      }
+                      className={`shrink-0 self-center inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium transition-colors whitespace-nowrap focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 ${
+                        isAdded
+                          ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 cursor-default'
+                          : 'bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white border border-blue-500/40 shadow-xs disabled:opacity-50 disabled:cursor-not-allowed'
+                      }`}
+                    >
+                      {isAdded ? (
+                        <>
+                          <Check aria-hidden="true" className="w-3.5 h-3.5 shrink-0" />
+                          <span>Added</span>
+                        </>
+                      ) : isAddingThis ? (
+                        <>
+                          <Loader2 aria-hidden="true" className="w-3.5 h-3.5 shrink-0 animate-spin" />
+                          <span>Adding…</span>
+                        </>
+                      ) : (
+                        <>
+                          <Plus aria-hidden="true" className="w-3.5 h-3.5 shrink-0" />
+                          <span>Add</span>
+                        </>
+                      )}
+                    </button>
+                  ) : null}
+                </div>
               </li>
             );
           })}

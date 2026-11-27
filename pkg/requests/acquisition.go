@@ -184,7 +184,7 @@ func (a *Acquisition) run(ctx context.Context, id int64, work func(context.Conte
 	return err
 }
 
-func (a *Acquisition) stop(id int64) {
+func (a *Acquisition) Stop(id int64) {
 	a.activeMu.Lock()
 	defer a.activeMu.Unlock()
 	if a.activeID == id && a.cancel != nil {
