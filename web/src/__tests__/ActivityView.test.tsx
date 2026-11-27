@@ -631,3 +631,55 @@ it('cancels and unmonitors from BookDetailModal opened via ActivityView and stan
   });
   expect(fetchMock).toHaveBeenCalledWith('/api/books/book-direct/cancel', { method: 'POST' });
 });
+
+it('shows full book actions alongside acquisition progress when opening a book from ActivityView', async () => {
+  const user = userEvent.setup({ delay: null });
+  const ownedBook = {
+    id: 'book',
+    title: 'Dune',
+    authorId: 'a',
+    authorName: 'Frank Herbert',
+    state: 'In library',
+    monitored: false,
+    audiobookMonitored: false,
+    formats: ['EPUB'],
+    editions: [
+      {
+        id: 'ed-1',
+        format: 'EPUB',
+        assets: [{ id: 'asset-1', format: 'EPUB', filename: 'Dune.epub', fileSizeBytes: 1024 }],
+      },
+    ],
+  };
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url === '/api/books?id=book') return Response.json([ownedBook]);
+    if (url === '/api/requests') return Response.json([{ id: 1, book_id: 'book', format: 'epub' }]);
+    if (url === '/api/requests/1/candidates') return Response.json([]);
+    throw new Error(`Unexpected fetch ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<ActivityView {...base} canManageJobs canRequest isAdmin requests={[ebook]} />);
+  await user.click(screen.getByRole('button', { name: /Dune eBook · Evaluating releases/ }));
+
+  const dialog = await screen.findByRole('dialog', { name: 'Details for Dune' });
+  await within(dialog).findByText('Dune.epub');
+
+  // Activity progress section is still shown
+  expect(within(dialog).getByRole('list', { name: 'Acquisition stages' })).toBeInTheDocument();
+
+  // Monitor button for unowned format is shown next to Available files
+  expect(within(dialog).getByRole('button', { name: 'Monitor audiobook' })).toBeInTheDocument();
+
+  // Overflow menu exposes Refresh Metadata and Show Download Options in addition to Fix Metadata / Delete Book
+  await user.click(within(dialog).getByTestId('book-actions-menu-trigger'));
+  const menu = within(dialog).getByRole('menu', { name: 'Book actions' });
+  expect(within(menu).getByRole('menuitem', { name: 'Refresh Metadata' })).toBeInTheDocument();
+  expect(within(menu).getByRole('menuitem', { name: 'Fix Metadata' })).toBeInTheDocument();
+  expect(within(menu).getByRole('menuitem', { name: 'Show Download Options' })).toBeInTheDocument();
+  expect(within(menu).getByRole('menuitem', { name: 'Delete Book' })).toBeInTheDocument();
+
+  // Selecting Show Download Options opens the Download Options dialog
+  await user.click(within(menu).getByRole('menuitem', { name: 'Show Download Options' }));
+  expect(await screen.findByRole('dialog', { name: 'Download Options' })).toBeInTheDocument();
+});

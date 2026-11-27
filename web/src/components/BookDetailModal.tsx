@@ -229,10 +229,10 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
       !hasCancellableActivity
   );
   const showMonitorControl = allowRequest && monitorOptions.some(({ owned }) => !owned);
-  const showInlineDownloadOptions = Boolean(!activity && !subpanelOpen && allowRequest && !hasAssets);
-  const showOverflowRefresh = Boolean(!activity && canRefreshMetadata);
+  const showInlineDownloadOptions = Boolean(!subpanelOpen && allowRequest && !hasAssets);
+  const showOverflowRefresh = canRefreshMetadata;
   const showOverflowRepair = canRepair;
-  const showOverflowDownloadOptions = Boolean(!activity && allowRequest && hasAssets);
+  const showOverflowDownloadOptions = Boolean(allowRequest && hasAssets);
   const hasNonDestructiveOverflowActions =
     showOverflowRefresh || showOverflowRepair || showOverflowDownloadOptions;
   const hasOverflowActions = hasNonDestructiveOverflowActions || canDelete;
@@ -1003,7 +1003,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                 <HardDrive className="w-4 h-4 text-zinc-400" aria-hidden="true" />
                 Available files
               </h4>
-              {!activity && (showMonitorControl || showInlineDownloadOptions || showInlineCancelBook) && (
+              {(showMonitorControl || showInlineDownloadOptions || showInlineCancelBook) && (
                 <div className="flex flex-wrap items-center gap-2">
                   {showInlineCancelBook && (
                     <button
