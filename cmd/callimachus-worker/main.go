@@ -21,7 +21,8 @@ import (
 
 func run(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("callimachus-worker", flag.ContinueOnError)
-	dbFlag := fs.String("db", "", "Path to Callimachus SQLite database (default: $CALLIMACHUS_DATABASE_PATH or ./callimachus.db)")
+	configFlag := fs.String("config", "", "Directory containing configuration & database (override: $CALLIMACHUS_CONFIG_DIR)")
+	dbFlag := fs.String("db", "", "Path to Callimachus SQLite database (default: $CALLIMACHUS_DATABASE_PATH or <config>/callimachus.db)")
 	pollFlag := fs.Duration("poll", 100*time.Millisecond, "Queue polling interval (override: $CALLIMACHUS_WORKER_POLL_INTERVAL)")
 	workerIDFlag := fs.String("worker-id", "", "Worker identifier (override: $CALLIMACHUS_WORKER_ID)")
 	workDirFlag := fs.String("workdir", "", "Working directory for temporary conversion files (override: $CALLIMACHUS_WORKER_WORKDIR)")
@@ -30,7 +31,7 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 
-	boot := config.ResolveBootstrap("", *dbFlag, "", 0, false)
+	boot := config.ResolveBootstrap(*configFlag, *dbFlag, "", 0, false)
 
 	pollInterval := *pollFlag
 	if envVal, _, ok := config.LookupEnvForSetting("worker_poll_interval"); ok {

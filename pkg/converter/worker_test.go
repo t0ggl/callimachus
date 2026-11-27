@@ -40,6 +40,9 @@ func TestWorker_EndToEndWithMockRunner(t *testing.T) {
 	if err := os.WriteFile(stagedTrack, fixtureBytes, 0644); err != nil {
 		t.Fatalf("write staged track failed: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "playlist.m3u"), []byte("track01.mp3\n"), 0644); err != nil {
+		t.Fatalf("write playlist failed: %v", err)
+	}
 
 	targetPath := filepath.Join(targetDir, "Synthetic Author One", "Synthetic Book Alpha", "Synthetic Book Alpha - Synthetic Author One.m4b")
 
@@ -185,6 +188,9 @@ func TestWorker_EndToEndMultiStage(t *testing.T) {
 	}
 	if err := os.WriteFile(trackPath, fixtureBytes, 0644); err != nil {
 		t.Fatalf("write track failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "playlist.m3u"), []byte("01 - Synthetic Track.mp3\n"), 0644); err != nil {
+		t.Fatalf("write playlist failed: %v", err)
 	}
 
 	targetPath := filepath.Join(targetDir, "Synthetic Author One", "Synthetic Book Alpha", "Synthetic Book Alpha - Synthetic Author One.m4b")

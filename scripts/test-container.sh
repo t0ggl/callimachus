@@ -15,6 +15,7 @@ cleanup() {
 trap cleanup EXIT
 
 server=$(docker run -d --network none --read-only --tmpfs /tmp:mode=1777 \
+  -e CALLIMACHUS_EMBEDDED_WORKER=false \
   -e CALLIMACHUS_COMPLETED_DOWNLOAD_ROOT=/books/incoming \
   -e CALLIMACHUS_STAGING_POLL_INTERVAL=100ms \
   -e CALLIMACHUS_OPENLIBRARY_ENABLED=false \
