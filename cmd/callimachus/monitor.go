@@ -66,7 +66,7 @@ func (s *Server) searchMonitoredBook(ctx context.Context, id string) error {
 		AND NOT EXISTS(SELECT 1 FROM hidden_library_review review WHERE review.book_id=b.id AND review.kept=0)
 		AND NOT EXISTS(SELECT 1 FROM book_requests r WHERE r.book_id=b.id
 			AND (r.format=f.format OR r.format='both')
-			AND r.status IN ('searching','downloading','available','cancelled'))`, id); err != nil {
+			AND r.dismissed=0 AND r.status IN ('searching','downloading','available'))`, id); err != nil {
 		return err
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT r.id FROM book_requests r
@@ -752,16 +752,7 @@ func (s *Server) handleBookMonitor(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "A monitoring setting is required", http.StatusBadRequest)
 		return
 	}
-	var monitored, audiobookMonitored bool
-	err := s.db.QueryRowContext(r.Context(), `
-		UPDATE books
-		SET ebook_monitored = COALESCE(?, ebook_monitored),
-		    audiobook_monitored = COALESCE(?, audiobook_monitored),
-		    availability_checked_at = CASE WHEN ? OR ? THEN NULL ELSE availability_checked_at END,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = ?
-		RETURNING ebook_monitored, COALESCE(audiobook_monitored, ebook_monitored)`, input.Monitored, input.AudiobookMonitored,
-		input.Monitored, input.AudiobookMonitored, id).Scan(&monitored, &audiobookMonitored)
+	monitored, audiobookMonitored, err := s.db.SetBookMonitoring(r.Context(), id, input.Monitored, input.AudiobookMonitored)
 	if errors.Is(err, sql.ErrNoRows) {
 		http.Error(w, "Book not found", http.StatusNotFound)
 		return

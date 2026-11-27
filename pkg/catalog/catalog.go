@@ -563,7 +563,8 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 	return book, nil
 }
 
-// UpsertBook inserts or updates a book record.
+// UpsertBook inserts a book or updates its metadata. Monitoring on existing
+// books is updated separately so metadata refreshes cannot overwrite it.
 func (c *Catalog) UpsertBook(ctx context.Context, b *database.Book) error {
 	if b.ID == "" {
 		b.ID = uuid.NewString()
@@ -584,7 +585,6 @@ func (c *Catalog) UpsertBook(ctx context.Context, b *database.Book) error {
 			release_date = excluded.release_date,
 			synopsis = excluded.synopsis,
 			genres = excluded.genres,
-			ebook_monitored = excluded.ebook_monitored,
 			updated_at = CURRENT_TIMESTAMP;
 	`
 	_, err := c.db.ExecContext(ctx, query,

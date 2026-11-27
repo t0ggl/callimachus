@@ -176,8 +176,7 @@ func TestLibraryBulkMonitorBooksAndSeriesWithPartialFailures(t *testing.T) {
 		t.Fatal("expected monitorWake signal after bulk monitor")
 	}
 
-	// Now bulk unmonitor b1 and s1.
-	unmonBody := `{"action":"unmonitor","items":[{"kind":"book","id":"b1"},{"kind":"series","id":"s1"}]}`
+	unmonBody := `{"action":"unmonitor","items":[{"kind":"book","id":"b1"},{"kind":"book","id":"b3"},{"kind":"series","id":"s1"}]}`
 	req = httptest.NewRequest(http.MethodPost, "/api/library/bulk", bytes.NewBufferString(unmonBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(curator)
@@ -191,6 +190,14 @@ func TestLibraryBulkMonitorBooksAndSeriesWithPartialFailures(t *testing.T) {
 	}
 	if err := s.db.QueryRow(`SELECT monitored FROM series WHERE id = 's1'`).Scan(&s1Mon); err != nil || s1Mon {
 		t.Fatalf("s1 monitored after unmonitor = %v, want false", s1Mon)
+	}
+	enabled := true
+	if err := s.catalogMonitor.SetMonitoring(context.Background(), "series", "s1", &enabled, &enabled); err != nil {
+		t.Fatal(err)
+	}
+	var audio bool
+	if err := s.db.QueryRow(`SELECT ebook_monitored,audiobook_monitored FROM books WHERE id='b3'`).Scan(&b3Mon, &audio); err != nil || b3Mon || audio {
+		t.Fatalf("bulk exclusion after enabling both series formats: ebook=%v audio=%v err=%v", b3Mon, audio, err)
 	}
 }
 

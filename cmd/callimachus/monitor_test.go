@@ -319,6 +319,90 @@ func TestCatalogMonitoringRespectsOpenLibraryEnabled(t *testing.T) {
 	})
 }
 
+func TestBookMonitoringExclusionsSurviveParentRefreshes(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	if _, err := db.Exec(`
+		INSERT INTO authors(id,name,sort_name) VALUES('a','Author','Author');
+		INSERT INTO series(id,title,hardcover_id) VALUES('s','Sequence',42);
+		INSERT INTO books(id,author_id,title,series_id,ebook_monitored)
+		VALUES('excluded','a','Excluded Book',NULL,0),('known','a','Known Book','s',0);
+		INSERT INTO book_series(book_id,series_id,source) VALUES('excluded','s','match');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{db: db, monitorWake: make(chan struct{}, 1)}
+	s.acquisition = &requests.Acquisition{DB: db, Search: func(context.Context, string, string) ([]indexers.ProwlarrRelease, error) { return nil, nil }}
+	s.catalogMonitor = s.newCatalogMonitor()
+	ctx := context.Background()
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.catalogMonitor.Discover = func(context.Context, string, string, []metadata.BookMetadata) ([]metadata.BookMetadata, error) {
+		return nil, nil
+	}
+	seriesURL := "/api/catalog/entity?kind=series&name=Sequence&id=s"
+	authorURL := "/api/catalog/entity?kind=authors&name=Author"
+	put := func(handler http.HandlerFunc, url, body string, want int) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handler(w, httptest.NewRequest("PUT", url, strings.NewReader(body)))
+		if w.Code != want {
+			t.Fatalf("PUT %s %s: %d %s", url, body, w.Code, w.Body.String())
+		}
+	}
+	check := func(title string, ebook, audio bool) {
+		t.Helper()
+		var gotEbook, gotAudio bool
+		err := db.QueryRow(`SELECT ebook_monitored, COALESCE(audiobook_monitored,ebook_monitored) FROM books WHERE title=?`, title).Scan(&gotEbook, &gotAudio)
+		if err != nil || gotEbook != ebook || gotAudio != audio {
+			t.Fatalf("%s monitoring = (%v, %v), want (%v, %v), err=%v", title, gotEbook, gotAudio, ebook, audio, err)
+		}
+	}
+	put(s.handleCatalogMonitor, seriesURL, `{"monitored":true,"audiobookMonitored":true}`, 204)
+	check("Excluded Book", true, true)
+	check("Known Book", true, true)
+	if err := s.catalogMonitor.Tick(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO book_requests(user_id,book_id,title,author,format,status)
+		VALUES('catalog-monitor','excluded','Excluded Book','Author','both','searching')`); err != nil {
+		t.Fatal(err)
+	}
+	put(s.handleBookMonitor, "/api/books/excluded/monitor", `{"monitored":false}`, 200)
+	check("Excluded Book", false, true)
+
+	var pendingEbook int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM book_requests WHERE book_id='excluded' AND format IN ('epub','both') AND dismissed=0`).Scan(&pendingEbook); err != nil || pendingEbook != 0 {
+		t.Fatalf("pending eBook requests = %d, err=%v", pendingEbook, err)
+	}
+	put(s.handleCatalogMonitor, seriesURL, `{"monitored":false,"audiobookMonitored":false}`, 204)
+	put(s.handleCatalogMonitor, authorURL, `{"monitored":true}`, 204)
+	put(s.handleCatalogMonitor, seriesURL, `{"monitored":true,"audiobookMonitored":true}`, 204)
+	s.catalogMonitor.Discover = func(_ context.Context, kind, _ string, _ []metadata.BookMetadata) ([]metadata.BookMetadata, error) {
+		found := []metadata.BookMetadata{
+			{Title: "Excluded Book", Authors: []string{"Author"}, Series: "Sequence", HardcoverSeriesID: 42},
+			{Title: "Later Volume", Authors: []string{"Author"}, Series: "Sequence", HardcoverSeriesID: 42, PublishDate: "2030-03-01"},
+		}
+		if kind == "authors" {
+			found = append(found, metadata.BookMetadata{Title: "Later Standalone", Authors: []string{"Author"}, PublishDate: "2030-03-01"})
+		}
+		return found, nil
+	}
+	if err := s.catalogMonitor.Tick(ctx, now.AddDate(0, 1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	check("Excluded Book", false, true)
+	check("Later Volume", true, true)
+	check("Later Standalone", true, true)
+
+	put(s.handleBookMonitor, "/api/books/excluded/monitor", `{"monitored":true}`, 200)
+	if err := s.catalogMonitor.Tick(ctx, now.AddDate(0, 1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	check("Excluded Book", true, true)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM book_requests WHERE book_id='excluded' AND format='epub' AND dismissed=0`).Scan(&pendingEbook); err != nil || pendingEbook != 1 {
+		t.Fatalf("re-enabled eBook requests = %d, err=%v", pendingEbook, err)
+	}
+}
+
 func TestBookResolveAndMonitorEndpoints(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

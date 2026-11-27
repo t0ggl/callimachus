@@ -2,8 +2,11 @@ package requests
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
+
+	"github.com/t0ggl/callimachus/pkg/database"
 )
 
 var (
@@ -45,17 +48,17 @@ func (s *RequestService) dismiss(ctx context.Context, id int64) error {
 
 	// Once publishing to the library starts, allow it to finish before dismissal.
 	// Completed activities are kept as a permanent log and cannot be dismissed.
-	result, err := tx.ExecContext(ctx, `UPDATE book_requests SET dismissed=1,
+	var bookID *string
+	var format string
+	err = tx.QueryRowContext(ctx, `UPDATE book_requests SET dismissed=1,
 		status=CASE WHEN status IN ('searching','downloading') THEN 'cancelled' ELSE status END,
 		updated_at=CURRENT_TIMESTAMP
 		WHERE id=? AND dismissed=0 AND status != 'available'
 		AND NOT EXISTS(SELECT 1 FROM download_queue q WHERE q.request_id=book_requests.id AND q.status='importing')
 		AND NOT EXISTS(SELECT 1 FROM conversion_queue c JOIN download_queue q ON q.id=c.download_id
-			WHERE q.request_id=book_requests.id AND c.status='processing' AND c.current_stage='moving')`, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := result.RowsAffected(); n == 0 {
+			WHERE q.request_id=book_requests.id AND c.status='processing' AND c.current_stage='moving')
+		RETURNING book_id, format`, id).Scan(&bookID, &format)
+	if errors.Is(err, sql.ErrNoRows) {
 		var dismissed bool
 		var status string
 		if err := tx.QueryRowContext(ctx, "SELECT dismissed, status FROM book_requests WHERE id=?", id).Scan(&dismissed, &status); err != nil {
@@ -68,6 +71,22 @@ func (s *RequestService) dismiss(ctx context.Context, id int64) error {
 			return ErrCompletedActivity
 		}
 		return ErrImportFinishing
+	}
+	if err != nil {
+		return err
+	}
+	if bookID != nil {
+		var ebook, audiobook *bool
+		disabled := false
+		if format == FormatEPUB || format == FormatBoth {
+			ebook = &disabled
+		}
+		if format == FormatM4B || format == FormatBoth {
+			audiobook = &disabled
+		}
+		if _, _, err := database.SetBookMonitoring(ctx, tx, *bookID, ebook, audiobook); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE conversion_queue SET status='cancelled',updated_at=CURRENT_TIMESTAMP
 		WHERE status IN ('pending','processing') AND download_id IN (SELECT id FROM download_queue WHERE request_id=?)`, id); err != nil {

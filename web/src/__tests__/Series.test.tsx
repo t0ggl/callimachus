@@ -157,21 +157,28 @@ it.each([false, true])('toggles series eBook monitoring directly with audiobook 
   const user = userEvent.setup({ delay: null });
   const onClose = vi.fn();
   const onSeriesUpdated = vi.fn();
+  let monitored = false;
+  let bookMonitored = false;
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     if (url.startsWith('/api/series/books?')) {
       return Response.json({
         id: 'ser-hdm',
         title: 'His Dark Materials',
         authors: ['Philip Pullman'],
-        monitored: false,
+        monitored,
         audiobookMonitored,
         total_books: 3,
         owned_count: 0,
         complete: true,
-        books: [],
+        books: [
+          { book_id: 'first', title: 'Northern Lights', state: 'Scheduled', monitored: bookMonitored, formats: [] },
+          { book_id: 'excluded', title: 'The Subtle Knife', state: 'Scheduled', monitored: false, formats: [] },
+        ],
       });
     }
     if (url.startsWith('/api/catalog/entity?') && init?.method === 'PUT') {
+      monitored = JSON.parse(String(init.body)).monitored;
+      bookMonitored ||= monitored;
       return new Response(null, { status: 204 });
     }
     throw new Error(`Unexpected fetch ${url} (${init?.method ?? 'GET'})`);
@@ -198,6 +205,9 @@ it.each([false, true])('toggles series eBook monitoring directly with audiobook 
     expect(screen.getByRole('button', { name: 'Monitor series eBooks' })).toHaveAttribute('aria-pressed', 'true');
   });
   expect(screen.getByText('Series Monitored')).toBeInTheDocument();
+  const [inherited, excluded] = within(screen.getByRole('list', { name: 'Series reading order' })).getAllByRole('listitem');
+  expect(within(inherited).getByRole('button', { name: 'Monitor eBook' })).toHaveAttribute('aria-pressed', 'true');
+  expect(within(excluded).getByRole('button', { name: 'Monitor eBook' })).toHaveAttribute('aria-pressed', 'false');
   expect(onSeriesUpdated).toHaveBeenCalledWith(true);
   expect(onClose).not.toHaveBeenCalled();
 

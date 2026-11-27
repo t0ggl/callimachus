@@ -114,6 +114,11 @@ export function SeriesDetailModal({
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
   const [detailBook, setDetailBook] = useState<Book | null>(null);
   const [downloadBook, setDownloadBook] = useState<{ id: string; title: string; author: string } | null>(null);
+  const readingOrderParams = new URLSearchParams({ title });
+  if (id) readingOrderParams.set('id', id);
+  if (author) readingOrderParams.set('author', author);
+  if (hardcoverID) readingOrderParams.set('hardcover_id', String(hardcoverID));
+  const readingOrderUrl = `/api/series/books?${readingOrderParams}`;
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -141,11 +146,7 @@ export function SeriesDetailModal({
     setData(null);
     setError('');
     setActionError('');
-    const params = new URLSearchParams({ title });
-    if (id) params.set('id', id);
-    if (author) params.set('author', author);
-    if (hardcoverID) params.set('hardcover_id', String(hardcoverID));
-    fetch(`/api/series/books?${params}`, { signal: controller.signal })
+    fetch(readingOrderUrl, { signal: controller.signal })
       .then(async (res) => {
         if (!res.ok) throw new Error('Unable to load reading order. Try again.');
         return res.json();
@@ -155,7 +156,7 @@ export function SeriesDetailModal({
         if (!controller.signal.aborted) setError((e as Error).message);
       });
     return () => controller.abort();
-  }, [title, id, author, hardcoverID, attempt]);
+  }, [readingOrderUrl, attempt]);
 
   const displayTitle = data?.title || title;
   const books = data?.books ?? [];
@@ -340,6 +341,9 @@ export function SeriesDetailModal({
       }
       setData((prev) => (prev ? { ...prev, monitored: next } : prev));
       onSeriesUpdated?.(next || Boolean(data.audiobookMonitored));
+      const updated = await fetch(readingOrderUrl);
+      if (!updated.ok) throw new Error('Monitoring was saved. Refresh the reading order to see the updated books.');
+      setData(await updated.json());
     } catch (e) {
       setActionError((e as Error).message);
     } finally {

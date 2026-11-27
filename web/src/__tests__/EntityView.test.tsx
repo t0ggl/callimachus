@@ -15,16 +15,30 @@ it.each([
     seriesIndex: 0.5, state: 'In library', coverUrl: '/api/books/b/cover', formats: ['EPUB', 'M4B'], editions: [],
   };
   const upcoming = { ...book, id: 'next', title: 'Next Book', seriesIndex: 1, releaseDate: '2099-05-10', state: 'Scheduled', formats: [], coverUrl: undefined };
+  const excluded = { ...upcoming, id: 'excluded', title: 'Excluded Book', seriesIndex: 2 };
   const url = `/api/catalog/entity?kind=${kind}&name=${encodeURIComponent(name)}`;
-  const fetchMock = vi.fn().mockResolvedValueOnce({
-    ok: true,
-    json: async () => ({ monitored: false, photoUrl: '/author.jpg', books: [book, upcoming] }),
-  }).mockResolvedValue({ ok: true, json: async () => [upcoming] });
+  let monitored = false;
+  let audiobookMonitored = false;
+  const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
+    if (path === url && init?.method === 'PUT') {
+      const update = JSON.parse(String(init.body));
+      monitored = update.monitored ?? monitored;
+      audiobookMonitored = update.audiobookMonitored ?? audiobookMonitored;
+      return new Response(null, { status: 204 });
+    }
+    if (path === url) {
+      return Response.json({
+        monitored, audiobookMonitored, photoUrl: '/author.jpg',
+        books: [book, { ...upcoming, monitored }, excluded],
+      });
+    }
+    return Response.json([upcoming]);
+  });
   vi.stubGlobal('fetch', fetchMock);
   const { container } = render(<EntityView kind={kind} name={name} canManage />);
   expect(screen.getByRole('heading', { name, level: 1 })).toBeInTheDocument();
   const books = await screen.findByRole('list', { name: list });
-  const [owned, scheduled] = within(books).getAllByRole('listitem');
+  const [owned, scheduled, excludedRow] = within(books).getAllByRole('listitem');
   expect(owned).toHaveTextContent('Book 0.5');
   expect(owned).toHaveTextContent('In library');
   expect(within(owned).getByText('EPUB')).toBeInTheDocument();
@@ -33,17 +47,19 @@ it.each([
   expect(scheduled).toHaveTextContent('Scheduled');
   expect(scheduled).toHaveTextContent('No files');
   expect(books).not.toHaveTextContent(/monitored/i);
-  expect(screen.getByText('1 / 2 in library')).toBeInTheDocument();
+  expect(screen.getByText('1 / 3 in library')).toBeInTheDocument();
   expect(container.querySelector('header img')).toHaveAttribute('src', kind === 'authors' ? '/author.jpg' : '/api/books/b/cover');
   const toggle = screen.getByRole('checkbox', { name: kind === 'series' ? 'Monitor series eBooks' : `Monitor ${label}` });
   await user.click(toggle);
   expect(fetchMock).toHaveBeenCalledWith(url, expect.objectContaining({ method: 'PUT', body: '{"monitored":true}' }));
   expect(toggle).toBeChecked();
+  expect(within(scheduled).getByRole('button', { name: 'Monitor eBook' })).toHaveAttribute('aria-pressed', 'true');
+  expect(within(excludedRow).getByRole('button', { name: 'Monitor eBook' })).toHaveAttribute('aria-pressed', 'false');
   const audioToggle = screen.queryByRole('checkbox', { name: 'Monitor series audiobooks' });
   if (kind === 'series') {
     expect(audioToggle).not.toBeChecked();
     await user.click(audioToggle!);
-    expect(fetchMock).toHaveBeenLastCalledWith(url, expect.objectContaining({ method: 'PUT', body: '{"audiobookMonitored":true}' }));
+    expect(fetchMock).toHaveBeenCalledWith(url, expect.objectContaining({ method: 'PUT', body: '{"audiobookMonitored":true}' }));
     expect(audioToggle).toBeChecked();
     expect(toggle).toBeChecked();
   } else {

@@ -195,7 +195,12 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
         ...(action ? {} : { body: JSON.stringify({ [field]: !data?.[field] }) }),
       });
       if (!res.ok) throw new Error('Unable to save this action. Check your permissions and retry.');
-      if (!action) setData(prev => prev && ({ ...prev, [field]: !prev[field] }));
+      if (!action) {
+        setData(prev => prev && ({ ...prev, [field]: !prev[field] }));
+        const updated = await fetch(url);
+        if (!updated.ok) throw new Error('Monitoring was saved. Refresh this view to see the updated books.');
+        setData(await updated.json());
+      }
       setToast(action ? `${action === 'discover' ? 'New release check' : 'Download search'} queued. Results will appear after the background check. Refresh this view to see updates.` : 'Monitoring updated.');
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }

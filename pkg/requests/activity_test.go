@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/t0ggl/callimachus/pkg/auth"
+	"github.com/t0ggl/callimachus/pkg/catalog"
 	"github.com/t0ggl/callimachus/pkg/indexers"
 )
 
@@ -151,6 +152,26 @@ func TestCancelInterruptsSearch(t *testing.T) {
 	}
 	if w := activityRequest(mux, "GET", id, "reader", auth.RoleRequester); w.Code != 404 {
 		t.Fatalf("cancelled request accessible: %d", w.Code)
+	}
+
+	var bookID, authorID string
+	if err := a.DB.QueryRow(`SELECT b.id,b.author_id FROM books b JOIN book_requests r ON r.book_id=b.id WHERE r.id=?`, id).Scan(&bookID, &authorID); err != nil {
+		t.Fatal(err)
+	}
+	m := &catalog.Monitor{DB: a.DB}
+	if err := m.SetMonitored(ctx, "authors", authorID, true); err != nil {
+		t.Fatal(err)
+	}
+	var ebook, audio, excluded bool
+	if err := a.DB.QueryRow(`SELECT ebook_monitored,audiobook_monitored,ebook_monitoring_excluded FROM books WHERE id=?`, bookID).Scan(&ebook, &audio, &excluded); err != nil || ebook || !audio || !excluded {
+		t.Fatalf("after cancellation: ebook=%v audio=%v excluded=%v err=%v", ebook, audio, excluded, err)
+	}
+	svc := NewRequestService(a.DB)
+	if _, err := svc.SubmitRequest(ctx, CreateRequestInput{UserID: "reader", BookID: &bookID, Title: "Book", Author: "Author", Format: FormatEPUB}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.DB.QueryRow(`SELECT ebook_monitored,ebook_monitoring_excluded FROM books WHERE id=?`, bookID).Scan(&ebook, &excluded); err != nil || !ebook || excluded {
+		t.Fatalf("after explicit request: ebook=%v excluded=%v err=%v", ebook, excluded, err)
 	}
 }
 

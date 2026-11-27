@@ -197,19 +197,17 @@ func (s *Server) applyBulkMonitor(ctx context.Context, monitor interface {
 		}
 		res.Title = cmp.Or(title, res.Title)
 
-		updateRes, err := s.db.ExecContext(ctx, `
-			UPDATE books
-			SET ebook_monitored = ?,
-			    audiobook_monitored = audiobook_monitored AND ?,
-			    availability_checked_at = CASE WHEN ? THEN NULL ELSE availability_checked_at END,
-			    updated_at = CURRENT_TIMESTAMP
-			WHERE id = ?`, enabled, enabled, enabled, item.ID)
-		if err != nil {
-			res.Error = "Unable to update book monitoring."
+		var audiobook *bool
+		if !enabled {
+			audiobook = &enabled
+		}
+		_, _, err = s.db.SetBookMonitoring(ctx, item.ID, &enabled, audiobook)
+		if errors.Is(err, sql.ErrNoRows) {
+			res.Error = "Book not found."
 			return res
 		}
-		if n, err := updateRes.RowsAffected(); err == nil && n == 0 {
-			res.Error = "Book not found."
+		if err != nil {
+			res.Error = "Unable to update book monitoring."
 			return res
 		}
 		val := enabled

@@ -41,7 +41,7 @@ func (m *Monitor) SetMonitored(ctx context.Context, kind, id string, enabled boo
 	return m.SetMonitoring(ctx, kind, id, &enabled, nil)
 }
 
-// SetMonitoring updates the entity and marks its known missing books in one transaction.
+// SetMonitoring updates the entity and reconciles its known books in one transaction.
 func (m *Monitor) SetMonitoring(ctx context.Context, kind, id string, ebook, audiobook *bool) error {
 	if _, err := entityColumn(kind); err != nil {
 		return err
@@ -70,35 +70,73 @@ func (m *Monitor) SetMonitoring(ctx context.Context, kind, id string, ebook, aud
 		return sql.ErrNoRows
 	}
 
-	if kind == "authors" && ebook != nil && *ebook {
-		_, err = tx.ExecContext(ctx, `UPDATE books SET ebook_monitored=1, audiobook_monitored=CASE WHEN audiobook_monitored=1 THEN 1 END,
-			availability_checked_at=NULL, updated_at=CURRENT_TIMESTAMP
-			WHERE author_id=? AND ebook_monitored=0 AND NOT EXISTS (
-				SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id WHERE e.book_id=books.id
-			)`, id)
-	} else if kind == "series" {
-		for _, format := range []struct {
-			enabled *bool
-			column  string
-			audio   bool
-		}{{ebook, "ebook_monitored", false}, {audiobook, "audiobook_monitored", true}} {
-			if format.enabled == nil || !*format.enabled {
-				continue
-			}
-			_, err = tx.ExecContext(ctx, `UPDATE books SET `+format.column+`=1, availability_checked_at=NULL, updated_at=CURRENT_TIMESTAMP
-				WHERE id IN (SELECT book_id FROM book_series WHERE series_id=?) AND `+format.column+` IS NOT 1 AND NOT EXISTS (
-					SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id
-					WHERE e.book_id=books.id AND (e.format IN ('m4b','mp3'))=?
-				)`, id, format.audio)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	if err != nil {
+	if err := reconcileMonitoring(ctx, tx, kind, id, ""); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// reconcileMonitoring only adds missing formats. Disabling an entity stops future
+// inheritance while the saved per-book monitoring choices remain in effect.
+func reconcileMonitoring(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, kind, id, discoveredBookID string) error {
+	if kind == "authors" {
+		// Authors watch for either format until one is acquired. Keep the other
+		// format available when the user explicitly opted out of just one.
+		scope := "books.author_id=authors.id"
+		args := []any{id}
+		if discoveredBookID != "" {
+			// A provider can discover a coauthored book under its lead author.
+			scope = "books.id=?"
+			args = append(args, discoveredBookID)
+		}
+		_, err := db.ExecContext(ctx, `UPDATE books
+			SET ebook_monitored=NOT ebook_monitoring_excluded,
+			    audiobook_monitored=CASE
+			        WHEN audiobook_monitoring_excluded THEN 0
+			        WHEN ebook_monitoring_excluded OR audiobook_monitored=1 THEN 1
+			    END,
+			    availability_checked_at=NULL, updated_at=CURRENT_TIMESTAMP
+			FROM authors
+			WHERE authors.id=? AND authors.monitored=1 AND `+scope+`
+			  AND ebook_monitored=0
+			  AND (ebook_monitoring_excluded=0 OR (audiobook_monitoring_excluded=0 AND audiobook_monitored IS NOT 1))
+			  AND NOT EXISTS (
+			      SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id WHERE e.book_id=books.id
+			  )`, args...)
+		return err
+	}
+
+	for _, format := range []struct {
+		parent, exclusion string
+		audio             bool
+	}{
+		{"monitored", "ebook_monitoring_excluded", false},
+		{"audiobook_monitored", "audiobook_monitoring_excluded", true},
+	} {
+		assignment := "ebook_monitored=1, audiobook_monitored=COALESCE(books.audiobook_monitored, books.ebook_monitored)"
+		missing := "(ebook_monitored=0 OR audiobook_monitored IS NULL)"
+		if format.audio {
+			assignment = "audiobook_monitored=1"
+			missing = "audiobook_monitored IS NOT 1"
+		}
+		_, err := db.ExecContext(ctx, `UPDATE books
+			SET `+assignment+`, availability_checked_at=NULL, updated_at=CURRENT_TIMESTAMP
+			WHERE `+missing+` AND `+format.exclusion+`=0
+			  AND id IN (
+			      SELECT bs.book_id FROM book_series bs JOIN series s ON s.id=bs.series_id
+			      WHERE bs.series_id=? AND s.`+format.parent+`=1
+			  )
+			  AND NOT EXISTS (
+			      SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id=e.id
+			      WHERE e.book_id=books.id AND (e.format IN ('m4b','mp3'))=?
+			  )`, id, format.audio)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Monitor) Queue(ctx context.Context, kind, id, action string) error {
@@ -159,7 +197,7 @@ func (m *Monitor) Tick(ctx context.Context, now time.Time) error {
 			next = next.AddDate(0, 0, day-1)
 			if e.discover || ((e.ebook || e.audiobook) && (last.IsZero() || !now.Before(next))) {
 				slog.DebugContext(ctx, "catalog discovery check", "entity_kind", kind, "entity_id", e.id)
-				err := m.discover(ctx, kind, e.id, e.name, e.ebook, e.audiobook)
+				err := m.discover(ctx, kind, e.id, e.name)
 				if err != nil {
 					failures = append(failures, err.Error())
 					continue
@@ -196,7 +234,7 @@ func (m *Monitor) Tick(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-func (m *Monitor) discover(ctx context.Context, kind, id, name string, ebook, audiobook bool) error {
+func (m *Monitor) discover(ctx context.Context, kind, id, name string) error {
 	c := New(m.DB)
 	var known []metadata.BookMetadata
 	if kind == "series" {
@@ -214,10 +252,13 @@ func (m *Monitor) discover(ctx context.Context, kind, id, name string, ebook, au
 	if err != nil {
 		return err
 	}
-	return m.persist(ctx, kind, id, name, ebook, audiobook, known, found)
+	if err := m.persist(ctx, kind, id, name, known, found); err != nil {
+		return err
+	}
+	return reconcileMonitoring(ctx, m.DB, kind, id, "")
 }
 
-func (m *Monitor) persist(ctx context.Context, kind, id, name string, ebook, audiobook bool, known, found []metadata.BookMetadata) error {
+func (m *Monitor) persist(ctx context.Context, kind, id, name string, known, found []metadata.BookMetadata) error {
 	c := New(m.DB)
 	var authors []string
 	var providerID int
@@ -280,7 +321,7 @@ func (m *Monitor) persist(ctx context.Context, kind, id, name string, ebook, aud
 				primary = *b.PrimarySeries
 			}
 		}
-		book := &database.Book{AuthorID: author.ID, Title: b.Title, SeriesIndex: primary.Index, Synopsis: &b.Description, Monitored: ebook, AudiobookMonitored: audiobook, MonitorEitherFormat: kind == "authors" && ebook}
+		book := &database.Book{AuthorID: author.ID, Title: b.Title, SeriesIndex: primary.Index, Synopsis: &b.Description}
 		if kind == "series" && !b.ContextualSeries {
 			book.SeriesID = &id
 		} else {
@@ -346,6 +387,11 @@ func (m *Monitor) persist(ctx context.Context, kind, id, name string, ebook, aud
 		}
 		for _, format := range []string{"epub", "m4b"} {
 			if _, err = c.GetOrCreateEdition(ctx, &database.BookEdition{BookID: saved.ID, Format: format, Language: b.Language, PublicationDate: saved.ReleaseDate}); err != nil {
+				return err
+			}
+		}
+		if kind == "authors" && saved.AuthorID != id {
+			if err := reconcileMonitoring(ctx, m.DB, kind, id, saved.ID); err != nil {
 				return err
 			}
 		}
