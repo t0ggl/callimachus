@@ -452,6 +452,7 @@ describe('book discovery', () => {
   it('differentiates series from books in discovery results and opens SeriesDetailModal to monitor directly', async () => {
     const user = userEvent.setup({ delay: null });
     const add = vi.fn();
+    let monitored = false;
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string, init?: RequestInit) => {
@@ -484,7 +485,7 @@ describe('book discovery', () => {
           return Response.json({
             title: 'His Dark Materials',
             authors: ['Philip Pullman'],
-            monitored: false,
+            monitored,
             total_books: 3,
             owned_count: 0,
             complete: true,
@@ -494,6 +495,7 @@ describe('book discovery', () => {
           });
         }
         if (String(url).startsWith('/api/catalog/entity?') && init?.method === 'PUT') {
+          monitored = JSON.parse(String(init.body)).monitored;
           return new Response(null, { status: 204 });
         }
         throw new Error(`Unexpected fetch ${url}`);

@@ -414,7 +414,13 @@ func (a *Acquisition) process(ctx context.Context, id int64) error {
 	var attempts int
 	var searched *time.Time
 	var status string
-	if err := a.DB.QueryRowContext(ctx, `SELECT attempts,searched_at,status FROM book_requests WHERE id=? AND dismissed=0`, id).Scan(&attempts, &searched, &status); err != nil {
+	var shouldSearch bool
+	if err := a.DB.QueryRowContext(ctx, `SELECT attempts,searched_at,status,
+		user_id!='catalog-monitor' OR (
+			SELECT COUNT(*) FROM missing_monitored_formats f
+			WHERE f.book_id=book_requests.book_id AND book_requests.format IN (f.format, 'both')
+		) = CASE format WHEN 'both' THEN 2 ELSE 1 END
+		FROM book_requests WHERE id=? AND dismissed=0`, id).Scan(&attempts, &searched, &status, &shouldSearch); err != nil {
 		return err
 	}
 	// Reconcile the current attempt by its queue link. Older completed downloads
@@ -450,7 +456,12 @@ func (a *Acquisition) process(ctx context.Context, id int64) error {
 			}
 		}
 	}
-	if status == StatusAvailable {
+	if !shouldSearch && (state == "failed" || state == "error") {
+		_, err = a.DB.ExecContext(ctx, `UPDATE book_requests SET status='error',updated_at=CURRENT_TIMESTAMP
+			WHERE id=? AND dismissed=0`, id)
+		return err
+	}
+	if status == StatusAvailable || !shouldSearch {
 		return nil
 	}
 	if attempts >= 3 {

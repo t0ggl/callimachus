@@ -280,8 +280,11 @@ func (s *RequestService) insertRequests(ctx context.Context, input CreateRequest
 			return nil, err
 		}
 	} else {
-		if _, err := tx.ExecContext(ctx, `UPDATE books SET ebook_monitored=(ebook_monitored OR ?), audiobook_monitored=CASE WHEN ? THEN 1 ELSE audiobook_monitored END,
-			synopsis=COALESCE(NULLIF(synopsis,''), NULLIF(?,'')), updated_at=? WHERE id=?`,
+		if _, err := tx.ExecContext(ctx, `UPDATE books SET ebook_monitored=(ebook_monitored OR ?1),
+			audiobook_monitored=CASE WHEN ?2 THEN 1 ELSE audiobook_monitored END,
+			ebook_monitoring_excluded=ebook_monitoring_excluded AND NOT ?1,
+			audiobook_monitoring_excluded=audiobook_monitoring_excluded AND NOT ?2,
+			synopsis=COALESCE(NULLIF(synopsis,''), NULLIF(?3,'')), updated_at=?4 WHERE id=?5`,
 			slices.Contains(needed, FormatEPUB), slices.Contains(needed, FormatM4B), input.Synopsis, now, input.BookID); err != nil {
 			return nil, err
 		}
