@@ -504,3 +504,164 @@ func TestMonitoringFiltersCollectionsOnPersistAndAvailabilityCheck(t *testing.T)
 		t.Fatalf("expected 2 real books searched, got %v", searched)
 	}
 }
+
+func TestGetOrCreateBookDeduplicatesMalformedAndSeriesIndex(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	c := catalog.New(db)
+
+	author, err := c.GetOrCreateAuthor(ctx, "James S. A. Corey")
+	if err != nil {
+		t.Fatal(err)
+	}
+	series, err := c.GetOrCreateSeries(ctx, "The Expanse", author.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	idx3 := 3.0
+	b1, err := c.GetOrCreateBook(ctx, &database.Book{
+		AuthorID:    author.ID,
+		SeriesID:    &series.ID,
+		SeriesIndex: &idx3,
+		Title:       "Abaddon's Gate (The Expanse Book 3)",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Malformed truncated variant (missing closing paren, nil index) must match b1 and not create a duplicate.
+	b2, err := c.GetOrCreateBook(ctx, &database.Book{
+		AuthorID: author.ID,
+		SeriesID: &series.ID,
+		Title:    "Abaddon's Gate (The Expanse Book 3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b2.ID != b1.ID || b2.Title != "Abaddon's Gate" {
+		t.Fatalf("expected truncated variant to reuse %q with cleaned title, got id=%q title=%q", b1.ID, b2.ID, b2.Title)
+	}
+
+	// Clean canonical title reuses the same book and preserves clean title.
+	b3, err := c.GetOrCreateBook(ctx, &database.Book{
+		AuthorID:    author.ID,
+		SeriesID:    &series.ID,
+		SeriesIndex: &idx3,
+		Title:       "Abaddon's Gate",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b3.ID != b1.ID || b3.Title != "Abaddon's Gate" {
+		t.Fatalf("expected canonical title to reuse %q, got id=%q title=%q", b1.ID, b3.ID, b3.Title)
+	}
+
+	// Series index deduplication: another title at Book 2 collapses to one row with the cleaner title.
+	idx2 := 2.0
+	b2a, err := c.GetOrCreateBook(ctx, &database.Book{
+		AuthorID:    author.ID,
+		SeriesID:    &series.ID,
+		SeriesIndex: &idx2,
+		Title:       "Caliban's War (The Expanse Book 2)",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2b, err := c.GetOrCreateBook(ctx, &database.Book{
+		AuthorID:    author.ID,
+		SeriesID:    &series.ID,
+		SeriesIndex: &idx2,
+		Title:       "Caliban's War",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b2b.ID != b2a.ID || b2b.Title != "Caliban's War" {
+		t.Fatalf("expected Book 2 index deduplication to keep %q with clean title, got id=%q title=%q", b2a.ID, b2b.ID, b2b.Title)
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM books`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("expected exactly 2 books in DB, got %d (err=%v)", count, err)
+	}
+}
+
+func TestMonitoringSeriesDeduplicatesMalformedTitlesAndPreventsDuplicateDownloads(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.NewTestDB(t)
+	c := catalog.New(db)
+
+	author, err := c.GetOrCreateAuthor(ctx, "James S. A. Corey")
+	if err != nil {
+		t.Fatal(err)
+	}
+	series, err := c.GetOrCreateSeries(ctx, "The Expanse", author.ID, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate pre-existing legacy DB rows:
+	// - Book 1 owned cleanly
+	// - Book 3 owned with parenthesized series suffix + an unowned malformed duplicate missing closing paren
+	// - Book 2 unowned with both a malformed duplicate and a clean entry
+	for _, query := range []string{
+		`INSERT INTO books(id,author_id,series_id,series_index,title,ebook_monitored) VALUES
+			('b1-owned','` + author.ID + `','` + series.ID + `',1,'Leviathan Wakes',0),
+			('b3-owned','` + author.ID + `','` + series.ID + `',3,'Abaddon''s Gate (The Expanse Book 3)',0),
+			('b3-malformed','` + author.ID + `','` + series.ID + `',3,'Abaddon''s Gate (The Expanse Book 3',1),
+			('b2-malformed','` + author.ID + `','` + series.ID + `',2,'Caliban''s War (The Expanse Book 2',1),
+			('b2-clean','` + author.ID + `','` + series.ID + `',2,'Caliban''s War',1)`,
+		`INSERT INTO book_editions(id,book_id,format) VALUES ('e1','b1-owned','epub'),('e3','b3-owned','epub')`,
+		`INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES ('m1','e1','/library/Leviathan.epub',1),('m3','e3','/library/Abaddon.epub',1)`,
+	} {
+		if _, err := db.ExecContext(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	idx2, idx3, idx4 := 2.0, 3.0, 4.0
+	var searched []string
+	m := &catalog.Monitor{
+		DB: db,
+		Discover: func(context.Context, string, string, []metadata.BookMetadata) ([]metadata.BookMetadata, error) {
+			return []metadata.BookMetadata{
+				{Title: "Caliban's War (The Expanse Book 2", Authors: []string{"James S. A. Corey"}, Series: "The Expanse", SeriesIndex: &idx2, HardcoverSeriesID: 42, ContextualSeries: true},
+				{Title: "Caliban's War", Authors: []string{"James S. A. Corey"}, Series: "The Expanse", SeriesIndex: &idx2, HardcoverSeriesID: 42, ContextualSeries: true},
+				{Title: "Abaddon's Gate (The Expanse Book 3", Authors: []string{"James S. A. Corey"}, Series: "The Expanse", SeriesIndex: &idx3, HardcoverSeriesID: 42, ContextualSeries: true},
+				{Title: "Abaddon's Gate", Authors: []string{"James S. A. Corey"}, Series: "The Expanse", SeriesIndex: &idx3, HardcoverSeriesID: 42, ContextualSeries: true},
+				{Title: "Cibola Burn (The Expanse Book 4", Authors: []string{"James S. A. Corey"}, Series: "The Expanse", SeriesIndex: &idx4, HardcoverSeriesID: 42, ContextualSeries: true},
+				{Title: "Cibola Burn (The Expanse Book 4)", Authors: []string{"James S. A. Corey"}, Series: "The Expanse", SeriesIndex: &idx4, HardcoverSeriesID: 42, ContextualSeries: true},
+				{Title: "Cibola Burn", Authors: []string{"James S. A. Corey"}, Series: "The Expanse", SeriesIndex: &idx4, HardcoverSeriesID: 42, ContextualSeries: true},
+			}, nil
+		},
+		Search: func(_ context.Context, id string) error {
+			searched = append(searched, id)
+			return nil
+		},
+	}
+
+	if err := m.SetMonitored(ctx, "series", series.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Tick(ctx, time.Date(2028, 5, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Book 4 should have created exactly ONE row in book_series with clean title "Cibola Burn".
+	var b4ID, b4Title string
+	var b4Count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM book_series WHERE series_id = ? AND series_index = 4`, series.ID).Scan(&b4Count); err != nil || b4Count != 1 {
+		t.Fatalf("expected 1 row for Book 4, got %d (err=%v)", b4Count, err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT b.id, b.title FROM books b JOIN book_series bs ON bs.book_id = b.id WHERE bs.series_id = ? AND bs.series_index = 4`, series.ID).Scan(&b4ID, &b4Title); err != nil {
+		t.Fatal(err)
+	}
+	if b4Title != "Cibola Burn" {
+		t.Fatalf("Book 4 title = %q, want %q", b4Title, "Cibola Burn")
+	}
+
+	// Only Book 2 (clean entry) and Book 4 should be searched; Book 3's malformed duplicate and Book 2's malformed duplicate must NOT trigger downloads!
+	if len(searched) != 2 || searched[0] != "b2-clean" || searched[1] != b4ID {
+		t.Fatalf("searched = %v, want [b2-clean %s]", searched, b4ID)
+	}
+}

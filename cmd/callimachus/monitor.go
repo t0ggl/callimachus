@@ -285,6 +285,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 		State              string          `json:"state"`
 		Formats            []string        `json:"formats"`
 		CoverURL           string          `json:"coverUrl,omitempty"`
+		malformedTitle     bool
 	}
 	books := []entry{}
 	rows, err := s.db.QueryContext(r.Context(), `
@@ -320,6 +321,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 		}
 		b.Date = cmp.Or(metadata.NormalizeReleaseDate(b.Date, 0), b.Date)
 		b.State = bookAvailability(b.State, b.Date, 0, today)
+		b.malformedTitle = metadata.IsMalformedTitle(b.Title)
 		books = append(books, b)
 	}
 	if rows.Err() != nil {
@@ -369,6 +371,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 		}
 		mergeLocalEntry := func(dst *entry, src entry) {
 			owned := dst.State == "In library"
+			dst.Title = selectBestSeriesBookTitle(dst.Title, src.Title, seriesTitle, owned && !dst.malformedTitle)
 			if dst.Subtitle == "" && src.Subtitle != "" {
 				dst.Subtitle = src.Subtitle
 			}
@@ -419,12 +422,15 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 				bestIdx, bestScore := -1, 0
 				for i := range kept {
 					score := seriesBookMatch(toSeriesBook(kept[i]), sb.BookMetadata, seriesTitle)
+					if kept[i].State == "In library" && b.State == "In library" && score < 6 {
+						continue
+					}
 					if score > bestScore {
 						bestIdx, bestScore = i, score
 					}
 				}
 				if bestIdx >= 0 {
-					if preferLocalSeriesBook(sb, toSeriesBook(kept[bestIdx])) {
+					if preferLocalSeriesBook(sb, toSeriesBook(kept[bestIdx]), seriesTitle) {
 						prev := kept[bestIdx]
 						kept[bestIdx] = b
 						mergeLocalEntry(&kept[bestIdx], prev)
@@ -487,6 +493,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 								}
 							}
 							owned := books[best].State == "In library"
+							books[best].Title = selectBestSeriesBookTitle(books[best].Title, remote.Title, seriesTitle, owned && !books[best].malformedTitle)
 							if books[best].Subtitle == "" && remote.Subtitle != "" {
 								books[best].Subtitle = remote.Subtitle
 							}
@@ -506,7 +513,7 @@ func (s *Server) handleCatalogEntity(w http.ResponseWriter, r *http.Request) {
 								idx := *remote.SeriesIndex
 								books[best].Index = &idx
 							}
-							mergeSeriesBookMetadata(&localBooks[best], remote)
+							mergeSeriesBookMetadata(&localBooks[best], remote, seriesTitle)
 							continue
 						}
 						authorName := ""

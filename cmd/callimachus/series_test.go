@@ -446,7 +446,7 @@ func TestSeriesBooks_LegendsOfTheRiftwarDeduplicationAndOwnedMetadata(t *testing
 	if b2.Subtitle != "Remote Subtitle 2" {
 		t.Fatalf("expected missing subtitle backfilled on b2, got %q", b2.Subtitle)
 	}
-	if b3.Title != "Legends of the Riftwar, Book 3: Jimmy the Hand" || b3.State != "Not in library" || b3.HardcoverID != "103" {
+	if b3.Title != "Jimmy the Hand" || b3.State != "Not in library" || b3.HardcoverID != "103" {
 		t.Fatalf("unexpected book 3 merge: %+v", b3)
 	}
 
@@ -469,7 +469,7 @@ func TestSeriesBooks_LegendsOfTheRiftwarDeduplicationAndOwnedMetadata(t *testing
 	}
 }
 
-func TestSeriesBooks_ProtectsDistinctBooksSharingIndex(t *testing.T) {
+func TestSeriesBooks_DeduplicatesBySeriesIndexWhileProtectingDistinctParts(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	root := t.TempDir()
 
@@ -477,10 +477,11 @@ func TestSeriesBooks_ProtectsDistinctBooksSharingIndex(t *testing.T) {
 		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','test')`,
 		`INSERT INTO authors(id,name,sort_name) VALUES('a','Shared Author','Author, Shared')`,
 		`INSERT INTO series(id,title,status,monitored) VALUES('s','Shared Index Saga','ongoing',1)`,
-		// Distinct local books sharing index 1, distinct inline subtitles sharing index 2, distinct parts sharing index 3.
-		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b1_a','a','First Distinct Work','s',1)`,
-		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b1_b','a','Companion Edition','s',1)`,
-		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b2_a','a','Chronicle: Part Alpha','s',2)`,
+		// Duplicate unowned titles sharing index 1 and index 2 collapse to one book per index;
+		// distinct explicit numbered parts sharing index 3 remain separate.
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b1_a','a','First Distinct Work (Shared Index Saga Book 1','s',1)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b1_b','a','First Distinct Work','s',1)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b2_a','a','Chronicle: Part Alpha (Shared Index Saga Book 2)','s',2)`,
 		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b2_b','a','Chronicle: Part Beta','s',2)`,
 		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b3_a','a','The Long Tale (Part 1)','s',3)`,
 		`INSERT INTO books(id,author_id,title,series_id,series_index) VALUES('b3_b','a','The Long Tale (Part 2)','s',3)`,
@@ -493,7 +494,7 @@ func TestSeriesBooks_ProtectsDistinctBooksSharingIndex(t *testing.T) {
 	mt := testutil.NewMockTransport()
 	mt.PanicOnUnmocked = true
 	mockSeriesLookup(t, mt, `{"data":{"named":[{"id":7,"name":"Shared Index Saga","books_count":4}],"linked":[{"id":7,"name":"Shared Index Saga","books_count":4}]}}`, `{"data":{"books":[
-		{"id":201,"title":"Remote Unrelated Book","contributions":[{"author":{"name":"Shared Author"}}],"book_series":[{"series_position":1,"series":{"id":7}}]}
+		{"id":201,"title":"First Distinct Work","contributions":[{"author":{"name":"Shared Author"}}],"book_series":[{"series_position":1,"series":{"id":7}}]}
 	]}}`)
 
 	s := &Server{
@@ -511,9 +512,118 @@ func TestSeriesBooks_ProtectsDistinctBooksSharingIndex(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	// Expect all 6 local distinct entries + 1 distinct remote entry at #1 = 7 books.
-	if len(result.Books) != 7 {
-		t.Fatalf("expected 7 distinct books preserved despite shared indices, got %d: %+v", len(result.Books), result.Books)
+	// Expect 1 book at index 1, 1 book at index 2, and 2 explicit numbered parts at index 3 = 4 books.
+	if len(result.Books) != 4 {
+		t.Fatalf("expected 4 books after series index deduplication, got %d: %+v", len(result.Books), result.Books)
+	}
+	if result.Books[0].Title != "First Distinct Work" || result.Books[1].Title != "Chronicle: Part Beta" {
+		t.Fatalf("expected cleanest titles chosen per index, got %+v", result.Books)
+	}
+}
+
+func TestSeriesBooks_DeduplicatesMalformedAndTruncatedExpanseTitles(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	root := t.TempDir()
+
+	bookPath := filepath.Join(root, "James S. A. Corey", "The Expanse", "Abaddon's Gate (2013)", "Abaddon's Gate (2013) - James S. A. Corey.epub")
+	if err := os.MkdirAll(filepath.Dir(bookPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bookPath, []byte("epub"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, query := range []string{
+		`INSERT INTO settings(key,value) VALUES('hardcover_api_key','test')`,
+		`INSERT INTO authors(id,name,sort_name) VALUES('corey','James S. A. Corey','Corey, James S. A.')`,
+		`INSERT INTO series(id,title,status,monitored) VALUES('expanse','The Expanse','completed',1)`,
+		// Book 2: unowned malformed truncated title + unowned balanced parenthetical title (no explicit index on truncated row).
+		`INSERT INTO books(id,author_id,title,series_id,series_index,ebook_monitored) VALUES('b2_bad','corey','Caliban''s War (The Expanse Book 2','expanse',NULL,1)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index,ebook_monitored) VALUES('b2_paren','corey','Caliban''s War (The Expanse Book 2)','expanse',2,1)`,
+		// Book 3: owned book with malformed truncated title + unowned balanced duplicate.
+		`INSERT INTO books(id,author_id,title,series_id,series_index,synopsis,ebook_monitored) VALUES('b3_owned_bad','corey','Abaddon''s Gate (The Expanse Book 3','expanse',3,'Owned synopsis',0)`,
+		`INSERT INTO books(id,author_id,title,series_id,series_index,ebook_monitored) VALUES('b3_dup','corey','Abaddon''s Gate (The Expanse Book 3)','expanse',3,1)`,
+		`INSERT INTO book_editions(id,book_id,format) VALUES('ed3','b3_owned_bad','epub')`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES('ma3','ed3',?,4)`, bookPath); err != nil {
+		t.Fatal(err)
+	}
+
+	mt := testutil.NewMockTransportForTest(t)
+	mockSeriesLookup(t, mt, `{"data":{"named":[{"id":7,"name":"The Expanse","books_count":3}],"linked":[{"id":7,"name":"The Expanse","books_count":3}]}}`, `{"data":{"books":[
+		{"id":301,"title":"Leviathan Wakes","contributions":[{"author":{"name":"James S. A. Corey"}}],"book_series":[{"series_position":1,"series":{"id":7}}]},
+		{"id":302,"title":"Caliban's War","contributions":[{"author":{"name":"James S. A. Corey"}}],"book_series":[{"series_position":2,"series":{"id":7}}]},
+		{"id":303,"title":"Abaddon's Gate","description":"Remote blurb","contributions":[{"author":{"name":"James S. A. Corey"}}],"book_series":[{"series_position":3,"series":{"id":7}}]}
+	]}}`)
+
+	s := &Server{
+		db:                 db,
+		prowlarrHTTPClient: mt.Client(),
+		baseOverrides:      config.Overrides{LibraryRoot: root},
+	}
+
+	// Verify /api/series/books online merge.
+	w := httptest.NewRecorder()
+	s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=The+Expanse", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var res seriesBooksResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Books) != 3 || res.OwnedCount != 1 {
+		t.Fatalf("expected 3 deduplicated books with 1 owned, got len=%d owned=%d: %+v", len(res.Books), res.OwnedCount, res.Books)
+	}
+	if res.Books[0].Title != "Leviathan Wakes" || res.Books[1].Title != "Caliban's War" || res.Books[2].Title != "Abaddon's Gate" {
+		t.Fatalf("expected clean deduplicated titles, got [%q, %q, %q]", res.Books[0].Title, res.Books[1].Title, res.Books[2].Title)
+	}
+	if res.Books[2].LibraryBookID != "b3_owned_bad" || res.Books[2].State != "In library" || res.Books[2].Description != "Owned synopsis" || len(res.Books[2].Formats) != 1 || res.Books[2].Formats[0] != "EPUB" {
+		t.Fatalf("owned book 3 metadata/files not preserved: %+v", res.Books[2])
+	}
+
+	// Verify /api/catalog/entity?kind=series also deduplicates and selects clean titles.
+	w = httptest.NewRecorder()
+	s.handleCatalogEntity(w, httptest.NewRequest("GET", "/api/catalog/entity?kind=series&name=The+Expanse", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("catalog entity returned %d: %s", w.Code, w.Body.String())
+	}
+	var entity struct {
+		Books []struct {
+			ID    string `json:"id"`
+			Title string `json:"title"`
+			State string `json:"state"`
+		} `json:"books"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &entity); err != nil {
+		t.Fatal(err)
+	}
+	if len(entity.Books) != 3 || entity.Books[1].Title != "Caliban's War" || entity.Books[2].Title != "Abaddon's Gate" || entity.Books[2].ID != "b3_owned_bad" || entity.Books[2].State != "In library" {
+		t.Fatalf("unexpected catalog entity books: %+v", entity.Books)
+	}
+
+	// Offline fallback (Hardcover error) still deduplicates malformed/balanced local duplicates and picks balanced titles.
+	mt.RegisterString("/v1/graphql", 200, `{"errors":[{"message":"Offline"}]}`, nil)
+	w = httptest.NewRecorder()
+	s.handleSeriesBooks(w, httptest.NewRequest("GET", "/api/series/books?title=The+Expanse", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("offline series books returned %d: %s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Books) != 2 || res.OwnedCount != 1 {
+		t.Fatalf("offline expected 2 deduplicated local books, got %d: %+v", len(res.Books), res.Books)
+	}
+	if res.Books[0].Title != "Caliban's War (The Expanse Book 2)" || res.Books[1].Title != "Abaddon's Gate (The Expanse Book 3)" {
+		t.Fatalf("offline should prefer balanced over truncated titles, got [%q, %q]", res.Books[0].Title, res.Books[1].Title)
+	}
+	if res.Books[1].LibraryBookID != "b3_owned_bad" || res.Books[1].State != "In library" {
+		t.Fatalf("offline lost owned book 3 identity: %+v", res.Books[1])
 	}
 }
 

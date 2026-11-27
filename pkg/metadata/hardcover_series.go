@@ -38,6 +38,7 @@ fragment SeriesBookFields on books {
 	books := make([]BookMetadata, 0, len(raw))
 	seen := make(map[int]bool)
 	positions := make(map[float64]int)
+	byTitle := make(map[string]int)
 	ranked := make([]hardcoverBookNode, 0, len(raw))
 	for _, b := range raw {
 		membership := hardcoverSeriesMembership(b, series.ID)
@@ -75,20 +76,42 @@ fragment SeriesBookFields on books {
 				count = membership.Series.Canonical.BooksCount
 			}
 		}
+		position := membership.SeriesPosition
+		if position == nil {
+			if ser, idx := ExtractSeriesFromTitle(book.Title); idx != nil && (ser == "" || seriesMembershipKey(ser) == seriesMembershipKey(title)) {
+				position = idx
+			}
+		}
 		applyHardcoverMembership(&book, hardcoverBookSeries{
-			SeriesPosition: membership.SeriesPosition,
+			SeriesPosition: position,
 			Series:         hardcoverSeries{ID: series.ID, Name: title, BooksCount: count},
 		})
-		book.AddSeriesMembership(SeriesMembership{Title: title, Index: membership.SeriesPosition, HardcoverID: series.ID})
+		book.AddSeriesMembership(SeriesMembership{Title: title, Index: position, HardcoverID: series.ID})
+		titleKey := CanonicalSeriesBookTitleKey(book.Title, title)
 		if book.SeriesIndex != nil {
-			position := *book.SeriesIndex
-			if i, ok := positions[position]; ok {
-				if preferHardcoverSeriesBook(b, ranked[i]) {
-					books[i], ranked[i] = book, b
-				}
+			pos := *book.SeriesIndex
+			if i, ok := positions[pos]; ok {
+				mergeHardcoverSeriesDuplicate(&books[i], &ranked[i], book, b, title)
 				continue
 			}
-			positions[position] = len(books)
+			if titleKey != "" {
+				if i, ok := byTitle[titleKey]; ok && books[i].SeriesIndex == nil && books[i].Title != book.Title {
+					mergeHardcoverSeriesDuplicate(&books[i], &ranked[i], book, b, title)
+					positions[pos] = i
+					continue
+				}
+			}
+			positions[pos] = len(books)
+		} else if titleKey != "" {
+			if i, ok := byTitle[titleKey]; ok && books[i].Title != book.Title {
+				mergeHardcoverSeriesDuplicate(&books[i], &ranked[i], book, b, title)
+				continue
+			}
+		}
+		if titleKey != "" {
+			if _, exists := byTitle[titleKey]; !exists {
+				byTitle[titleKey] = len(books)
+			}
 		}
 		books = append(books, book)
 		ranked = append(ranked, b)
@@ -220,11 +243,16 @@ func hardcoverSeriesLanguage(b hardcoverBookNode) (english, known bool) {
 		language.Code2 != "" || language.Code3 != ""
 }
 
-func preferHardcoverSeriesBook(candidate, current hardcoverBookNode) bool {
+func preferHardcoverSeriesBook(candidate, current hardcoverBookNode, seriesTitle string) bool {
 	candidateEnglish, _ := hardcoverSeriesLanguage(candidate)
 	currentEnglish, _ := hardcoverSeriesLanguage(current)
 	if candidateEnglish != currentEnglish {
 		return candidateEnglish
+	}
+	candidateMalformed := IsMalformedTitle(candidate.Title)
+	currentMalformed := IsMalformedTitle(current.Title)
+	if candidateMalformed != currentMalformed {
+		return !candidateMalformed
 	}
 	if candidate.UsersCount != current.UsersCount {
 		return candidate.UsersCount > current.UsersCount
@@ -234,7 +262,43 @@ func preferHardcoverSeriesBook(candidate, current hardcoverBookNode) bool {
 	if candidateCover != currentCover {
 		return candidateCover
 	}
-	return candidate.Description != "" && current.Description == ""
+	if (candidate.Description != "") != (current.Description != "") {
+		return candidate.Description != ""
+	}
+	return PreferBookTitle(candidate.Title, current.Title, seriesTitle)
+}
+
+func mergeHardcoverSeriesDuplicate(dstBook *BookMetadata, dstNode *hardcoverBookNode, candBook BookMetadata, candNode hardcoverBookNode, seriesTitle string) {
+	if preferHardcoverSeriesBook(candNode, *dstNode, seriesTitle) {
+		prevBook := *dstBook
+		*dstBook, *dstNode = candBook, candNode
+		candBook = prevBook
+	}
+	if PreferBookTitle(candBook.Title, dstBook.Title, seriesTitle) {
+		dstBook.Title = candBook.Title
+	}
+	if dstBook.SeriesIndex == nil && candBook.SeriesIndex != nil {
+		idx := *candBook.SeriesIndex
+		dstBook.SeriesIndex = &idx
+	}
+	if dstBook.CoverURL == "" && candBook.CoverURL != "" {
+		dstBook.CoverURL = candBook.CoverURL
+	}
+	if dstBook.Description == "" && candBook.Description != "" {
+		dstBook.Description = candBook.Description
+	}
+	if dstBook.Subtitle == "" && candBook.Subtitle != "" {
+		dstBook.Subtitle = candBook.Subtitle
+	}
+	if merged := MergeReleaseDate(dstBook.PublishDate, NormalizeReleaseDate(candBook.PublishDate, candBook.Year)); merged != "" {
+		dstBook.PublishDate = merged
+	}
+	if dstBook.Year == 0 && candBook.Year > 0 {
+		dstBook.Year = candBook.Year
+	}
+	for _, membership := range candBook.SeriesMemberships {
+		dstBook.AddSeriesMembership(membership)
+	}
 }
 
 // SearchSeries searches Hardcover series by query string and returns ranked series metadata.

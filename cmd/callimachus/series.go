@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +26,7 @@ type seriesBook struct {
 	State              string   `json:"state"`
 	Monitored          bool     `json:"monitored"`
 	AudiobookMonitored bool     `json:"audiobookMonitored"`
+	malformedTitle     bool
 }
 
 type seriesBooksResponse struct {
@@ -164,6 +165,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 				b.Authors = []string{}
 			}
 			b.BookID = id
+			b.malformedTitle = metadata.IsMalformedTitle(b.Title)
 			b.Series = seriesTitle
 			b.Formats = formatsByBook[id]
 			if b.Formats == nil {
@@ -240,7 +242,7 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 							}
 						}
 					}
-					mergeSeriesBookMetadata(&books[best], remote)
+					mergeSeriesBookMetadata(&books[best], remote, seriesTitle)
 					continue
 				}
 				if remote.Authors == nil {
@@ -328,32 +330,12 @@ func (s *Server) handleSeriesBooks(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-var (
-	seriesTitleAnnotation = regexp.MustCompile(`(?:\s+(?:\([^()]*\)|\[[^\[\]]*\]))+\s*$`)
-	seriesTitlePunct      = strings.NewReplacer(",", " ", ".", " ", ";", " ", ":", " ", "-", " ", "–", " ", "—", " ")
-)
-
 func stripSeriesTitleAnnotation(title string) string {
-	stripped := strings.TrimSpace(seriesTitleAnnotation.ReplaceAllString(title, ""))
-	if stripped == "" {
-		return strings.TrimSpace(title)
-	}
-	return stripped
+	return metadata.StripTitleAnnotation(title)
 }
 
 func seriesTitleKey(title string) string {
-	key := metadata.NormalizeTitleKey(title)
-	if key == "" {
-		return ""
-	}
-	key = seriesTitlePunct.Replace(key)
-	fields := strings.Fields(key)
-	for i, f := range fields {
-		if f == "vol" {
-			fields[i] = "volume"
-		}
-	}
-	return strings.Join(fields, " ")
+	return metadata.SeriesTitleKey(title)
 }
 
 func isSeriesOrVolumePrefix(prefix, seriesTitle string) bool {
@@ -412,59 +394,88 @@ func seriesAuthorsOverlap(a, b []string) bool {
 	return false
 }
 
-// seriesBookMatch conservatively scores whether a local series book and a remote candidate
-// represent the same work, preferring owned books while protecting distinct books sharing an index.
+func selectBestSeriesBookTitle(dstTitle, srcTitle, seriesTitle string, owned bool) string {
+	if dstTitle == "" {
+		return srcTitle
+	}
+	if srcTitle == "" {
+		return dstTitle
+	}
+	if owned {
+		if metadata.IsMalformedTitle(dstTitle) && !metadata.IsMalformedTitle(srcTitle) {
+			return srcTitle
+		}
+		return dstTitle
+	}
+	if metadata.PreferBookTitle(srcTitle, dstTitle, seriesTitle) {
+		return srcTitle
+	}
+	return dstTitle
+}
+
+// seriesBookMatch scores whether a local series book and a remote/local candidate
+// represent the same work, using series index as a high-quality deduplication indicator
+// while preferring title matches and owned books.
 func seriesBookMatch(local seriesBook, remote metadata.BookMetadata, seriesTitle string) int {
-	if local.SeriesIndex != nil && remote.SeriesIndex != nil && *local.SeriesIndex != *remote.SeriesIndex {
-		return 0
+	sameIndex := false
+	if local.SeriesIndex != nil && remote.SeriesIndex != nil {
+		if math.Abs(*local.SeriesIndex-*remote.SeriesIndex) > 1e-6 {
+			return 0
+		}
+		sameIndex = true
 	}
 	if len(local.Authors) > 0 && len(remote.Authors) > 0 && !seriesAuthorsOverlap(local.Authors, remote.Authors) {
 		return 0
 	}
 
 	// Distinct numbered parts in titles (e.g. "Chronicle (Part 1)" vs "Chronicle (Part 2)") must not collapse.
-	if _, lIdx := metadata.ExtractSeriesFromTitle(local.Title); lIdx != nil {
-		if _, rIdx := metadata.ExtractSeriesFromTitle(remote.Title); rIdx != nil && *lIdx != *rIdx {
-			return 0
-		}
+	if metadata.DistinctTitlePartIndices(local.Title, remote.Title) {
+		return 0
 	}
 
 	localMain, localSub := seriesBookTitleParts(local.Title, local.Authors, seriesTitle)
 	remoteMain, remoteSub := seriesBookTitleParts(remote.Title, remote.Authors, seriesTitle)
 	localKey := seriesTitleKey(localMain)
 	remoteKey := seriesTitleKey(remoteMain)
-	if localKey == "" || remoteKey == "" || localKey != remoteKey {
-		return 0
+
+	titleMatched := localKey != "" && remoteKey != "" && localKey == remoteKey &&
+		(localSub == "" || remoteSub == "" || seriesTitleKey(localSub) == seriesTitleKey(remoteSub))
+
+	if titleMatched {
+		localFull := seriesTitleKey(stripSeriesTitleAnnotation(local.Title))
+		remoteFull := seriesTitleKey(stripSeriesTitleAnnotation(remote.Title))
+		exact := localFull != "" && localFull == remoteFull
+
+		// Without overlapping authors (e.g. one side missing authors), require an exact title match or matching index.
+		if (len(local.Authors) == 0 || len(remote.Authors) == 0) && !exact && !sameIndex {
+			return 0
+		}
+
+		score := 2
+		if exact {
+			score += 1
+		}
+		if sameIndex {
+			score += 1
+		}
+		if local.State == "In library" {
+			score += 4
+		}
+		return score
 	}
 
-	// If both entries carry distinct non-empty inline subtitles, keep them separate.
-	if localSub != "" && remoteSub != "" && seriesTitleKey(localSub) != seriesTitleKey(remoteSub) {
-		return 0
+	// Series index is a high-quality deduplication indicator: there should only be one book at a given index.
+	if sameIndex {
+		score := 1
+		if local.State == "In library" {
+			score += 4
+		}
+		return score
 	}
-
-	localFull := seriesTitleKey(stripSeriesTitleAnnotation(local.Title))
-	remoteFull := seriesTitleKey(stripSeriesTitleAnnotation(remote.Title))
-	exact := localFull != "" && localFull == remoteFull
-
-	// Without overlapping authors (e.g. one side missing authors), require an exact title match.
-	if (len(local.Authors) == 0 || len(remote.Authors) == 0) && !exact {
-		return 0
-	}
-
-	score := 1
-	if exact {
-		score += 1
-	}
-	if local.SeriesIndex != nil && remote.SeriesIndex != nil {
-		score += 1
-	}
-	if local.State == "In library" {
-		score += 4
-	}
-	return score
+	return 0
 }
 
-func preferLocalSeriesBook(candidate, current seriesBook) bool {
+func preferLocalSeriesBook(candidate, current seriesBook, seriesTitle string) bool {
 	if (candidate.State == "In library") != (current.State == "In library") {
 		return candidate.State == "In library"
 	}
@@ -473,6 +484,15 @@ func preferLocalSeriesBook(candidate, current seriesBook) bool {
 	}
 	if (candidate.SeriesIndex != nil) != (current.SeriesIndex != nil) {
 		return candidate.SeriesIndex != nil
+	}
+	if metadata.IsMalformedTitle(candidate.Title) != metadata.IsMalformedTitle(current.Title) {
+		return !metadata.IsMalformedTitle(candidate.Title)
+	}
+	if metadata.PreferBookTitle(candidate.Title, current.Title, seriesTitle) {
+		return true
+	}
+	if metadata.PreferBookTitle(current.Title, candidate.Title, seriesTitle) {
+		return false
 	}
 	if (candidate.CoverURL != "") != (current.CoverURL != "") {
 		return candidate.CoverURL != ""
@@ -483,8 +503,8 @@ func preferLocalSeriesBook(candidate, current seriesBook) bool {
 	return candidate.PublishDate != "" && current.PublishDate == ""
 }
 
-func mergeLocalSeriesBook(dst *seriesBook, src seriesBook) {
-	mergeSeriesBookMetadata(dst, src.BookMetadata)
+func mergeLocalSeriesBook(dst *seriesBook, src seriesBook, seriesTitle string) {
+	mergeSeriesBookMetadata(dst, src.BookMetadata, seriesTitle)
 	if dst.LibraryBookID == "" && src.LibraryBookID != "" {
 		dst.LibraryBookID = src.LibraryBookID
 	}
@@ -515,17 +535,20 @@ func deduplicateLocalSeriesBooks(books []seriesBook, seriesTitle string) []serie
 		bestIdx, bestScore := -1, 0
 		for i := range kept {
 			score := seriesBookMatch(kept[i], b.BookMetadata, seriesTitle)
+			if kept[i].State == "In library" && b.State == "In library" && score < 6 {
+				continue
+			}
 			if score > bestScore {
 				bestIdx, bestScore = i, score
 			}
 		}
 		if bestIdx >= 0 {
-			if preferLocalSeriesBook(b, kept[bestIdx]) {
+			if preferLocalSeriesBook(b, kept[bestIdx], seriesTitle) {
 				prev := kept[bestIdx]
 				kept[bestIdx] = b
-				mergeLocalSeriesBook(&kept[bestIdx], prev)
+				mergeLocalSeriesBook(&kept[bestIdx], prev, seriesTitle)
 			} else {
-				mergeLocalSeriesBook(&kept[bestIdx], b)
+				mergeLocalSeriesBook(&kept[bestIdx], b, seriesTitle)
 			}
 			continue
 		}
@@ -534,14 +557,13 @@ func deduplicateLocalSeriesBooks(books []seriesBook, seriesTitle string) []serie
 	return kept
 }
 
-func mergeSeriesBookMetadata(local *seriesBook, remote metadata.BookMetadata) {
+func mergeSeriesBookMetadata(local *seriesBook, remote metadata.BookMetadata, seriesTitle string) {
 	for _, membership := range remote.SeriesMemberships {
 		local.AddSeriesMembership(membership)
 	}
-	owned := local.State == "In library"
-	if local.Title == "" && remote.Title != "" {
-		local.Title = remote.Title
-	}
+	owned := local.State == "In library" && !local.malformedTitle
+	local.Title = selectBestSeriesBookTitle(local.Title, remote.Title, seriesTitle, owned)
+	owned = local.State == "In library"
 	if local.Subtitle == "" && remote.Subtitle != "" {
 		local.Subtitle = remote.Subtitle
 	}
