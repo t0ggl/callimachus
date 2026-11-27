@@ -22,6 +22,10 @@ Named after the scholar-librarian of the Library of Alexandria who compiled the 
 
 Run Callimachus with Docker using the prebuilt image from GitHub Container Registry.
 
+The image runs as UID and GID `1000`. Make `/config` and `/books` writable by that identity. For existing bind mounts, check ownership and permissions on both the directories and their existing files. Ingestion also needs write access to the configured completed-download directory to move files into the library.
+
+For a read-only root filesystem in Docker, add `--read-only --tmpfs /tmp:mode=1777`. In Kubernetes, set `readOnlyRootFilesystem: true` and mount an `emptyDir` at `/tmp`. Use writable volumes for `/config` and `/books` and grant access with the pod's `fsGroup` or volume ownership. A standalone worker uses the same volume paths and a writable `/tmp`. Start it with `--entrypoint /usr/local/bin/callimachus-worker` in Docker.
+
 ### Single-User / Testing (Password Login)
 
 For testing or single-user setups, set `CALLIMACHUS_ADMIN_PASSWORD` to sign in directly as an administrator:
