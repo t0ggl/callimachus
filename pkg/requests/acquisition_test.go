@@ -13,25 +13,39 @@ import (
 
 func TestScoreCandidate(t *testing.T) {
 	c := ScoreCandidate(
-		indexers.ProwlarrRelease{Title: "Book EPUB 2024", Seeders: 50, Verified: true},
+		indexers.ProwlarrRelease{Title: "Book EPUB 2024", Seeders: 10, Verified: true},
 		2024,
 		FormatEPUB,
 		Evaluation{Format: "epub", EbookPreferences: []string{"EPUB", "PDF"}},
 	)
-	if c.Score != 75 || c.Format != "epub" || c.Breakdown["format"] != 30 {
+	if c.Score != 75 || c.Format != "epub" || c.Breakdown["format"] != 30 || c.Breakdown["seeders"] != 20 {
 		t.Fatalf("%+v", c)
 	}
 	if c := ScoreCandidate(indexers.ProwlarrRelease{Title: "Book"}, 0, "", Evaluation{}); c.Score != 0 {
 		t.Fatal(c)
 	}
 	c = ScoreCandidate(
-		indexers.ProwlarrRelease{Title: "Book PDF", Seeders: 1},
+		indexers.ProwlarrRelease{Title: "Book PDF", Seeders: 9},
 		0,
 		FormatEPUB,
 		Evaluation{Format: "pdf", EbookPreferences: []string{"EPUB", "PDF"}},
 	)
-	if c.Score != 35 || c.Breakdown["format"] != 25 {
+	if c.Score != 35 || c.Breakdown["format"] != 25 || c.Breakdown["seeders"] != 10 {
 		t.Fatal(c)
+	}
+	for _, proto := range []string{"usenet", "Usenet", "newznab"} {
+		usenet := ScoreCandidate(
+			indexers.ProwlarrRelease{Title: "Book EPUB", Protocol: proto, Seeders: 0},
+			0,
+			FormatEPUB,
+			Evaluation{Format: "epub", EbookPreferences: []string{"EPUB", "PDF"}},
+		)
+		if usenet.Score != 50 || usenet.Breakdown["usenet"] != 20 {
+			t.Fatalf("protocol %q: expected score 50 with usenet=+20, got %+v", proto, usenet)
+		}
+		if _, hasSeeders := usenet.Breakdown["seeders"]; hasSeeders {
+			t.Fatalf("protocol %q: unexpected seeders key in breakdown: %+v", proto, usenet.Breakdown)
+		}
 	}
 }
 
@@ -106,7 +120,7 @@ func TestScoreCandidate_FormatPreferencesAndExclusions(t *testing.T) {
 		if _, hasFormat := unknown.Breakdown["format"]; hasFormat {
 			t.Fatalf("unknown format for %s request should omit format score, got %+v", reqFmt, unknown.Breakdown)
 		}
-		if unknown.IsExcluded() || unknown.Score != 10 {
+		if unknown.IsExcluded() || unknown.Score != 20 {
 			t.Fatalf("unknown format for %s request should not be excluded, got %+v", reqFmt, unknown)
 		}
 	}
@@ -151,7 +165,7 @@ func acquisitionFixture(t *testing.T) (*Acquisition, int64, *int, *int) {
 			out = append(out, indexers.ProwlarrRelease{GUID: fmt.Sprint(i), IndexerID: 1, Title: "Book EPUB", Seeders: i + 1})
 		}
 		return out, nil
-	}, Grab: func(context.Context, indexers.ProwlarrRelease) error { grabs++; return nil }, Evaluate: func(context.Context, indexers.ProwlarrRelease) (Evaluation, error) {
+	}, Grab: func(context.Context, indexers.ProwlarrRelease) error { grabs++; return nil }, Evaluate: func(context.Context, indexers.ProwlarrRelease, string) (Evaluation, error) {
 		return Evaluation{Format: "epub", EbookPreferences: []string{"EPUB"}}, nil
 	}}
 	return a, r.ID, &searches, &grabs
@@ -254,7 +268,7 @@ func TestAsyncFailureAndSuccessRetention(t *testing.T) {
 func TestNoPositiveCandidatesDailyRecheck(t *testing.T) {
 	a, id, searches, grabs := acquisitionFixture(t)
 	ctx := context.Background()
-	a.Evaluate = func(context.Context, indexers.ProwlarrRelease) (Evaluation, error) {
+	a.Evaluate = func(context.Context, indexers.ProwlarrRelease, string) (Evaluation, error) {
 		return Evaluation{Exclusions: map[string]string{"format": "not allowed"}}, nil
 	}
 	for i := 0; i < 2; i++ {
@@ -320,7 +334,7 @@ func TestHighestPositiveCandidateWins(t *testing.T) {
 	a.Search = func(context.Context, string, string) ([]indexers.ProwlarrRelease, error) {
 		return []indexers.ProwlarrRelease{{GUID: "low", IndexerID: 1, Title: "Book EPUB"}, {GUID: "best", IndexerID: 1, Title: "Book EPUB", Seeders: 100, Verified: true}, {GUID: "excluded", IndexerID: 1, Title: "foreign EPUB", Seeders: 200}}, nil
 	}
-	a.Evaluate = func(_ context.Context, r indexers.ProwlarrRelease) (Evaluation, error) {
+	a.Evaluate = func(_ context.Context, r indexers.ProwlarrRelease, _ string) (Evaluation, error) {
 		if r.GUID == "excluded" {
 			return Evaluation{Format: "epub", EbookPreferences: []string{"EPUB"}, Exclusions: map[string]string{"language": "foreign"}}, nil
 		}
@@ -377,7 +391,7 @@ func TestManualDownloadOverridesExclusionsWhileAutoRequiresPositiveScore(t *test
 			{GUID: "zero", IndexerID: 1, Title: "Book Unknown"},
 		}, nil
 	}
-	a.Evaluate = func(_ context.Context, r indexers.ProwlarrRelease) (Evaluation, error) {
+	a.Evaluate = func(_ context.Context, r indexers.ProwlarrRelease, _ string) (Evaluation, error) {
 		if r.GUID == "excluded" {
 			return Evaluation{
 				Format:           "azw3",

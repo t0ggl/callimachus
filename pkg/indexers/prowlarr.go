@@ -296,13 +296,35 @@ func isRelevantCategory(id int) bool {
 
 // ProwlarrRelease identifies a cached search result. Prowlarr chooses the download client.
 type ProwlarrRelease struct {
-	Seeders   int    `json:"seeders"`
-	Verified  bool   `json:"verified"`
-	GUID      string `json:"guid"`
-	IndexerID int    `json:"indexerId"`
-	Title     string `json:"title"`
-	Protocol  string `json:"protocol"`
-	Size      int64  `json:"size"`
+	Seeders    int                `json:"seeders"`
+	Verified   bool               `json:"verified"`
+	GUID       string             `json:"guid"`
+	IndexerID  int                `json:"indexerId"`
+	Title      string             `json:"title"`
+	Protocol   string             `json:"protocol"`
+	Size       int64              `json:"size"`
+	Categories []ProwlarrCategory `json:"categories,omitempty"`
+}
+
+// CategoryIDs returns all Torznab/Newznab category IDs attached to the release.
+func (r ProwlarrRelease) CategoryIDs() []int {
+	if len(r.Categories) == 0 {
+		return nil
+	}
+	var ids []int
+	var walk func(cats []ProwlarrCategory)
+	walk = func(cats []ProwlarrCategory) {
+		for _, c := range cats {
+			if c.ID > 0 {
+				ids = append(ids, c.ID)
+			}
+			if len(c.SubCategories) > 0 {
+				walk(c.SubCategories)
+			}
+		}
+	}
+	walk(r.Categories)
+	return ids
 }
 
 // Search populates Prowlarr's release cache, which is required for a subsequent grab.

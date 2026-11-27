@@ -58,7 +58,7 @@ func TestSplitAcquisitionAndSearchLog(t *testing.T) {
 			{GUID: "m4b", IndexerID: 2, Title: "Book M4B"},
 		}, nil
 	}
-	a.Evaluate = func(context.Context, indexers.ProwlarrRelease) (Evaluation, error) {
+	a.Evaluate = func(context.Context, indexers.ProwlarrRelease, string) (Evaluation, error) {
 		return Evaluation{EbookPreferences: []string{"EPUB"}, AudioPreferences: []string{"M4B"}}, nil
 	}
 	var grabbed []string
