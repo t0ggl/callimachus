@@ -1,9 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Bell, BookOpen, Calendar, Check, Download, Layers, RefreshCw, Search, User } from 'lucide-react';
+import { useContext, useEffect, useMemo, useState } from 'react';
+import { ArrowLeft, Bell, BellOff, BookOpen, Calendar, Check, Download, Layers, Loader2, RefreshCw, Search, User, XCircle } from 'lucide-react';
 import { BookDetailModal } from '../components/BookDetailModal';
 import { EntityLink } from '../components/EntityLink';
 import { ManualSearch } from '../components/ManualSearch';
 import { SeriesBookCover, resolveCatalogBook } from '../components/SeriesDetailModal';
+import {
+  ActivityRefreshContext,
+  BookActivityContext,
+  cancelAndUnmonitorBook,
+  getActiveBookItems,
+  hasActiveBookDownload,
+} from '../utils/activity';
 import type { Book } from '../types';
 
 type EntityBook = Pick<Book, 'id' | 'title' | 'subtitle' | 'authorName' | 'seriesTitle' | 'seriesId' | 'seriesMemberships' | 'coverUrl' | 'formats' | 'releaseDate' | 'seriesIndex' | 'synopsis' | 'state' | 'monitored' | 'audiobookMonitored'>;
@@ -125,6 +132,8 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
   onMetadataApplied?: () => void;
 }) {
   const allowRequest = Boolean(canRequest ?? canManage);
+  const activity = useContext(BookActivityContext);
+  const refreshActivity = useContext(ActivityRefreshContext);
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
@@ -310,10 +319,43 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
     }
   };
 
+  const handleCancelOrUnmonitorBook = async (book: EntityBook, index: number, itemKey: string, inProgress: boolean) => {
+    setDetailError('');
+    setRowBusyKey(itemKey);
+    try {
+      let id = book.id;
+      if (!id) {
+        const resolved = await resolveEntry(book, index);
+        id = resolved.id;
+      }
+      const result = await cancelAndUnmonitorBook(id);
+      updateBookEntry(index, {
+        id,
+        monitored: result.monitored,
+        audiobookMonitored: result.audiobookMonitored,
+        state: result.state,
+      });
+      setToast(
+        inProgress
+          ? `Cancelled download and unmonitored "${book.title}".`
+          : `Unmonitored "${book.title}".`,
+      );
+      refreshActivity?.();
+      onMetadataApplied?.();
+    } catch (e) {
+      setDetailError(e instanceof Error ? e.message : 'Unable to cancel download and unmonitor book.');
+    } finally {
+      setRowBusyKey(null);
+    }
+  };
+
   const renderBookItem = (book: EntityBook, index: number) => {
     const itemKey = `${book.title}-${book.seriesIndex ?? 'u'}-${index}`;
     const state = book.state ?? 'Not in library';
     const hasFiles = state === 'In library';
+    const bookActiveItems = getActiveBookItems(book.id, activity);
+    const inProgress = hasActiveBookDownload(book.id, state, activity);
+    const monitored = Boolean(book.monitored || book.audiobookMonitored);
     const stateColor = hasFiles ? availableBadge : state === 'Not in library' || state === 'Scheduled' ? neutralBadge : blueBadge;
     const rowBusy = rowBusyKey === itemKey;
     return (
@@ -352,6 +394,9 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
                 <span key={format} className={`${badge} ${format === 'M4B' ? purpleBadge : blueBadge} font-mono`}>{format}</span>
               )) : <span className={`${badge} ${neutralBadge}`}>No files</span>}
               <span className={`${badge} ${stateColor}`}>{hasFiles && <Check size={12} aria-hidden="true" />}{state}</span>
+              {hasFiles && bookActiveItems.length > 0 && (
+                <span className={`${badge} ${blueBadge}`}>{bookActiveItems[0].phase}</span>
+              )}
               {allowRequest && state === 'Not in library' && (
                 <button
                   type="button"
@@ -377,6 +422,30 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
                 >
                   <Bell size={12} aria-hidden="true" />
                   Monitor eBook
+                </button>
+              )}
+              {allowRequest && inProgress && (
+                <button
+                  type="button"
+                  disabled={rowBusy}
+                  aria-label={`Cancel download and unmonitor ${book.title}`}
+                  onClick={() => void handleCancelOrUnmonitorBook(book, index, itemKey, true)}
+                  className="inline-flex items-center gap-1 rounded-sm border border-red-900/60 bg-red-950/30 px-2 py-0.5 text-xs font-medium text-red-300 transition-colors hover:bg-red-950/60 hover:text-red-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
+                >
+                  {rowBusy ? <Loader2 size={12} className="motion-safe:animate-spin" aria-hidden="true" /> : <XCircle size={12} aria-hidden="true" />}
+                  {rowBusy ? 'Cancelling…' : 'Cancel & Unmonitor'}
+                </button>
+              )}
+              {allowRequest && !inProgress && monitored && (
+                <button
+                  type="button"
+                  disabled={rowBusy}
+                  aria-label={`Unmonitor ${book.title}`}
+                  onClick={() => void handleCancelOrUnmonitorBook(book, index, itemKey, false)}
+                  className="inline-flex items-center gap-1 rounded-sm border border-red-900/60 bg-red-950/30 px-2 py-0.5 text-xs font-medium text-red-300 transition-colors hover:bg-red-950/60 hover:text-red-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
+                >
+                  {rowBusy ? <Loader2 size={12} className="motion-safe:animate-spin" aria-hidden="true" /> : <BellOff size={12} aria-hidden="true" />}
+                  {rowBusy ? 'Updating…' : 'Unmonitor'}
                 </button>
               )}
             </div>
@@ -532,6 +601,7 @@ export function EntityView({ kind, name, seriesID, seriesAuthor, hardcoverID, ca
                     seriesMemberships: updated.seriesMemberships,
                     monitored: updated.monitored,
                     audiobookMonitored: updated.audiobookMonitored,
+                    state: updated.state ?? item.state,
                     coverUrl: updated.coverUrl ?? item.coverUrl,
                   }
                 : item

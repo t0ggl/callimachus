@@ -3,6 +3,8 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { App } from '../App';
 import { ActivityView } from '../views/ActivityView';
+import { BookDetailModal } from '../components/BookDetailModal';
+import { ActivityRefreshContext, BookActivityContext } from '../utils/activity';
 import { testConversionJobs, testDownloads } from './testFixtures';
 
 const base = { conversionJobs: [], downloads: [], logs: [], connectionStatus: 'connected' as const };
@@ -541,4 +543,91 @@ it('keeps Fix Metadata open across SSE activity updates when details stayed open
 
   await user.click(within(dialog).getByRole('button', { name: 'Back to details' }));
   expect(await within(dialog).findByText('Book One of Dune')).toBeVisible();
+});
+
+it('cancels and unmonitors from BookDetailModal opened via ActivityView and standalone book details', async () => {
+  const user = userEvent.setup({ delay: null });
+  const onMetadataApplied = vi.fn();
+  const refreshActivity = vi.fn();
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === '/api/books?id=book') {
+      return Response.json([{ id: 'book', title: 'Dune', authorId: 'a', authorName: 'Frank Herbert', state: 'Not in library', monitored: false, audiobookMonitored: false, formats: [], editions: [] }]);
+    }
+    if (url === '/api/requests/1' && init?.method === 'DELETE') {
+      return new Response(null, { status: 204 });
+    }
+    if (url === '/api/books/book-direct/cancel' && init?.method === 'POST') {
+      return Response.json({ id: 'book-direct', monitored: false, audiobookMonitored: false, state: 'Not in library', cancelledRequests: 1, cancelledDownloads: 0, cancelledConversions: 0 });
+    }
+    throw new Error(`Unexpected fetch ${url} (${init?.method ?? 'GET'})`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  // 1. Opened from ActivityView -> AcquisitionProgress Cancel & Unmonitor removes item & closes dialog
+  const { unmount } = render(
+    <ActivityRefreshContext.Provider value={refreshActivity}>
+      <ActivityView {...base} canRequest requests={[ebook]} onMetadataApplied={onMetadataApplied} />
+    </ActivityRefreshContext.Provider>
+  );
+  await user.click(screen.getByRole('button', { name: /Dune eBook · Evaluating releases/ }));
+  const activityDialog = await screen.findByRole('dialog', { name: 'Details for Dune' });
+  await user.click(within(activityDialog).getByRole('button', { name: 'Cancel download and unmonitor Dune (eBook)' }));
+  await waitFor(() => {
+    expect(screen.queryByRole('dialog', { name: 'Details for Dune' })).not.toBeInTheDocument();
+  });
+  expect(fetchMock).toHaveBeenCalledWith('/api/requests/1', { method: 'DELETE' });
+  expect(screen.queryByTestId('activity-request:1')).not.toBeInTheDocument();
+  expect(onMetadataApplied).toHaveBeenCalled();
+  unmount();
+
+  // 2. BookDetailModal with BookActivityContext active download -> cancels via AcquisitionProgress and updates book
+  const onBookUpdated = vi.fn();
+  const activeItem = {
+    id: 'request:1',
+    bookId: 'book',
+    title: 'Dune',
+    author: 'Frank Herbert',
+    format: 'eBook',
+    phase: 'Downloading',
+    stage: 'downloading' as const,
+    request: ebook,
+  };
+  const { unmount: unmountModal } = render(
+    <ActivityRefreshContext.Provider value={refreshActivity}>
+      <BookActivityContext.Provider value={[activeItem]}>
+        <BookDetailModal
+          book={{ id: 'book', title: 'Dune', authorId: 'a', authorName: 'Frank Herbert', state: 'Downloading', monitored: true, formats: [], editions: [] }}
+          canRequest
+          onBookUpdated={onBookUpdated}
+          onClose={vi.fn()}
+        />
+      </BookActivityContext.Provider>
+    </ActivityRefreshContext.Provider>
+  );
+  const directDialog = await screen.findByRole('dialog', { name: 'Details for Dune' });
+  await user.click(within(directDialog).getByRole('button', { name: 'Cancel download and unmonitor Dune (eBook)' }));
+  expect(await within(directDialog).findByText('Download cancelled and book unmonitored.')).toBeInTheDocument();
+  expect(onBookUpdated).toHaveBeenCalledWith(expect.objectContaining({ id: 'book', state: 'Not in library', monitored: false }));
+  unmountModal();
+
+  // 3. BookDetailModal with in-progress state and no BookActivityContext item -> fallback Cancel & Unmonitor calls POST /api/books/{id}/cancel
+  const onFallbackUpdated = vi.fn();
+  render(
+    <ActivityRefreshContext.Provider value={refreshActivity}>
+      <BookActivityContext.Provider value={[]}>
+        <BookDetailModal
+          book={{ id: 'book-direct', title: 'Direct Book', authorId: 'a', authorName: 'Author', state: 'Downloading', monitored: true, formats: [], editions: [] }}
+          canRequest
+          onBookUpdated={onFallbackUpdated}
+          onClose={vi.fn()}
+        />
+      </BookActivityContext.Provider>
+    </ActivityRefreshContext.Provider>
+  );
+  const fallbackDialog = await screen.findByRole('dialog', { name: 'Details for Direct Book' });
+  await user.click(within(fallbackDialog).getByRole('button', { name: 'Cancel download and unmonitor Direct Book' }));
+  await waitFor(() => {
+    expect(onFallbackUpdated).toHaveBeenCalledWith(expect.objectContaining({ id: 'book-direct', state: 'Not in library', monitored: false, audiobookMonitored: false }));
+  });
+  expect(fetchMock).toHaveBeenCalledWith('/api/books/book-direct/cancel', { method: 'POST' });
 });

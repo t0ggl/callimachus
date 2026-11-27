@@ -8,7 +8,7 @@ import { SettingsView } from './views/SettingsView';
 import { CommandPalette } from './components/CommandPalette';
 import { BookDetailModal } from './components/BookDetailModal';
 import { useActivityStream } from './hooks/useActivityStream';
-import { activityItems, BookActivityContext } from './utils/activity';
+import { activityItems, ActivityRefreshContext, BookActivityContext } from './utils/activity';
 import {
   Book,
   Author,
@@ -424,10 +424,16 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
     }
   };
 
+  const refreshActivity = useCallback(() => {
+    void fetchActivity();
+    void fetchCatalog();
+  }, [fetchActivity, fetchCatalog]);
+
   const activeDownloadsCount = downloads.filter((d) => d.status === 'downloading' || d.status === 'importing').length;
   const convertingJobsCount = conversionJobs.filter((j) => j.status === 'processing').length;
 
   return (
+    <ActivityRefreshContext.Provider value={refreshActivity}>
     <BookActivityContext.Provider value={bookActivity}>
       <Layout
         currentView={currentView}
@@ -613,6 +619,7 @@ export const App: React.FC<AppProps> = ({ initialView = 'catalog' }) => {
         />
       )}
     </BookActivityContext.Provider>
+    </ActivityRefreshContext.Provider>
   );
 };
 

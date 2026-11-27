@@ -803,3 +803,157 @@ func TestBookResolveAndCatalogEntityScopedSeriesIdentity(t *testing.T) {
 		t.Fatalf("unexpected scoped entity books: %+v", entity.Books)
 	}
 }
+
+func TestCancelBookCancelsActiveDownloadsAndPersistsExclusions(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	if _, err := db.Exec(`
+		INSERT INTO users(id,username,email,role,auth_source) VALUES
+			('req-1','req1','req1@example.test','requester','local'),
+			('req-2','req2','req2@example.test','requester','local'),
+			('catalog-monitor','catalog-monitor','catalog-monitor@invalid','guest','system');
+		INSERT INTO authors(id,name,sort_name,monitored) VALUES('a1','Author One','One, Author',1);
+		INSERT INTO series(id,title,monitored,audiobook_monitored) VALUES('s1','Saga',1,1);
+		INSERT INTO books(id,author_id,series_id,title,ebook_monitored,audiobook_monitored) VALUES
+			('b-active','a1','s1','Active Book',1,1),
+			('b-other','a1','s1','Other User Book',1,0),
+			('b-importing','a1','s1','Importing Book',1,0),
+			('b-standalone','a1','s1','Standalone Book',1,1),
+			('b-monitored','a1','s1','Monitored Only Book',1,1);
+		INSERT INTO books(id,author_id,series_id,title,release_date,ebook_monitored,audiobook_monitored) VALUES
+			('b-future','a1','s1','Future Book','2099-05-10',1,1);
+		INSERT INTO book_editions(id,book_id,format) VALUES
+			('ed-active','b-active','epub'),
+			('ed-standalone-epub','b-standalone','epub'),
+			('ed-standalone-m4b','b-standalone','m4b');
+		INSERT INTO media_assets(id,edition_id,file_path,file_size) VALUES
+			('asset-standalone-epub','ed-standalone-epub','/library/Standalone.epub',100);
+		INSERT INTO book_requests(id,user_id,book_id,title,author,format,status) VALUES
+			(10,'req-1','b-active','Active Book','Author One','epub','downloading'),
+			(11,'catalog-monitor','b-active','Active Book','Author One','m4b','searching'),
+			(12,'req-2','b-other','Other User Book','Author One','epub','downloading'),
+			(13,'req-1','b-importing','Importing Book','Author One','epub','downloading');
+		INSERT INTO download_queue(id,request_id,download_client_task_id,title,protocol,status,edition_id) VALUES
+			('dl-active',10,'t-10','Active EPUB','torrent','downloading','ed-active'),
+			('dl-importing',13,'t-13','Importing EPUB','torrent','importing',NULL),
+			('dl-standalone',NULL,'t-s','Standalone M4B','torrent','downloading','ed-standalone-m4b');
+		INSERT INTO conversion_queue(id,edition_id,download_id,source_path,target_path,status,current_stage) VALUES
+			('conv-active','ed-active','dl-active','/in','/out.epub','processing','converting'),
+			('conv-standalone','ed-standalone-m4b',NULL,'/in2','/out2.m4b','pending','queued');
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{db: db, monitorWake: make(chan struct{}, 1)}
+	s.acquisition = &requests.Acquisition{DB: db}
+	s.catalogMonitor = s.newCatalogMonitor()
+	mux := http.NewServeMux()
+	s.registerAPIRoutes(mux)
+
+	call := func(path, userID, role string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, path, nil)
+		if userID != "" {
+			r = r.WithContext(auth.ContextWithUser(r.Context(), &auth.User{ID: userID, Role: role}))
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w
+	}
+
+	// Auth & validation checks
+	if w := call("/api/books/b-active/cancel", "", ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated cancel: got %d", w.Code)
+	}
+	if w := call("/api/books/b-active/cancel", "guest-1", auth.RoleGuest); w.Code != http.StatusForbidden {
+		t.Fatalf("guest cancel: got %d", w.Code)
+	}
+	if w := call("/api/books/missing/cancel", "req-1", auth.RoleRequester); w.Code != http.StatusNotFound {
+		t.Fatalf("missing book cancel: got %d", w.Code)
+	}
+
+	// Requester cannot cancel another human user's active request or curator-only standalone job
+	if w := call("/api/books/b-other/cancel", "req-1", auth.RoleRequester); w.Code != http.StatusForbidden {
+		t.Fatalf("requester cancelling another user's request: got %d %s", w.Code, w.Body.String())
+	}
+	if w := call("/api/books/b-standalone/cancel", "req-1", auth.RoleRequester); w.Code != http.StatusForbidden {
+		t.Fatalf("requester cancelling standalone download: got %d %s", w.Code, w.Body.String())
+	}
+
+	// Import finishing guard returns 409 Conflict without mutating state
+	if w := call("/api/books/b-importing/cancel", "req-1", auth.RoleRequester); w.Code != http.StatusConflict {
+		t.Fatalf("importing cancel: got %d %s", w.Code, w.Body.String())
+	}
+	var importingMonitored bool
+	if err := db.QueryRow(`SELECT ebook_monitored FROM books WHERE id='b-importing'`).Scan(&importingMonitored); err != nil || !importingMonitored {
+		t.Fatalf("importing book monitoring changed on 409: monitored=%v err=%v", importingMonitored, err)
+	}
+
+	// Requester cancels own downloading request + catalog-monitor searching request and persists exclusions
+	w := call("/api/books/b-active/cancel", "req-1", auth.RoleRequester)
+	if w.Code != http.StatusOK {
+		t.Fatalf("cancel active book: %d %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		ID                   string `json:"id"`
+		Monitored            bool   `json:"monitored"`
+		AudiobookMonitored   bool   `json:"audiobookMonitored"`
+		State                string `json:"state"`
+		CancelledRequests    int    `json:"cancelledRequests"`
+		CancelledDownloads   int    `json:"cancelledDownloads"`
+		CancelledConversions int    `json:"cancelledConversions"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "b-active" || resp.Monitored || resp.AudiobookMonitored || resp.State != "Not in library" || resp.CancelledRequests != 2 {
+		t.Fatalf("unexpected cancel response: %+v", resp)
+	}
+
+	var dlStatus, convStatus string
+	if err := db.QueryRow(`SELECT status FROM download_queue WHERE id='dl-active'`).Scan(&dlStatus); err != nil || dlStatus != "cancelled" {
+		t.Fatalf("dl-active status = %q err=%v", dlStatus, err)
+	}
+	if err := db.QueryRow(`SELECT status FROM conversion_queue WHERE id='conv-active'`).Scan(&convStatus); err != nil || convStatus != "cancelled" {
+		t.Fatalf("conv-active status = %q err=%v", convStatus, err)
+	}
+
+	// Exclusions survive re-enabling parent series/author monitoring
+	enabled := true
+	if err := s.catalogMonitor.SetMonitoring(context.Background(), "series", "s1", &enabled, &enabled); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.catalogMonitor.SetMonitoring(context.Background(), "authors", "a1", &enabled, nil); err != nil {
+		t.Fatal(err)
+	}
+	var ebMon, abMon, ebExcl, abExcl bool
+	if err := db.QueryRow(`SELECT ebook_monitored, audiobook_monitored, ebook_monitoring_excluded, audiobook_monitoring_excluded FROM books WHERE id='b-active'`).Scan(&ebMon, &abMon, &ebExcl, &abExcl); err != nil {
+		t.Fatal(err)
+	}
+	if ebMon || abMon || !ebExcl || !abExcl {
+		t.Fatalf("expected b-active unmonitored & excluded after parent reconcile, got eb=%v ab=%v ebExcl=%v abExcl=%v", ebMon, abMon, ebExcl, abExcl)
+	}
+
+	// Curator cancels standalone download + conversion on an owned book (returns "In library")
+	w = call("/api/books/b-standalone/cancel", "cur-1", auth.RoleCurator)
+	if w.Code != http.StatusOK {
+		t.Fatalf("curator cancel standalone book: %d %s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.State != "In library" || resp.CancelledDownloads != 1 || resp.CancelledConversions != 1 || resp.Monitored || resp.AudiobookMonitored {
+		t.Fatalf("unexpected standalone cancel response: %+v", resp)
+	}
+
+	// Unmonitoring a future monitored book with no active requests returns "Scheduled"
+	w = call("/api/books/b-future/cancel", "req-1", auth.RoleRequester)
+	if w.Code != http.StatusOK {
+		t.Fatalf("cancel future monitored book: %d %s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.State != "Scheduled" || resp.CancelledRequests != 0 || resp.Monitored || resp.AudiobookMonitored {
+		t.Fatalf("unexpected future cancel response: %+v", resp)
+	}
+}

@@ -114,6 +114,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	type activeRequest struct {
 		formats map[string]bool
 		status  string
+		bookID  string
 	}
 	statusRank := func(status string) int {
 		switch status {
@@ -127,7 +128,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 			return 0
 		}
 	}
-	recordActive := func(target map[string]*activeRequest, key, format, status string) {
+	recordActive := func(target map[string]*activeRequest, key, format, status, bookID string) {
 		if key == "" {
 			return
 		}
@@ -146,6 +147,9 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		lowerStatus := strings.ToLower(status)
 		if statusRank(lowerStatus) > statusRank(entry.status) {
 			entry.status = lowerStatus
+		}
+		if entry.bookID == "" && bookID != "" {
+			entry.bookID = bookID
 		}
 	}
 
@@ -169,12 +173,12 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Unable to read active requests", 500)
 			return
 		}
-		recordActive(activeByKey, discoveryKey(rTitle, rAuthor), rFormat, rStatus)
+		recordActive(activeByKey, discoveryKey(rTitle, rAuthor), rFormat, rStatus, rBookID)
 		if bTitle != "" && aName != "" {
-			recordActive(activeByKey, discoveryKey(bTitle, aName), rFormat, rStatus)
+			recordActive(activeByKey, discoveryKey(bTitle, aName), rFormat, rStatus, rBookID)
 		}
 		if rBookID != "" {
-			recordActive(activeByBookID, rBookID, rFormat, rStatus)
+			recordActive(activeByBookID, rBookID, rFormat, rStatus, rBookID)
 		}
 	}
 	err = reqRows.Err()
@@ -195,6 +199,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		result := match{BookMetadata: group[first]}
 		matchedFormats := map[string]bool{}
 		matchedStatus := ""
+		matchedBookID := ""
 		mergeActive := func(entry *activeRequest) {
 			if entry == nil {
 				return
@@ -204,6 +209,9 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 			}
 			if statusRank(entry.status) > statusRank(matchedStatus) {
 				matchedStatus = entry.status
+			}
+			if matchedBookID == "" && entry.bookID != "" {
+				matchedBookID = entry.bookID
 			}
 		}
 
@@ -243,6 +251,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		result.RequestStatus = matchedStatus
+		result.BookID = matchedBookID
 		out = append(out, result)
 	}
 	var seriesMatches []discoverSeriesMatch
@@ -277,6 +286,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 
 type discoverMatch struct {
 	metadata.BookMetadata
+	BookID           string   `json:"book_id,omitempty"`
 	LibraryBookID    string   `json:"library_book_id,omitempty"`
 	RequestedFormats []string `json:"requested_formats,omitempty"`
 	RequestStatus    string   `json:"request_status,omitempty"`

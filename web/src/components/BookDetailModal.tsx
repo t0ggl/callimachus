@@ -1,11 +1,20 @@
 import { AdditionalSeriesEditor } from './AdditionalSeriesEditor';
 import { EntityLink } from './EntityLink';
-import React, { useEffect, useId, useState } from 'react';
-import { X, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download, Bell, Trash2, Upload, Search, Loader2, RefreshCw, MoreHorizontal, Wrench } from 'lucide-react';
+import React, { useContext, useEffect, useId, useState } from 'react';
+import { X, XCircle, BookOpen, Headphones, FileText, HardDrive, Calendar, User, Mic, Layers, Download, Bell, Trash2, Upload, Search, Loader2, RefreshCw, MoreHorizontal, Wrench } from 'lucide-react';
 import { ManualSearch } from './ManualSearch';
 import { MetadataRepairPanel } from './MetadataRepairPanel';
 import { CoverFinderPanel } from './CoverFinderPanel';
 import { BookAcquisition } from './AcquisitionProgress';
+import {
+  activityCancelPath,
+  ActivityItem,
+  ActivityRefreshContext,
+  BookActivityContext,
+  cancelAndUnmonitorBook,
+  getActiveBookItems,
+  isInProgressBookState,
+} from '../utils/activity';
 import { validateCoverFile } from '../utils/coverValidation';
 import { Book, MetadataCandidate, ProviderSeriesMembership } from '../types';
 
@@ -206,6 +215,19 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     { field: 'audiobookMonitored', label: 'audiobook', owned: ownsAudiobook },
   ] as const;
   const allowRequest = Boolean(canRequest ?? canManage);
+  const activityContext = useContext(BookActivityContext);
+  const refreshActivity = useContext(ActivityRefreshContext);
+  const bookActiveItems = getActiveBookItems(currentBook?.id, activityContext);
+  const hasCancellableActivity = bookActiveItems.some((item) =>
+    Boolean(activityCancelPath(item, { allowRequest, canManageJobs: Boolean(canManage) }))
+  );
+  const showInlineCancelBook = Boolean(
+    !activity &&
+      allowRequest &&
+      currentBook?.id &&
+      isInProgressBookState(currentBook.state) &&
+      !hasCancellableActivity
+  );
   const showMonitorControl = allowRequest && monitorOptions.some(({ owned }) => !owned);
   const showInlineDownloadOptions = Boolean(!activity && !subpanelOpen && allowRequest && !hasAssets);
   const showOverflowRefresh = Boolean(!activity && canRefreshMetadata);
@@ -396,6 +418,69 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     } finally {
       setActionBusy(false);
     }
+  };
+
+  const handleCancelAndUnmonitor = async () => {
+    if (!currentBook.id || actionBusy || refreshing) return;
+    setActionBusy(true);
+    setActionError('');
+    try {
+      const result = await cancelAndUnmonitorBook(currentBook.id);
+      const updated: Book = {
+        ...currentBook,
+        monitored: result.monitored,
+        audiobookMonitored: result.audiobookMonitored,
+        state: result.state,
+      };
+      setActiveBook(updated);
+      onBookUpdated?.(updated);
+      onMetadataApplied?.();
+      refreshActivity?.();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Unable to cancel download and unmonitor book.');
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleActivityItemCancelled = async (item: ActivityItem) => {
+    if (!currentBook.id) return;
+    const lowerFormat = item.format?.toLowerCase();
+    const isAudioOnly = lowerFormat === 'audiobook' || lowerFormat === 'm4b' || lowerFormat === 'mp3';
+    const isEbookOnly = lowerFormat === 'ebook' || lowerFormat === 'epub';
+    const remainingActive = bookActiveItems.some((entry) => entry.id !== item.id);
+    const optimistic: Book = {
+      ...currentBook,
+      monitored: isAudioOnly ? currentBook.monitored : false,
+      audiobookMonitored: isEbookOnly ? currentBook.audiobookMonitored : false,
+      state:
+        !remainingActive && isInProgressBookState(currentBook.state)
+          ? (hasAssets ? 'In library' : 'Not in library')
+          : currentBook.state,
+    };
+    try {
+      const res = await fetch(`/api/books?id=${encodeURIComponent(currentBook.id)}`);
+      if (res.ok) {
+        const list = (await res.json()) as Book[];
+        const found = Array.isArray(list) ? list.find((entry) => entry.id === currentBook.id) : undefined;
+        if (found) {
+          const merged: Book = {
+            ...currentBook,
+            ...found,
+            coverUrl: found.coverUrl || currentBook.coverUrl,
+          };
+          setActiveBook(merged);
+          onBookUpdated?.(merged);
+          onMetadataApplied?.();
+          return;
+        }
+      }
+    } catch {
+      // Fall back to optimistic state update if refresh is unavailable.
+    }
+    setActiveBook(optimistic);
+    onBookUpdated?.(optimistic);
+    onMetadataApplied?.();
   };
 
   const applyCoverUpdate = (data: { coverUrl?: string; epubUpdated?: number }) => {
@@ -894,7 +979,15 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
             </div>
           </div>
 
-          {activity ?? (currentBook.id && <BookAcquisition key={currentBook.id} bookId={currentBook.id} />)}
+          {activity ?? (currentBook.id && (
+            <BookAcquisition
+              key={currentBook.id}
+              bookId={currentBook.id}
+              canManage={canManage}
+              canRequest={allowRequest}
+              onCancelled={(item) => void handleActivityItemCancelled(item)}
+            />
+          ))}
 
           {isAdmin && currentBook.id && currentBook.seriesMemberships && (
             <AdditionalSeriesEditor key={currentBook.id} book={currentBook} onSaved={(saved) => {
@@ -910,8 +1003,24 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                 <HardDrive className="w-4 h-4 text-zinc-400" aria-hidden="true" />
                 Available files
               </h4>
-              {!activity && (showMonitorControl || showInlineDownloadOptions) && (
+              {!activity && (showMonitorControl || showInlineDownloadOptions || showInlineCancelBook) && (
                 <div className="flex flex-wrap items-center gap-2">
+                  {showInlineCancelBook && (
+                    <button
+                      type="button"
+                      disabled={actionBusy || refreshing}
+                      aria-label={`Cancel download and unmonitor ${currentBook.title}`}
+                      onClick={() => void handleCancelAndUnmonitor()}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-xs font-medium text-red-300 transition-colors hover:bg-red-950/60 hover:text-red-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
+                    >
+                      {actionBusy ? (
+                        <Loader2 className="w-3.5 h-3.5 motion-safe:animate-spin shrink-0" aria-hidden="true" />
+                      ) : (
+                        <XCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                      )}
+                      {actionBusy ? 'Cancelling…' : 'Cancel & Unmonitor'}
+                    </button>
+                  )}
                   {showMonitorControl && monitorOptions.filter(({ owned }) => !owned).map(({ field, label }) => (
                     <button
                       key={field}

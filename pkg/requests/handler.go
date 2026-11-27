@@ -258,7 +258,7 @@ func (h *Handler) handleGetRequest(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "unable to remove activity")
 		default:
 			if h.acquisition != nil {
-				h.acquisition.stop(id)
+				h.acquisition.Stop(id)
 			}
 			w.WriteHeader(http.StatusNoContent)
 		}

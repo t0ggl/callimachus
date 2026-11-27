@@ -1,5 +1,5 @@
 import { EntityLink, entityURL } from '../components/EntityLink';
-import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback, useContext } from 'react';
 import {
   Grid,
   List,
@@ -10,6 +10,9 @@ import {
   Filter,
   CheckSquare,
   Bell,
+  BellOff,
+  Loader2,
+  XCircle,
 } from 'lucide-react';
 import {
   Book,
@@ -28,6 +31,14 @@ import { useKeyboardNav } from '../hooks/useKeyboardNav';
 import { SeriesBadge } from '../components/SeriesBadge';
 import { SeriesDetailModal } from '../components/SeriesDetailModal';
 import { LibraryBulkBar } from '../components/LibraryBulkBar';
+import {
+  ActivityRefreshContext,
+  BookActivityContext,
+  cancelAndUnmonitorBook,
+  getActiveBookItems,
+  hasActiveBookDownload,
+  isInProgressBookState,
+} from '../utils/activity';
 
 type CatalogDisplayItem =
   | { kind: 'book'; book: Book }
@@ -213,12 +224,73 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
   onSelectSeries,
   onScanComplete,
 }) => {
+  const allowRequest = Boolean(canRequest ?? canManage);
+  const activity = useContext(BookActivityContext);
+  const refreshActivity = useContext(ActivityRefreshContext);
   const [internalSelectedSeries, setInternalSelectedSeries] = useState<SeriesSelection | null>(null);
   const selectedSeries =
     controlledSelectedSeries !== undefined ? controlledSelectedSeries : internalSelectedSeries;
   const setSelectedSeries = onSelectSeries ?? setInternalSelectedSeries;
   const [scanning, setScanning] = useState(false);
   const [scanMessage, setScanMessage] = useState('');
+  const [bookOverrides, setBookOverrides] = useState<Record<string, { source: Book; patch: Partial<Book> }>>({});
+  const [cancellingBookIds, setCancellingBookIds] = useState<string[]>([]);
+  const [cancelError, setCancelError] = useState('');
+  const [cancelStatus, setCancelStatus] = useState('');
+
+  const effectiveBooks = useMemo(
+    () =>
+      books.map((book) => {
+        const override = bookOverrides[book.id];
+        return override && override.source === book ? { ...book, ...override.patch } : book;
+      }),
+    [books, bookOverrides]
+  );
+
+  const isBookLocallyCancelled = useCallback(
+    (book: Book) => {
+      const override = bookOverrides[book.id];
+      return Boolean(override && books.includes(override.source));
+    },
+    [bookOverrides, books]
+  );
+
+  const handleCancelOrUnmonitorBook = useCallback(
+    async (book: Book, wasInProgress: boolean) => {
+      if (!book.id || cancellingBookIds.includes(book.id)) return;
+      const originalBook = books.find((b) => b.id === book.id) ?? book;
+      setCancellingBookIds((prev) => [...prev, book.id]);
+      setCancelError('');
+      setCancelStatus('');
+      try {
+        const result = await cancelAndUnmonitorBook(book.id);
+        setBookOverrides((prev) => ({
+          ...prev,
+          [book.id]: {
+            source: originalBook,
+            patch: {
+              monitored: result.monitored,
+              audiobookMonitored: result.audiobookMonitored,
+              state: result.state,
+            },
+          },
+        }));
+        setCancelStatus(
+          wasInProgress
+            ? `Cancelled download and unmonitored "${book.title}".`
+            : `Unmonitored "${book.title}".`
+        );
+        refreshActivity?.();
+        await onScanComplete?.();
+      } catch (e) {
+        setCancelError(e instanceof Error ? e.message : 'Unable to cancel download and unmonitor book.');
+      } finally {
+        setCancellingBookIds((prev) => prev.filter((id) => id !== book.id));
+      }
+    },
+    [books, cancellingBookIds, onScanComplete, refreshActivity]
+  );
+
   const scan = async () => {
     setScanning(true); setScanMessage('');
     try {
@@ -247,7 +319,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
 
   // Filtered books
   const filteredBooks = useMemo(() => {
-    return books.filter((b) => {
+    return effectiveBooks.filter((b) => {
       const matchesSearch =
         b.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
         b.authorName.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -259,7 +331,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
 
       return matchesSearch && matchesFormat;
     });
-  }, [books, searchQuery, formatFilter]);
+  }, [effectiveBooks, searchQuery, formatFilter]);
 
   const displayItems = useMemo(
     () => buildCatalogDisplayItems(filteredBooks, series, bundleSeriesInLibrary),
@@ -725,6 +797,12 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
           )}
         </div>
         {scanMessage && <p role="status" className="w-full text-sm text-zinc-300">{scanMessage}</p>}
+        {cancelStatus && <p role="status" className="w-full text-sm text-zinc-300">{cancelStatus}</p>}
+        {cancelError && (
+          <p role="alert" className="w-full rounded-lg border border-red-900/60 bg-red-950/30 px-3 py-2 text-xs text-red-200">
+            {cancelError}
+          </p>
+        )}
       </div>
 
       {/* Bulk Action Bar & Reports */}
@@ -956,6 +1034,9 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                 }
 
                 const book = item.book;
+                const bookActiveItems = isBookLocallyCancelled(book) ? [] : getActiveBookItems(book.id, activity);
+                const bookInProgress = hasActiveBookDownload(book.id, book.state, bookActiveItems);
+                const bookCancelling = cancellingBookIds.includes(book.id);
                 return (
                   <div
                     key={book.id}
@@ -1014,8 +1095,19 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                       {/* Format Badges Overlay */}
                       <div className="absolute top-2 right-2 flex flex-col gap-1 items-end">
                         {book.formats.length === 0 && (
-                          <span className="rounded-sm border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-200">
+                          <span
+                            className={`rounded-sm border px-1.5 py-0.5 text-[10px] ${
+                              isInProgressBookState(book.state)
+                                ? 'border-blue-700/70 bg-blue-950/90 text-blue-200'
+                                : 'border-zinc-700 bg-zinc-900 text-zinc-200'
+                            }`}
+                          >
                             {book.state ?? 'No files'}
+                          </span>
+                        )}
+                        {book.formats.length > 0 && bookActiveItems.length > 0 && (
+                          <span className="rounded-sm border border-blue-700/70 bg-blue-950/90 px-1.5 py-0.5 text-[10px] text-blue-200">
+                            {bookActiveItems[0].phase}
                           </span>
                         )}
                         {book.formats.map((fmt) => (
@@ -1065,13 +1157,32 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                         </p>
                       </div>
 
-                      <div className="space-y-1">
+                      <div className="space-y-1.5">
                         <SeriesBadge title={book.seriesTitle} id={book.seriesId} author={book.authorName} index={book.seriesIndex} total={series.find(s => s.id === book.seriesId)?.totalBooks} onSelect={setSelectedSeries} />
                         {(book.monitored || book.audiobookMonitored) && (
                           <span className="mt-1.5 inline-flex items-center gap-1 rounded-sm border border-blue-800/60 bg-blue-950/70 px-1.5 py-0.5 text-[10px] font-medium text-blue-200">
                             <Bell className="w-2.5 h-2.5" aria-hidden="true" />
                             Monitored
                           </span>
+                        )}
+                        {allowRequest && bookInProgress && !(canManage && selectionMode) && (
+                          <button
+                            type="button"
+                            disabled={bookCancelling}
+                            aria-label={`Cancel download and unmonitor ${book.title}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleCancelOrUnmonitorBook(book, true);
+                            }}
+                            className="inline-flex w-full items-center justify-center gap-1 rounded-sm border border-red-900/60 bg-red-950/30 px-2 py-1 text-[11px] font-medium text-red-300 transition-colors hover:bg-red-950/60 hover:text-red-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
+                          >
+                            {bookCancelling ? (
+                              <Loader2 className="w-3 h-3 motion-safe:animate-spin shrink-0" aria-hidden="true" />
+                            ) : (
+                              <XCircle className="w-3 h-3 shrink-0" aria-hidden="true" />
+                            )}
+                            {bookCancelling ? 'Cancelling…' : 'Cancel & Unmonitor'}
+                          </button>
                         )}
                       </div>
                     </div>
@@ -1223,6 +1334,9 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                     }
 
                     const book = item.book;
+                    const bookActiveItems = isBookLocallyCancelled(book) ? [] : getActiveBookItems(book.id, activity);
+                    const bookInProgress = hasActiveBookDownload(book.id, book.state, bookActiveItems);
+                    const bookCancelling = cancellingBookIds.includes(book.id);
                     return (
                       <tr
                         key={book.id}
@@ -1288,9 +1402,22 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                           )}
                         </td>
                         <td className="py-3 px-4">
-                          <div className="flex flex-wrap items-center gap-1">
+                          <div className="flex flex-wrap items-center gap-1.5">
                             {book.formats.length === 0 && (
-                              <span className="text-xs text-zinc-300">{book.state ?? 'No files'}</span>
+                              <span
+                                className={
+                                  isInProgressBookState(book.state)
+                                    ? 'rounded-sm border border-blue-800/60 bg-blue-950/80 px-1.5 py-0.5 text-[10px] font-medium text-blue-300'
+                                    : 'text-xs text-zinc-300'
+                                }
+                              >
+                                {book.state ?? 'No files'}
+                              </span>
+                            )}
+                            {book.formats.length > 0 && bookActiveItems.length > 0 && (
+                              <span className="rounded-sm border border-blue-800/60 bg-blue-950/80 px-1.5 py-0.5 text-[10px] font-medium text-blue-300">
+                                {bookActiveItems[0].phase}
+                              </span>
                             )}
                             {book.formats.map((fmt) => (
                               <span
@@ -1309,6 +1436,25 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
                                 <Bell className="w-2.5 h-2.5" aria-hidden="true" />
                                 Monitored
                               </span>
+                            )}
+                            {allowRequest && bookInProgress && !(canManage && selectionMode) && (
+                              <button
+                                type="button"
+                                disabled={bookCancelling}
+                                aria-label={`Cancel download and unmonitor ${book.title}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void handleCancelOrUnmonitorBook(book, true);
+                                }}
+                                className="inline-flex items-center gap-1 rounded-sm border border-red-900/60 bg-red-950/30 px-2 py-0.5 text-[11px] font-medium text-red-300 transition-colors hover:bg-red-950/60 hover:text-red-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
+                              >
+                                {bookCancelling ? (
+                                  <Loader2 className="w-3 h-3 motion-safe:animate-spin shrink-0" aria-hidden="true" />
+                                ) : (
+                                  <XCircle className="w-3 h-3 shrink-0" aria-hidden="true" />
+                                )}
+                                {bookCancelling ? 'Cancelling…' : 'Cancel & Unmonitor'}
+                              </button>
                             )}
                           </div>
                         </td>
@@ -1362,7 +1508,7 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
       {activeTab === 'series' && (
         <div className="space-y-4">
           {filteredSeries.map((s) => {
-            const seriesBooks = books.flatMap((book) => {
+            const seriesBooks = effectiveBooks.flatMap((book) => {
               const membership = book.seriesMemberships?.find((item) => item.seriesId === s.id);
               if (membership) return [{ book, index: membership.index }];
               return book.seriesId === s.id ? [{ book, index: book.seriesIndex ?? null }] : [];
@@ -1455,29 +1601,77 @@ export const CatalogView: React.FC<CatalogViewProps> = ({
 
                 {/* Series Reading Order Sequence */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 border-t border-zinc-800/80">
-                  {seriesBooks.map(({ book, index }) => (
-                    <div
-                      key={book.id}
-                      onClick={(e) => {
-                        if (canManage && selectionMode) return;
-                        e.stopPropagation();
-                        onSelectBook(book);
-                      }}
-                      className="cursor-pointer bg-zinc-950 p-2.5 rounded-sm border border-zinc-800 hover:border-purple-600/60 transition-colors flex items-center justify-between gap-2"
-                    >
-                      <div className="truncate">
-                        <div className="text-xs font-medium text-zinc-200 truncate">
-                          {book.title}
+                  {seriesBooks.map(({ book, index }) => {
+                    const bookActiveItems = isBookLocallyCancelled(book) ? [] : getActiveBookItems(book.id, activity);
+                    const bookInProgress = hasActiveBookDownload(book.id, book.state, bookActiveItems);
+                    const bookMonitored = Boolean(book.monitored || book.audiobookMonitored);
+                    const bookCancelling = cancellingBookIds.includes(book.id);
+                    return (
+                      <div
+                        key={book.id}
+                        data-testid={`series-tab-book-${book.id}`}
+                        onClick={(e) => {
+                          if (canManage && selectionMode) return;
+                          e.stopPropagation();
+                          onSelectBook(book);
+                        }}
+                        className="cursor-pointer bg-zinc-950 p-2.5 rounded-sm border border-zinc-800 hover:border-purple-600/60 transition-colors flex flex-col justify-between gap-2"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="truncate">
+                            <div className="text-xs font-medium text-zinc-200 truncate">
+                              {book.title}
+                            </div>
+                            <div className="text-[11px] text-zinc-500 truncate">
+                              <EntityLink kind="authors" name={book.authorName} />
+                            </div>
+                          </div>
+                          <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-sm bg-purple-950 text-purple-300 border border-purple-800 shrink-0">
+                            {index != null ? `Book ${index}` : 'Unindexed'}
+                          </span>
                         </div>
-                        <div className="text-[11px] text-zinc-500 truncate">
-                          <EntityLink kind="authors" name={book.authorName} />
-                        </div>
+                        {(bookInProgress || bookMonitored) && (
+                          <div className="flex flex-wrap items-center justify-between gap-1.5 pt-1 border-t border-zinc-800/60">
+                            {bookInProgress ? (
+                              <span className="rounded-sm border border-blue-800/60 bg-blue-950/80 px-1.5 py-0.5 text-[10px] font-medium text-blue-300">
+                                {bookActiveItems[0]?.phase ?? book.state}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-sm border border-blue-800/60 bg-blue-950/70 px-1.5 py-0.5 text-[10px] font-medium text-blue-200">
+                                <Bell className="w-2.5 h-2.5" aria-hidden="true" />
+                                Monitored
+                              </span>
+                            )}
+                            {allowRequest && !(canManage && selectionMode) && (
+                              <button
+                                type="button"
+                                disabled={bookCancelling}
+                                aria-label={
+                                  bookInProgress
+                                    ? `Cancel download and unmonitor ${book.title}`
+                                    : `Unmonitor ${book.title}`
+                                }
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void handleCancelOrUnmonitorBook(book, bookInProgress);
+                                }}
+                                className="inline-flex items-center gap-1 rounded-sm border border-red-900/60 bg-red-950/30 px-1.5 py-0.5 text-[10px] font-medium text-red-300 transition-colors hover:bg-red-950/60 hover:text-red-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:opacity-50"
+                              >
+                                {bookCancelling ? (
+                                  <Loader2 className="w-2.5 h-2.5 motion-safe:animate-spin shrink-0" aria-hidden="true" />
+                                ) : bookInProgress ? (
+                                  <XCircle className="w-2.5 h-2.5 shrink-0" aria-hidden="true" />
+                                ) : (
+                                  <BellOff className="w-2.5 h-2.5 shrink-0" aria-hidden="true" />
+                                )}
+                                {bookCancelling ? 'Working…' : bookInProgress ? 'Cancel & Unmonitor' : 'Unmonitor'}
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded-sm bg-purple-950 text-purple-300 border border-purple-800 shrink-0">
-                        {index != null ? `Book ${index}` : 'Unindexed'}
-                      </span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             );
