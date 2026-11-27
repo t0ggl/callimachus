@@ -97,3 +97,42 @@ it('omits format score when format is unknown and avoids leading punctuation on 
   expect(screen.getByText('failure: 0')).toBeInTheDocument();
   expect(screen.queryByText(/format:/)).not.toBeInTheDocument();
 });
+
+it('updates the candidate list and shows a meaningful error when a download expires and cannot be found after refresh', async () => {
+  const freshCandidate = {
+    key: '1:fresh',
+    release: { title: 'Dune EPUB Fresh', size: 2097152, seeders: 90 },
+    format: 'epub',
+    score: 50,
+    penalty: 0,
+    breakdown: { format: 30, seeders: 20 },
+  };
+  const fetcher = vi.fn(async (url: string) => {
+    if (url === '/api/requests/7/candidates') {
+      return Response.json([candidate]);
+    }
+    if (url === '/api/requests/7/download') {
+      return Response.json(
+        {
+          error: 'Could not find the requested download after refreshing search results; please try again from the updated list',
+          candidates: [freshCandidate],
+        },
+        { status: 404 },
+      );
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  });
+  vi.stubGlobal('fetch', fetcher);
+  const user = userEvent.setup({ delay: null });
+
+  render(<ManualSearch requestId="7" onClose={vi.fn()} />);
+  expect(await screen.findByText('Dune EPUB')).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Download' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    /could not find the requested download/i,
+  );
+  expect(screen.getByText('Dune EPUB Fresh')).toBeInTheDocument();
+  expect(screen.queryByText('Dune EPUB')).not.toBeInTheDocument();
+});

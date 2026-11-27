@@ -62,8 +62,12 @@ func TestProwlarrAcquisitionFailures(t *testing.T) {
 		if _, err := c.Search(context.Background(), "Book", nil); err == nil {
 			t.Errorf("search accepted %d", status)
 		}
-		if err := c.Grab(context.Background(), indexers.ProwlarrRelease{GUID: "g", IndexerID: 1}); err == nil {
+		err := c.Grab(context.Background(), indexers.ProwlarrRelease{GUID: "g", IndexerID: 1})
+		if err == nil {
 			t.Errorf("grab accepted %d", status)
+		}
+		if (status == http.StatusNotFound) != errors.Is(err, indexers.ErrReleaseExpired) {
+			t.Errorf("status %d: errors.Is(ErrReleaseExpired) = %v", status, errors.Is(err, indexers.ErrReleaseExpired))
 		}
 	}
 	mt := testutil.NewMockTransport()

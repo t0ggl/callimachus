@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -353,6 +354,9 @@ func (c *ProwlarrClient) Search(ctx context.Context, query string, categories []
 	return releases, nil
 }
 
+// ErrReleaseExpired indicates Prowlarr returned 404 because the cached search result expired.
+var ErrReleaseExpired = errors.New("prowlarr release expired")
+
 // Grab dispatches a cached release; expired results must be searched again.
 func (c *ProwlarrClient) Grab(ctx context.Context, release ProwlarrRelease) error {
 	if strings.TrimSpace(release.GUID) == "" || release.IndexerID <= 0 {
@@ -376,6 +380,9 @@ func (c *ProwlarrClient) Grab(ctx context.Context, release ProwlarrRelease) erro
 		return fmt.Errorf("prowlarr grab: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("prowlarr grab: HTTP %d: %w", resp.StatusCode, ErrReleaseExpired)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("prowlarr grab: HTTP %d (search again if the release expired)", resp.StatusCode)
 	}
