@@ -39,20 +39,32 @@ func (s *Server) newAcquisition() *requests.Acquisition {
 			}
 			return c.Grab(ctx, r)
 		},
-		Evaluate: func(ctx context.Context, r indexers.ProwlarrRelease) (requests.Evaluation, error) {
+		Evaluate: func(ctx context.Context, r indexers.ProwlarrRelease, requestFormat string) (requests.Evaluation, error) {
 			cfg, err := config.Load(ctx, s.db, s.baseOverrides)
 			if err != nil {
 				return requests.Evaluation{}, err
 			}
 			p := cfg.Settings.ToQualityProfile()
-			candidate := downloaders.ReleaseCandidate{Title: r.Title, Size: r.Size}
+			candidate := downloaders.ReleaseCandidate{
+				Title:      r.Title,
+				Size:       r.Size,
+				Categories: r.CategoryIDs(),
+			}
+			switch requestFormat {
+			case requests.FormatM4B:
+				candidate.IsAudio = true
+				p.MaxEbookSizeBytes = 0
+			case requests.FormatEPUB:
+				p.MaxAudiobookSizeMB = 0
+			}
+			detectedFormat := downloaders.DetectReleaseFormat(candidate)
 			issues := p.EvaluateReleaseIssues(candidate)
 			exclusions := make(map[string]string, len(issues))
 			for _, issue := range issues {
 				exclusions[issue.Criterion] = issue.Reason
 			}
 			return requests.Evaluation{
-				Format:           downloaders.DetectReleaseFormat(candidate),
+				Format:           detectedFormat,
 				EbookPreferences: p.AllowedEbookPreferences(),
 				AudioPreferences: []string{"m4b", "mp3"},
 				Exclusions:       exclusions,

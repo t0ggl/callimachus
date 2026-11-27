@@ -26,7 +26,7 @@ func TestProwlarrSearchAndGrab(t *testing.T) {
 			if q.Get("query") != "Author & Title #2.5" || q.Get("type") != "search" || strings.Join(q["categories"], ",") != "7020,3030" {
 				t.Errorf("bad query: %s", r.URL.RawQuery)
 			}
-			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`[{"guid":"release/1","indexerId":12,"title":"Book","protocol":"torrent","size":42}]`)), Header: make(http.Header)}, nil
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`[{"guid":"release/1","indexerId":12,"title":"Book","protocol":"torrent","size":42,"categories":[{"id":3030,"name":"Audio/Audiobook"}]}]`)), Header: make(http.Header)}, nil
 		}
 		if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/json" {
 			t.Error("grab must POST JSON")
@@ -44,6 +44,9 @@ func TestProwlarrSearchAndGrab(t *testing.T) {
 	releases, err := c.Search(context.Background(), "Author & Title #2.5", []int{7020, 3030})
 	if err != nil || len(releases) != 1 {
 		t.Fatalf("search: %v, %v", releases, err)
+	}
+	if ids := releases[0].CategoryIDs(); len(ids) != 1 || ids[0] != 3030 {
+		t.Fatalf("expected category ID [3030], got %v", ids)
 	}
 	if err := c.Grab(context.Background(), releases[0]); err != nil {
 		t.Fatal(err)

@@ -55,7 +55,7 @@ func (s *Server) handleGrabRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	profile := resolved.Settings.ToQualityProfile()
-	if ok, reason := profile.EvaluateRelease(downloaders.ReleaseCandidate{Title: release.Title, Size: release.Size}); !ok {
+	if ok, reason := profile.EvaluateRelease(downloaders.ReleaseCandidate{Title: release.Title, Size: release.Size, Categories: release.CategoryIDs()}); !ok {
 		http.Error(w, reason, http.StatusBadRequest)
 		return
 	}

@@ -124,7 +124,9 @@ func ScoreCandidate(r indexers.ProwlarrRelease, year int, requestFormat string, 
 		c.Breakdown["multi-book"] = exclusionPenalty
 	}
 
-	if r.Seeders >= 50 {
+	if isUsenetProtocol(r.Protocol) {
+		c.Breakdown["usenet"] = 20
+	} else if r.Seeders >= 10 {
 		c.Breakdown["seeders"] = 20
 	} else if r.Seeders > 0 {
 		c.Breakdown["seeders"] = 10
@@ -141,6 +143,11 @@ func ScoreCandidate(r indexers.ProwlarrRelease, year int, requestFormat string, 
 	return c
 }
 
+func isUsenetProtocol(protocol string) bool {
+	p := strings.TrimSpace(protocol)
+	return strings.EqualFold(p, "usenet") || strings.EqualFold(p, "newznab")
+}
+
 // Acquisition serializes source refresh, dispatch and reconciliation. Durable state
 // makes restart recovery independent of HTTP request lifetimes.
 // ponytail: one lock serializes all acquisitions; use per-request locks if source latency limits throughput.
@@ -148,7 +155,7 @@ type Acquisition struct {
 	DB       *database.DB
 	Search   func(context.Context, string, string) ([]indexers.ProwlarrRelease, error)
 	Grab     func(context.Context, indexers.ProwlarrRelease) error
-	Evaluate func(context.Context, indexers.ProwlarrRelease) (Evaluation, error)
+	Evaluate func(context.Context, indexers.ProwlarrRelease, string) (Evaluation, error)
 	mu       sync.Mutex
 	activeMu sync.Mutex
 	activeID int64
@@ -263,7 +270,7 @@ func (a *Acquisition) refresh(ctx context.Context, id int64) error {
 			invalid++
 			continue
 		}
-		eval, err := a.Evaluate(ctx, r)
+		eval, err := a.Evaluate(ctx, r, format)
 		if err != nil {
 			return err
 		}
@@ -320,9 +327,9 @@ func (a *Acquisition) fail(ctx context.Context, key string) error {
 	return err
 }
 
-func (a *Acquisition) dispatch(ctx context.Context, id int64, c Candidate, allowExcluded bool) error {
+func (a *Acquisition) dispatch(ctx context.Context, id int64, requestFormat string, c Candidate, allowExcluded bool) error {
 	if !allowExcluded {
-		eval, err := a.Evaluate(ctx, c.Release)
+		eval, err := a.Evaluate(ctx, c.Release, requestFormat)
 		if err != nil {
 			return err
 		}
@@ -400,7 +407,7 @@ func (a *Acquisition) download(ctx context.Context, id int64, key string) error 
 	}
 	for _, c := range candidates {
 		if c.Key == key {
-			err = a.dispatch(ctx, id, c, true)
+			err = a.dispatch(ctx, id, "", c, true)
 			if errors.Is(err, errTransferFailed) {
 				if e := a.fail(ctx, key); e != nil {
 					return e
@@ -415,14 +422,14 @@ func (a *Acquisition) download(ctx context.Context, id int64, key string) error 
 func (a *Acquisition) process(ctx context.Context, id int64) error {
 	var attempts int
 	var searched *time.Time
-	var status string
+	var status, requestFormat string
 	var shouldSearch bool
-	if err := a.DB.QueryRowContext(ctx, `SELECT attempts,searched_at,status,
+	if err := a.DB.QueryRowContext(ctx, `SELECT attempts,searched_at,status,format,
 		user_id!='catalog-monitor' OR (
 			SELECT COUNT(*) FROM missing_monitored_formats f
 			WHERE f.book_id=book_requests.book_id AND book_requests.format IN (f.format, 'both')
 		) = CASE format WHEN 'both' THEN 2 ELSE 1 END
-		FROM book_requests WHERE id=? AND dismissed=0`, id).Scan(&attempts, &searched, &status, &shouldSearch); err != nil {
+		FROM book_requests WHERE id=? AND dismissed=0`, id).Scan(&attempts, &searched, &status, &requestFormat, &shouldSearch); err != nil {
 		return err
 	}
 	// Reconcile the current attempt by its queue link. Older completed downloads
@@ -500,7 +507,7 @@ func (a *Acquisition) process(ctx context.Context, id int64) error {
 				return err
 			}
 		}
-		if err = a.dispatch(ctx, id, c, false); err == nil {
+		if err = a.dispatch(ctx, id, requestFormat, c, false); err == nil {
 			return nil
 		}
 		if !errors.Is(err, errTransferFailed) {
