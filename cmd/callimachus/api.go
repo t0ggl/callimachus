@@ -147,6 +147,8 @@ type APIIndexerConfig struct {
 }
 
 type APILibrarySettings struct {
+	IntakeRoot            string `json:"intakeRoot"`
+	IntakePollInterval    string `json:"intakePollInterval"`
 	CompletedDownloadRoot string `json:"completedDownloadRoot"`
 	RootPath              string `json:"rootPath"`
 	StagingPollInterval   string `json:"stagingPollInterval"`
@@ -198,6 +200,8 @@ type APISettingsUpdateRequest struct {
 	Library             *struct {
 		CompletedDownloadRoot *string `json:"completedDownloadRoot"`
 		RootPath              *string `json:"rootPath"`
+		IntakeRoot            *string `json:"intakeRoot"`
+		IntakePollInterval    *string `json:"intakePollInterval"`
 		StagingPollInterval   *string `json:"stagingPollInterval"`
 		IndexerSyncInterval   *string `json:"indexerSyncInterval"`
 		BundleSeriesInLibrary *bool   `json:"bundleSeriesInLibrary"`
@@ -699,6 +703,8 @@ func (s *Server) buildSettingsResponse(ctx context.Context, resolved *config.Res
 
 	// Library & Storage
 	resp.Library = APILibrarySettings{
+		IntakeRoot:            cfg.IntakeRoot,
+		IntakePollInterval:    cfg.IntakePollInterval.String(),
 		RootPath:              cfg.LibraryRoot,
 		CompletedDownloadRoot: cfg.CompletedDownloadRoot,
 		StagingPollInterval:   cfg.StagingPollInterval.String(),
@@ -880,6 +886,12 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		if req.Library.RootPath != nil {
 			updates[config.KeyLibraryRoot] = *req.Library.RootPath
 		}
+		if req.Library.IntakeRoot != nil {
+			updates[config.KeyIntakeRoot] = *req.Library.IntakeRoot
+		}
+		if req.Library.IntakePollInterval != nil {
+			updates[config.KeyIntakePollInterval] = *req.Library.IntakePollInterval
+		}
 		if req.Library.StagingPollInterval != nil {
 			updates[config.KeyStagingPollInterval] = *req.Library.StagingPollInterval
 		}
@@ -963,6 +975,12 @@ func (s *Server) saveSettings(ctx context.Context, updates map[string]string) (*
 	}
 	if s.stagingMon != nil {
 		s.stagingMon.SetCompletedRoot(resolved.Settings.CompletedDownloadRoot)
+	}
+	if s.intakeWake != nil {
+		select {
+		case s.intakeWake <- struct{}{}:
+		default:
+		}
 	}
 	return resolved, nil
 }

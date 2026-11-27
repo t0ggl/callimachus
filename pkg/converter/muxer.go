@@ -82,7 +82,8 @@ func BuildFFmpegArgs(cfg MuxerConfig, input MuxInput, concatListPath string) []s
 
 	// Metadata mapping
 	if metaIdx >= 0 {
-		args = append(args, "-map_metadata", fmt.Sprintf("%d", metaIdx))
+		idx := fmt.Sprintf("%d", metaIdx)
+		args = append(args, "-map_metadata", idx, "-map_chapters", idx)
 	} else if isM4BPassthrough(input.AudioFiles) {
 		args = append(args, "-map_metadata", "0")
 	}

@@ -55,6 +55,12 @@ func (q *Queue) Enqueue(ctx context.Context, editionID, sourcePath, targetPath s
 }
 
 func (q *Queue) enqueue(ctx context.Context, editionID, sourcePath, targetPath string, priority int, ebookContext string, downloadIDs []string) (*database.ConversionQueueItem, error) {
+	return insertJob(ctx, q.db, editionID, sourcePath, targetPath, priority, ebookContext, "", downloadIDs)
+}
+
+func insertJob(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, editionID, sourcePath, targetPath string, priority int, ebookContext, intakeContext string, downloadIDs []string) (*database.ConversionQueueItem, error) {
 	if strings.TrimSpace(editionID) == "" {
 		return nil, errors.New("editionID cannot be empty")
 	}
@@ -76,18 +82,18 @@ func (q *Queue) enqueue(ctx context.Context, editionID, sourcePath, targetPath s
 		INSERT INTO conversion_queue (
 			id, edition_id, source_path, target_path, status,
 			progress_percent, current_stage, priority, attempts, max_attempts,
-			created_at, updated_at, ebook_context, download_id
-		) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+			created_at, updated_at, ebook_context, intake_context, download_id
+		) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		WHERE ? IS NULL OR EXISTS(SELECT 1 FROM download_queue WHERE id=? AND status='importing')
 		RETURNING id, edition_id, source_path, target_path, status, progress_percent,
 		          current_stage, error_message, worker_id, attempts, max_attempts,
 		          priority, created_at, updated_at, started_at, completed_at;
 	`
 
-	row := q.db.QueryRowContext(ctx, query,
+	row := db.QueryRowContext(ctx, query,
 		id, editionID, sourcePath, targetPath, StatusPending,
 		0.0, StageQueued, priority, 0, DefaultMaxAttempts,
-		now, now, ebookContext, downloadID, downloadID, downloadID,
+		now, now, ebookContext, intakeContext, downloadID, downloadID, downloadID,
 	)
 
 	item, err := scanQueueItem(row)

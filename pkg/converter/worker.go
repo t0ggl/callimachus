@@ -3,6 +3,7 @@ package converter
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -164,17 +165,51 @@ func (w *Worker) ProcessJob(ctx context.Context, job *database.ConversionQueueIt
 		return errors.New("cannot process nil job")
 	}
 
-	if ext := strings.ToLower(filepath.Ext(job.TargetPath)); ext == ".epub" || ext == ".azw3" {
-		return w.processEbook(ctx, job)
+	var intake *intakeImport
+	var payload string
+	if err := w.queue.db.QueryRowContext(ctx, "SELECT intake_context FROM conversion_queue WHERE id=?", job.ID).Scan(&payload); err != nil {
+		return err
+	}
+	sourcePath := job.SourcePath
+	var intakeFiles []string
+	if payload != "" {
+		intake = new(intakeImport)
+		if err := json.Unmarshal([]byte(payload), intake); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(w.cfg.WorkDir, 0755); err != nil {
+			return err
+		}
+		dir, err := os.MkdirTemp(w.cfg.WorkDir, "intake-")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		intakeFiles, err = intake.Source.Copy(ctx, dir)
+		if err != nil {
+			return err
+		}
+		if len(intakeFiles) == 0 {
+			return errors.New("intake conversion has no source files")
+		}
+		sourcePath = intakeFiles[0]
 	}
 
-	// Step 1: Preparing & Playlist ordering
+	if ext := strings.ToLower(filepath.Ext(job.TargetPath)); ext == ".epub" || ext == ".azw3" {
+		return w.processEbook(ctx, job, sourcePath, intake)
+	}
+
 	w.reportStage(ctx, job.ID, StagePreparing, 10.0)
 
-	audioFiles, err := ResolveAudioFiles(job.SourcePath)
-	if err != nil {
-		return fmt.Errorf("resolve audio files: %w", err)
+	audioFiles := intakeFiles
+	if intake == nil {
+		var err error
+		audioFiles, err = ResolveAudioFiles(sourcePath)
+		if err != nil {
+			return fmt.Errorf("resolve audio files: %w", err)
+		}
 	}
+
 	if len(audioFiles) == 0 {
 		return errors.New("no audio files found in source path")
 	}
@@ -205,7 +240,18 @@ func (w *Worker) ProcessJob(ctx context.Context, job *database.ConversionQueueIt
 		_ = os.RemoveAll(jobWorkDir)
 	}()
 
+	if intake != nil {
+		for i, probe := range probes {
+			probe.FilePath = intake.Source.Files[i].Path
+		}
+	}
 	chapters := ChaptersFromProbes(probes)
+	if intake != nil {
+		audioFiles, err = w.prepareIntakeTracks(ctx, jobWorkDir, audioFiles, probes)
+		if err != nil {
+			return err
+		}
+	}
 
 	meta := AudioMetadata{}
 	if len(probes) > 0 {
@@ -214,6 +260,9 @@ func (w *Worker) ProcessJob(ctx context.Context, job *database.ConversionQueueIt
 		meta.Album = probes[0].Album
 		meta.Composer = probes[0].Composer
 		meta.Date = probes[0].Date
+	}
+	if intake != nil {
+		meta = intake.audioMetadata()
 	}
 	if meta.Title == "" {
 		baseName := filepath.Base(job.TargetPath)
@@ -228,7 +277,15 @@ func (w *Worker) ProcessJob(ctx context.Context, job *database.ConversionQueueIt
 		return fmt.Errorf("write ffmetadata file: %w", err)
 	}
 
-	coverImage := findCoverImage(job.SourcePath)
+	coverImage := ""
+	if intake == nil {
+		coverImage = findCoverImage(job.SourcePath)
+	} else if len(intake.Cover) > 0 {
+		coverImage = filepath.Join(jobWorkDir, "cover.jpg")
+		if err := os.WriteFile(coverImage, intake.Cover, 0600); err != nil {
+			return err
+		}
+	}
 
 	// Step 3: Muxing
 	w.reportStage(ctx, job.ID, StageMuxing, 30.0)
@@ -265,6 +322,10 @@ func (w *Worker) ProcessJob(ctx context.Context, job *database.ConversionQueueIt
 	// Step 5: Moving atomically to canonical destination
 	if err := w.reportStage(ctx, job.ID, StageMoving, 95.0); err != nil {
 		return err
+	}
+
+	if intake != nil {
+		return intake.publish(ctx, w.queue.db, tempOutputFile, nil)
 	}
 
 	targetDir := filepath.Dir(job.TargetPath)

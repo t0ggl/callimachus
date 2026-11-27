@@ -35,14 +35,18 @@ func (q *Queue) EnqueueEbook(ctx context.Context, editionID, source, root string
 	return q.enqueue(ctx, editionID, source, target, 0, string(payload), downloadID)
 }
 
-func (w *Worker) processEbook(ctx context.Context, job *database.ConversionQueueItem) error {
-	var payload string
-	if err := w.queue.db.QueryRowContext(ctx, "SELECT ebook_context FROM conversion_queue WHERE id = ?", job.ID).Scan(&payload); err != nil {
-		return err
-	}
+func (w *Worker) processEbook(ctx context.Context, job *database.ConversionQueueItem, sourcePath string, intake *intakeImport) error {
 	var info ebookContext
-	if err := json.Unmarshal([]byte(payload), &info); err != nil {
-		return fmt.Errorf("read ebook conversion context: %w", err)
+	if intake != nil {
+		info = ebookContext{intake.LibraryRoot, intake.Book}
+	} else {
+		var payload string
+		if err := w.queue.db.QueryRowContext(ctx, "SELECT ebook_context FROM conversion_queue WHERE id = ?", job.ID).Scan(&payload); err != nil {
+			return err
+		}
+		if err := json.Unmarshal([]byte(payload), &info); err != nil {
+			return fmt.Errorf("read ebook conversion context: %w", err)
+		}
 	}
 	w.reportStage(ctx, job.ID, StagePreparing, 10)
 	if err := os.MkdirAll(w.cfg.WorkDir, 0755); err != nil {
@@ -56,7 +60,7 @@ func (w *Worker) processEbook(ctx context.Context, job *database.ConversionQueue
 	output := filepath.Join(dir, "converted"+filepath.Ext(job.TargetPath))
 	w.reportStage(ctx, job.ID, StageConverting, 25)
 	// Calibre preserves embedded metadata and artwork; no shell or user-supplied options.
-	if _, err := w.runner.Run(ctx, "ebook-convert", job.SourcePath, output); err != nil {
+	if _, err := w.runner.Run(ctx, "ebook-convert", sourcePath, output); err != nil {
 		return fmt.Errorf("ebook conversion to %s (requires Calibre ebook-convert): %w", info.Book.Format, err)
 	}
 	validationPath := output
@@ -84,6 +88,9 @@ func (w *Worker) processEbook(ctx context.Context, job *database.ConversionQueue
 	}
 	if err := w.reportStage(ctx, job.ID, StageMoving, 95); err != nil {
 		return err
+	}
+	if intake != nil {
+		return intake.publish(ctx, w.queue.db, output, cover)
 	}
 	_, err = catalog.New(w.queue.db).IngestBook(ctx, info.LibraryRoot, info.Book, output, cover)
 	if err != nil {

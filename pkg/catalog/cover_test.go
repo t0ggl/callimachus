@@ -135,7 +135,7 @@ func TestID3Cover(t *testing.T) {
 		if err := os.WriteFile(source, append(header, tag...), 0600); err != nil {
 			t.Fatal(err)
 		}
-		got, err := embeddedCover(source)
+		got, err := EmbeddedCover(source)
 		if err != nil || !bytes.Equal(got, cover) {
 			t.Fatalf("v%d: %v", version, err)
 		}
