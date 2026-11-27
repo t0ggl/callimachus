@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -252,6 +253,9 @@ func (m *Monitor) persist(ctx context.Context, kind, id, name string, ebook, aud
 			return err
 		}
 	}
+	if kind == "series" {
+		found = deduplicateDiscoveredSeriesBooks(found, name)
+	}
 	for _, b := range found {
 		if b.Title == "" || len(b.Authors) == 0 || b.Authors[0] == "" ||
 			metadata.IsNonSingleBookTitle(b.Title, b.Subtitle) {
@@ -291,9 +295,22 @@ func (m *Monitor) persist(ctx context.Context, kind, id, name string, ebook, aud
 		if releaseDate := metadata.NormalizeReleaseDate(b.PublishDate, b.Year); releaseDate != "" {
 			book.ReleaseDate = &releaseDate
 		}
-		saved, err := c.GetOrCreateBook(ctx, book)
-		if err != nil {
-			return err
+		var saved *database.Book
+		if kind == "series" && (book.SeriesID == nil || *book.SeriesID != id) {
+			if existing, hasMedia, findErr := c.FindBookInSeries(ctx, id, name, b.Title, b.SeriesIndex); findErr == nil {
+				saved, err = c.mergeExistingBook(ctx, existing, hasMedia, book, metadata.SanitizeTitle(b.Title), name)
+				if err != nil {
+					return err
+				}
+			} else if !errors.Is(findErr, sql.ErrNoRows) {
+				return findErr
+			}
+		}
+		if saved == nil {
+			saved, err = c.GetOrCreateBook(ctx, book)
+			if err != nil {
+				return err
+			}
 		}
 		if book.SeriesID != nil {
 			if err := c.SaveObservedSeries(ctx, saved.ID, *book.SeriesID, primary.Index); err != nil {
@@ -311,7 +328,7 @@ func (m *Monitor) persist(ctx context.Context, kind, id, name string, ebook, aud
 		if saved.SeriesID == nil || book.SeriesID == nil || *saved.SeriesID != *book.SeriesID {
 			primary.Title, primary.Index = "", nil
 		}
-		if err = c.SaveIdealMetadata(ctx, saved.ID, b.Title, primary.Title, primary.Index, IdealSourceMatch); err != nil {
+		if err = c.SaveIdealMetadata(ctx, saved.ID, saved.Title, primary.Title, primary.Index, IdealSourceMatch); err != nil {
 			return err
 		}
 		// Announcement dates can move. Preserve monitoring while updating a known date without dropping precision for the same period.
@@ -336,10 +353,91 @@ func (m *Monitor) persist(ctx context.Context, kind, id, name string, ebook, aud
 	return nil
 }
 
+func deduplicateDiscoveredSeriesBooks(found []metadata.BookMetadata, seriesTitle string) []metadata.BookMetadata {
+	if len(found) <= 1 {
+		return found
+	}
+	kept := make([]metadata.BookMetadata, 0, len(found))
+	for _, item := range found {
+		if item.SeriesIndex == nil {
+			if idx := effectiveSeriesIndex(nil, item.Title, seriesTitle); idx != nil {
+				v := *idx
+				item.SeriesIndex = &v
+			}
+		}
+		itemKey := metadata.CanonicalSeriesBookTitleKey(item.Title, seriesTitle)
+		matchIdx := -1
+		for i := range kept {
+			if metadata.DistinctTitlePartIndices(kept[i].Title, item.Title) {
+				continue
+			}
+			if item.HardcoverSeriesID > 0 && kept[i].HardcoverSeriesID > 0 && item.HardcoverSeriesID != kept[i].HardcoverSeriesID {
+				continue
+			}
+			if len(item.Authors) > 0 && len(kept[i].Authors) > 0 && !metadata.SharesAuthor(item.Authors, kept[i].Authors) {
+				continue
+			}
+			sameIdx := sameSeriesIndex(kept[i].SeriesIndex, item.SeriesIndex)
+			conflictIdx := kept[i].SeriesIndex != nil && item.SeriesIndex != nil && !sameIdx
+			sameTitle := itemKey != "" && metadata.CanonicalSeriesBookTitleKey(kept[i].Title, seriesTitle) == itemKey
+			if sameIdx || (sameTitle && !conflictIdx) {
+				matchIdx = i
+				break
+			}
+		}
+		if matchIdx < 0 {
+			kept = append(kept, item)
+			continue
+		}
+		dst := &kept[matchIdx]
+		if metadata.PreferBookTitle(item.Title, dst.Title, seriesTitle) {
+			dst.Title = item.Title
+		}
+		if dst.SeriesIndex == nil && item.SeriesIndex != nil {
+			v := *item.SeriesIndex
+			dst.SeriesIndex = &v
+		}
+		dst.Subtitle = cmp.Or(dst.Subtitle, item.Subtitle)
+		dst.Description = cmp.Or(dst.Description, item.Description)
+		dst.CoverURL = cmp.Or(dst.CoverURL, item.CoverURL)
+		dst.Language = cmp.Or(dst.Language, item.Language)
+		dst.PublishDate = cmp.Or(metadata.MergeReleaseDate(dst.PublishDate, metadata.NormalizeReleaseDate(item.PublishDate, item.Year)), dst.PublishDate)
+		if dst.Year == 0 {
+			dst.Year = item.Year
+		}
+		if dst.HardcoverSeriesID == 0 {
+			dst.HardcoverSeriesID = item.HardcoverSeriesID
+		}
+		if dst.PrimarySeries == nil && item.PrimarySeries != nil {
+			p := *item.PrimarySeries
+			dst.PrimarySeries = &p
+		}
+		for _, membership := range item.SeriesMemberships {
+			dst.AddSeriesMembership(membership)
+		}
+	}
+	return kept
+}
+
+type checkBookCandidate struct {
+	id          string
+	authorID    string
+	title       string
+	subtitle    string
+	releaseDate string
+	seriesID    string
+	seriesTitle string
+	seriesIndex *float64
+	formats     map[string]bool
+}
+
 func (m *Monitor) checkBooks(ctx context.Context, now time.Time, column, id string, force bool) error {
-	query := `SELECT b.id, b.title, COALESCE(b.subtitle,''), COALESCE(b.release_date,'') FROM books b
-		WHERE EXISTS(SELECT 1 FROM missing_monitored_formats f WHERE f.book_id=b.id)
-		AND NOT EXISTS(SELECT 1 FROM hidden_library_review review WHERE review.book_id=b.id AND review.kept=0)`
+	query := `SELECT b.id, b.author_id, b.title, COALESCE(b.subtitle,''), COALESCE(b.release_date,''),
+		       COALESCE(b.series_id,''), COALESCE(s.title,''), b.series_index, f.format
+		FROM books b
+		JOIN missing_monitored_formats f ON f.book_id=b.id
+		LEFT JOIN series s ON s.id=b.series_id
+		WHERE NOT EXISTS(SELECT 1 FROM hidden_library_review review WHERE review.book_id=b.id AND review.kept=0)`
 	var args []any
 	if column != "" {
 		if column == "series_id" {
@@ -353,25 +451,48 @@ func (m *Monitor) checkBooks(ctx context.Context, now time.Time, column, id stri
 		query += ` AND (b.availability_checked_at IS NULL OR b.availability_checked_at<=?)`
 		args = append(args, now.Add(-24*time.Hour).Format(time.RFC3339))
 	}
+	query += ` ORDER BY b.rowid, f.format`
 	rows, err := m.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}
 	today := now.UTC().Format(time.DateOnly)
-	var ids []string
+	byID := make(map[string]*checkBookCandidate)
+	var ordered []*checkBookCandidate
 	for rows.Next() {
-		var id, title, subtitle, releaseDate string
-		if err = rows.Scan(&id, &title, &subtitle, &releaseDate); err != nil {
+		var bookID, authorID, title, subtitle, releaseDate, seriesID, seriesTitle, format string
+		var seriesIndex *float64
+		if err = rows.Scan(&bookID, &authorID, &title, &subtitle, &releaseDate, &seriesID, &seriesTitle, &seriesIndex, &format); err != nil {
 			rows.Close()
 			return err
 		}
 		if metadata.IsNonSingleBookTitle(title, subtitle) || metadata.IsFutureRelease(releaseDate, 0, today) {
 			continue
 		}
-		ids = append(ids, id)
+		cand := byID[bookID]
+		if cand == nil {
+			cand = &checkBookCandidate{
+				id:          bookID,
+				authorID:    authorID,
+				title:       title,
+				subtitle:    subtitle,
+				releaseDate: releaseDate,
+				seriesID:    seriesID,
+				seriesTitle: seriesTitle,
+				seriesIndex: effectiveSeriesIndex(seriesIndex, title, seriesTitle),
+				formats:     map[string]bool{},
+			}
+			byID[bookID] = cand
+			ordered = append(ordered, cand)
+		}
+		cand.formats[format] = true
 	}
 	err = rows.Err()
 	rows.Close()
+	if err != nil {
+		return err
+	}
+	ids, err := m.deduplicateCheckBookCandidates(ctx, ordered)
 	if err != nil {
 		return err
 	}
@@ -385,4 +506,260 @@ func (m *Monitor) checkBooks(ctx context.Context, now time.Time, column, id stri
 		}
 	}
 	return nil
+}
+
+type checkBookSeriesSlot struct {
+	seriesID    string
+	seriesTitle string
+	seriesIndex *float64
+}
+
+// deduplicateCheckBookCandidates prevents queueing duplicate downloads when
+// malformed/duplicate rows exist for the same series slot or normalized title.
+func (m *Monitor) deduplicateCheckBookCandidates(ctx context.Context, candidates []*checkBookCandidate) ([]string, error) {
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	slotsByBook := make(map[string][]checkBookSeriesSlot, len(candidates))
+	for _, c := range candidates {
+		rows, err := m.DB.QueryContext(ctx, `
+			SELECT bs.series_id, s.title, bs.series_index
+			FROM book_series bs
+			JOIN series s ON s.id = bs.series_id
+			WHERE bs.book_id = ?`, c.id)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var sl checkBookSeriesSlot
+			if err := rows.Scan(&sl.seriesID, &sl.seriesTitle, &sl.seriesIndex); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			sl.seriesIndex = effectiveSeriesIndex(sl.seriesIndex, c.title, sl.seriesTitle)
+			slotsByBook[c.id] = append(slotsByBook[c.id], sl)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+
+	// Step 1: Drop any candidate whose missing formats are already satisfied (owned or actively requested)
+	// by another catalog row for the same series slot or normalized title.
+	eligible := make([]*checkBookCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		satisfied, err := m.coveredBySiblingBook(ctx, c, slotsByBook[c.id])
+		if err != nil {
+			return nil, err
+		}
+		if !satisfied {
+			eligible = append(eligible, c)
+		}
+	}
+
+	// Step 2: Among remaining monitored candidates in this pass, keep one representative per
+	// (series, index) or normalized title, preferring the cleanest/best title.
+	type keptEntry struct {
+		cand  *checkBookCandidate
+		slots []checkBookSeriesSlot
+	}
+	var kept []keptEntry
+	for _, c := range eligible {
+		cSlots := slotsByBook[c.id]
+		matchIdx := -1
+		matchSeries := c.seriesTitle
+		for i, k := range kept {
+			if metadata.DistinctTitlePartIndices(k.cand.title, c.title) {
+				continue
+			}
+			matched := false
+			for _, cs := range cSlots {
+				for _, ks := range k.slots {
+					if cs.seriesID != ks.seriesID {
+						continue
+					}
+					if sameSeriesIndex(cs.seriesIndex, ks.seriesIndex) {
+						matched = true
+						matchSeries = cs.seriesTitle
+						break
+					}
+					ck := metadata.CanonicalSeriesBookTitleKey(c.title, cs.seriesTitle)
+					kk := metadata.CanonicalSeriesBookTitleKey(k.cand.title, ks.seriesTitle)
+					conflict := cs.seriesIndex != nil && ks.seriesIndex != nil && !sameSeriesIndex(cs.seriesIndex, ks.seriesIndex)
+					if ck != "" && ck == kk && !conflict {
+						matched = true
+						matchSeries = cs.seriesTitle
+						break
+					}
+				}
+				if matched {
+					break
+				}
+			}
+			if !matched && c.authorID == k.cand.authorID {
+				series := cmp.Or(c.seriesTitle, k.cand.seriesTitle)
+				ck := metadata.CanonicalSeriesBookTitleKey(c.title, series)
+				kk := metadata.CanonicalSeriesBookTitleKey(k.cand.title, series)
+				conflict := c.seriesID != "" && c.seriesID == k.cand.seriesID && c.seriesIndex != nil && k.cand.seriesIndex != nil && !sameSeriesIndex(c.seriesIndex, k.cand.seriesIndex)
+				if ck != "" && ck == kk && !conflict {
+					matched = true
+					matchSeries = series
+				}
+			}
+			if matched {
+				matchIdx = i
+				break
+			}
+		}
+		if matchIdx < 0 {
+			kept = append(kept, keptEntry{cand: c, slots: cSlots})
+			continue
+		}
+		if metadata.PreferBookTitle(c.title, kept[matchIdx].cand.title, matchSeries) {
+			kept[matchIdx] = keptEntry{cand: c, slots: cSlots}
+		}
+	}
+
+	ids := make([]string, 0, len(kept))
+	for _, k := range kept {
+		ids = append(ids, k.cand.id)
+	}
+	return ids, nil
+}
+
+func (m *Monitor) coveredBySiblingBook(ctx context.Context, cand *checkBookCandidate, slots []checkBookSeriesSlot) (bool, error) {
+	// Check whether every missing monitored format on cand is already owned or actively requested on a sibling book.
+	covered := make(map[string]bool, len(cand.formats))
+	markFormats := func(siblingID string) error {
+		rows, err := m.DB.QueryContext(ctx, `
+			SELECT CASE WHEN e.format IN ('m4b','mp3') THEN 'm4b' ELSE 'epub' END
+			FROM book_editions e JOIN media_assets a ON a.edition_id = e.id
+			WHERE e.book_id = ?
+			UNION
+			SELECT CASE WHEN r.format = 'both' THEN 'both' ELSE r.format END
+			FROM book_requests r
+			WHERE r.book_id = ? AND r.dismissed = 0 AND r.status IN ('searching','downloading','available')`, siblingID, siblingID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var f string
+			if err := rows.Scan(&f); err != nil {
+				return err
+			}
+			if f == "both" {
+				covered["epub"] = true
+				covered["m4b"] = true
+			} else {
+				covered[f] = true
+			}
+		}
+		return rows.Err()
+	}
+
+	allCovered := func() bool {
+		for f := range cand.formats {
+			if !covered[f] {
+				return false
+			}
+		}
+		return len(cand.formats) > 0
+	}
+
+	// Check siblings in the same series.
+	for _, sl := range slots {
+		rows, err := m.DB.QueryContext(ctx, `
+			SELECT b.id, b.title, bs.series_index
+			FROM books b
+			JOIN book_series bs ON bs.book_id = b.id
+			WHERE bs.series_id = ? AND b.id <> ?`, sl.seriesID, cand.id)
+		if err != nil {
+			return false, err
+		}
+		candKey := metadata.CanonicalSeriesBookTitleKey(cand.title, sl.seriesTitle)
+		var matchedIDs []string
+		for rows.Next() {
+			var sibID, sibTitle string
+			var sibIdx *float64
+			if err := rows.Scan(&sibID, &sibTitle, &sibIdx); err != nil {
+				rows.Close()
+				return false, err
+			}
+			if metadata.DistinctTitlePartIndices(cand.title, sibTitle) {
+				continue
+			}
+			sibIdx = effectiveSeriesIndex(sibIdx, sibTitle, sl.seriesTitle)
+			sameIdx := sameSeriesIndex(sl.seriesIndex, sibIdx)
+			conflict := sl.seriesIndex != nil && sibIdx != nil && !sameIdx
+			sameTitle := candKey != "" && metadata.CanonicalSeriesBookTitleKey(sibTitle, sl.seriesTitle) == candKey
+			if sameIdx || (sameTitle && !conflict) {
+				matchedIDs = append(matchedIDs, sibID)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return false, err
+		}
+		rows.Close()
+		for _, sibID := range matchedIDs {
+			if err := markFormats(sibID); err != nil {
+				return false, err
+			}
+			if allCovered() {
+				return true, nil
+			}
+		}
+	}
+
+	// Check siblings by the same author with the same normalized title.
+	candKey := metadata.CanonicalSeriesBookTitleKey(cand.title, cand.seriesTitle)
+	if candKey != "" {
+		rows, err := m.DB.QueryContext(ctx, `
+			SELECT b.id, b.title, COALESCE(b.series_id, ''), COALESCE(s.title, ''), b.series_index
+			FROM books b
+			LEFT JOIN series s ON s.id = b.series_id
+			WHERE b.author_id = ? AND b.id <> ?`, cand.authorID, cand.id)
+		if err != nil {
+			return false, err
+		}
+		var matchedIDs []string
+		for rows.Next() {
+			var sibID, sibTitle, sibSeriesID, sibSeriesTitle string
+			var sibIdx *float64
+			if err := rows.Scan(&sibID, &sibTitle, &sibSeriesID, &sibSeriesTitle, &sibIdx); err != nil {
+				rows.Close()
+				return false, err
+			}
+			if metadata.DistinctTitlePartIndices(cand.title, sibTitle) {
+				continue
+			}
+			series := cmp.Or(cand.seriesTitle, sibSeriesTitle)
+			if metadata.CanonicalSeriesBookTitleKey(sibTitle, series) != candKey {
+				continue
+			}
+			if cand.seriesID != "" && sibSeriesID == cand.seriesID && cand.seriesIndex != nil && sibIdx != nil && !sameSeriesIndex(cand.seriesIndex, sibIdx) {
+				continue
+			}
+			matchedIDs = append(matchedIDs, sibID)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return false, err
+		}
+		rows.Close()
+		for _, sibID := range matchedIDs {
+			if err := markFormats(sibID); err != nil {
+				return false, err
+			}
+			if allCovered() {
+				return true, nil
+			}
+		}
+	}
+
+	return allCovered(), nil
 }

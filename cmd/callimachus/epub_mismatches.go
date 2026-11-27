@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	reDuplicateTrailingSeries  = regexp.MustCompile(`(?i)\s*[\(\[][^()\[\]]*?(?:book|bk|volume|vol|part|no|#)[^()\[\]]*?[\)\]]\s*$`)
+	reDuplicateTrailingSeries  = regexp.MustCompile(`(?i)\s*(?:\([^()]*?(?:book|bk|volume|vol|part|no|#)[^()]*?(?:\)|$)|\[[^\[\]]*?(?:book|bk|volume|vol|part|no|#)[^\[\]]*?(?:\]|$))\s*$`)
 	reDuplicateTrailingArticle = regexp.MustCompile(`(?i),\s*(?:the|a|an)\s*$`)
 )
 

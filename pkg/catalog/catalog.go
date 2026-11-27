@@ -1,10 +1,12 @@
 package catalog
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -238,9 +240,228 @@ func backfillBookFields(existing, incoming *database.Book) bool {
 	return updated
 }
 
-// GetOrCreateBook finds an existing book by author and title, or inserts a new one.
+const bookSelectColumns = `b.id, b.author_id, b.series_id, b.series_index, b.series_index_display, b.title, b.subtitle, b.release_date, b.synopsis, b.genres, b.ebook_monitored, COALESCE(b.audiobook_monitored, b.ebook_monitored), b.audiobook_monitored IS NULL, b.created_at, b.updated_at`
+
+func sameSeriesIndex(a, b *float64) bool {
+	return a != nil && b != nil && math.Abs(*a-*b) <= 1e-6
+}
+
+func effectiveSeriesIndex(stored *float64, title, seriesTitle string) *float64 {
+	if stored != nil {
+		return stored
+	}
+	ser, idx := metadata.ExtractSeriesFromTitle(title)
+	if idx == nil {
+		return nil
+	}
+	if ser == "" || seriesTitle == "" || metadata.SeriesTitleKey(ser) == metadata.SeriesTitleKey(seriesTitle) {
+		return idx
+	}
+	return nil
+}
+
+func (c *Catalog) bookHasMedia(ctx context.Context, bookID string) (bool, error) {
+	var has bool
+	err := c.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id = e.id WHERE e.book_id = ?)`, bookID).Scan(&has)
+	return has, err
+}
+
+func (c *Catalog) seriesTitleByID(ctx context.Context, seriesID string) string {
+	if seriesID == "" {
+		return ""
+	}
+	var title string
+	_ = c.db.QueryRowContext(ctx, `SELECT title FROM series WHERE id = ?`, seriesID).Scan(&title)
+	return title
+}
+
+// FindBookInSeries finds an existing book belonging to seriesID that matches by
+// series index (a high-quality deduplication indicator) or normalized title.
+// It returns the best matching book and whether it has owned media assets on disk.
+func (c *Catalog) FindBookInSeries(ctx context.Context, seriesID, seriesTitle, rawTitle string, seriesIndex *float64) (*database.Book, bool, error) {
+	if seriesID == "" {
+		return nil, false, sql.ErrNoRows
+	}
+	if seriesTitle == "" {
+		seriesTitle = c.seriesTitleByID(ctx, seriesID)
+	}
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT `+bookSelectColumns+`, bs.series_index,
+		       EXISTS(SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id = e.id WHERE e.book_id = b.id)
+		FROM books b
+		JOIN book_series bs ON bs.book_id = b.id
+		WHERE bs.series_id = ?
+		ORDER BY b.id`, seriesID)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	incomingKey := metadata.CanonicalSeriesBookTitleKey(rawTitle, seriesTitle)
+	incomingIdx := effectiveSeriesIndex(seriesIndex, rawTitle, seriesTitle)
+
+	var best *database.Book
+	var bestHasMedia bool
+	bestScore := 0
+
+	for rows.Next() {
+		var b database.Book
+		var createdAt, updatedAt any
+		var linkIdx *float64
+		var hasMedia bool
+		if err := rows.Scan(
+			&b.ID, &b.AuthorID, &b.SeriesID, &b.SeriesIndex, &b.SeriesIndexDisplay,
+			&b.Title, &b.Subtitle, &b.ReleaseDate, &b.Synopsis, &b.Genres, &b.Monitored, &b.AudiobookMonitored, &b.MonitorEitherFormat,
+			&createdAt, &updatedAt, &linkIdx, &hasMedia,
+		); err != nil {
+			return nil, false, err
+		}
+		b.CreatedAt = parseDBTime(createdAt)
+		b.UpdatedAt = parseDBTime(updatedAt)
+
+		if metadata.DistinctTitlePartIndices(b.Title, rawTitle) {
+			continue
+		}
+		candIdx := linkIdx
+		if candIdx == nil {
+			candIdx = b.SeriesIndex
+		}
+		candIdx = effectiveSeriesIndex(candIdx, b.Title, seriesTitle)
+
+		score := 0
+		candKey := metadata.CanonicalSeriesBookTitleKey(b.Title, seriesTitle)
+		titleMatch := incomingKey != "" && candKey == incomingKey
+		indexMatch := sameSeriesIndex(incomingIdx, candIdx)
+		indexConflict := incomingIdx != nil && candIdx != nil && !indexMatch
+
+		if titleMatch && !indexConflict {
+			score = 2
+			if indexMatch {
+				score = 3
+			}
+		} else if indexMatch {
+			score = 1
+		}
+		if score == 0 {
+			continue
+		}
+		if best == nil || preferExistingBook(&b, hasMedia, score, best, bestHasMedia, bestScore, seriesTitle) {
+			candidate := b
+			best, bestHasMedia, bestScore = &candidate, hasMedia, score
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if best == nil {
+		return nil, false, sql.ErrNoRows
+	}
+	return best, bestHasMedia, nil
+}
+
+func (c *Catalog) findBookByAuthorNormalizedTitle(ctx context.Context, authorID, seriesID, seriesTitle, rawTitle string, seriesIndex *float64) (*database.Book, bool, error) {
+	incomingKey := metadata.CanonicalSeriesBookTitleKey(rawTitle, seriesTitle)
+	if authorID == "" || incomingKey == "" {
+		return nil, false, sql.ErrNoRows
+	}
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT `+bookSelectColumns+`, COALESCE(s.title, ''),
+		       EXISTS(SELECT 1 FROM book_editions e JOIN media_assets a ON a.edition_id = e.id WHERE e.book_id = b.id)
+		FROM books b
+		LEFT JOIN series s ON s.id = b.series_id
+		WHERE b.author_id = ?
+		ORDER BY b.id`, authorID)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	var best *database.Book
+	var bestHasMedia bool
+	for rows.Next() {
+		var b database.Book
+		var createdAt, updatedAt any
+		var candSeriesTitle string
+		var hasMedia bool
+		if err := rows.Scan(
+			&b.ID, &b.AuthorID, &b.SeriesID, &b.SeriesIndex, &b.SeriesIndexDisplay,
+			&b.Title, &b.Subtitle, &b.ReleaseDate, &b.Synopsis, &b.Genres, &b.Monitored, &b.AudiobookMonitored, &b.MonitorEitherFormat,
+			&createdAt, &updatedAt, &candSeriesTitle, &hasMedia,
+		); err != nil {
+			return nil, false, err
+		}
+		b.CreatedAt = parseDBTime(createdAt)
+		b.UpdatedAt = parseDBTime(updatedAt)
+
+		if metadata.DistinctTitlePartIndices(b.Title, rawTitle) {
+			continue
+		}
+		effectiveSeries := cmp.Or(seriesTitle, candSeriesTitle)
+		if metadata.CanonicalSeriesBookTitleKey(b.Title, effectiveSeries) != incomingKey {
+			continue
+		}
+		if seriesID != "" && b.SeriesID != nil && *b.SeriesID == seriesID &&
+			seriesIndex != nil && b.SeriesIndex != nil && !sameSeriesIndex(seriesIndex, b.SeriesIndex) {
+			continue
+		}
+		if best == nil || preferExistingBook(&b, hasMedia, 2, best, bestHasMedia, 2, effectiveSeries) {
+			candidate := b
+			best, bestHasMedia = &candidate, hasMedia
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if best == nil {
+		return nil, false, sql.ErrNoRows
+	}
+	return best, bestHasMedia, nil
+}
+
+func preferExistingBook(cand *database.Book, candMedia bool, candScore int, cur *database.Book, curMedia bool, curScore int, seriesTitle string) bool {
+	if candMedia != curMedia {
+		return candMedia
+	}
+	if candScore != curScore {
+		return candScore > curScore
+	}
+	if (cand.SeriesIndex != nil) != (cur.SeriesIndex != nil) {
+		return cand.SeriesIndex != nil
+	}
+	return metadata.PreferBookTitle(cand.Title, cur.Title, seriesTitle)
+}
+
+func (c *Catalog) mergeExistingBook(ctx context.Context, existing *database.Book, hasMedia bool, incoming *database.Book, cleanTitle, seriesTitle string) (*database.Book, error) {
+	merged := *incoming
+	if existing.SeriesID == nil && incoming.SeriesID != nil {
+		locked, err := CanonicalSeriesLocked(ctx, c.db, existing.ID)
+		if err != nil {
+			return nil, err
+		}
+		if locked {
+			merged.SeriesID, merged.SeriesIndex, merged.SeriesIndexDisplay = nil, nil, nil
+		}
+	}
+	updated := backfillBookFields(existing, &merged)
+	if cleanTitle != "" && cleanTitle != existing.Title {
+		if (metadata.IsMalformedTitle(existing.Title) && !metadata.IsMalformedTitle(cleanTitle)) ||
+			(!hasMedia && metadata.PreferBookTitle(cleanTitle, existing.Title, seriesTitle)) {
+			existing.Title = cleanTitle
+			updated = true
+		}
+	}
+	if updated {
+		if err := c.UpsertBook(ctx, existing); err != nil {
+			return nil, err
+		}
+	}
+	return existing, nil
+}
+
+// GetOrCreateBook finds an existing book by author/title, series/index, or normalized title, or inserts a new one.
 func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*database.Book, error) {
-	cleanTitle := metadata.SanitizeTitle(book.Title)
+	rawTitle := strings.TrimSpace(book.Title)
+	cleanTitle := metadata.SanitizeTitle(rawTitle)
 	if cleanTitle == "" {
 		return nil, ErrMissingTitle
 	}
@@ -248,28 +469,47 @@ func (c *Catalog) GetOrCreateBook(ctx context.Context, book *database.Book) (*da
 		return nil, ErrMissingAuthor
 	}
 
+	var seriesID, seriesTitle string
+	if book.SeriesID != nil && *book.SeriesID != "" {
+		seriesID = *book.SeriesID
+		seriesTitle = c.seriesTitleByID(ctx, seriesID)
+		if book.SeriesIndex == nil {
+			if idx := effectiveSeriesIndex(nil, rawTitle, seriesTitle); idx != nil {
+				v := *idx
+				book.SeriesIndex = &v
+			}
+		}
+	}
+
 	existing, err := c.GetBookByAuthorAndTitle(ctx, book.AuthorID, cleanTitle)
+	var hasMedia bool
 	if err == nil {
-		// Backfill missing or strictly more precise metadata without overwriting existing fields or monitoring state.
-		incoming := *book
-		if existing.SeriesID == nil && book.SeriesID != nil {
-			locked, err := CanonicalSeriesLocked(ctx, c.db, existing.ID)
-			if err != nil {
-				return nil, err
-			}
-			if locked {
-				incoming.SeriesID, incoming.SeriesIndex, incoming.SeriesIndexDisplay = nil, nil, nil
-			}
+		hasMedia, err = c.bookHasMedia(ctx, existing.ID)
+		if err != nil {
+			return nil, err
 		}
-		if backfillBookFields(existing, &incoming) {
-			if err := c.UpsertBook(ctx, existing); err != nil {
-				return nil, err
-			}
-		}
-		return existing, nil
+		return c.mergeExistingBook(ctx, existing, hasMedia, book, cleanTitle, seriesTitle)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("lookup book: %w", err)
+	}
+
+	if seriesID != "" {
+		existing, hasMedia, err = c.FindBookInSeries(ctx, seriesID, seriesTitle, rawTitle, book.SeriesIndex)
+		if err == nil {
+			return c.mergeExistingBook(ctx, existing, hasMedia, book, cleanTitle, seriesTitle)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("lookup series book: %w", err)
+		}
+	}
+
+	existing, hasMedia, err = c.findBookByAuthorNormalizedTitle(ctx, book.AuthorID, seriesID, seriesTitle, rawTitle, book.SeriesIndex)
+	if err == nil {
+		return c.mergeExistingBook(ctx, existing, hasMedia, book, cleanTitle, seriesTitle)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("lookup normalized book: %w", err)
 	}
 
 	if book.ID == "" {

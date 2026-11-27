@@ -736,3 +736,35 @@ func TestOpenLibraryAndHardcoverSearchPage(t *testing.T) {
 		t.Fatalf("hardcover page 2: len=%d hasMore=%v err=%v", len(h2), hMore2, err)
 	}
 }
+
+func TestHardcoverSeriesDeduplicatesMalformedTitlesAndSeriesIndices(t *testing.T) {
+	t.Parallel()
+	mt := testutil.NewMockTransportForTest(t)
+	registerHardcoverSeries(t, mt, `{"data":{"named":[{"id":7,"name":"The Expanse","books_count":3}]}}`, `{"data":{"books":[
+		{"id":10,"title":"Caliban's War (The Expanse Book 2","users_count":500,"description":"Truncated duplicate","book_series":[{"series_position":2,"series":{"id":7,"name":"The Expanse"}}]},
+		{"id":11,"title":"Caliban's War","users_count":100,"image":{"url":"https://example.com/caliban.jpg"},"book_series":[{"series_position":2,"series":{"id":7,"name":"The Expanse"}}]},
+		{"id":12,"title":"Abaddon's Gate (The Expanse Book 3","users_count":200,"book_series":[{"series_position":null,"series":{"id":7,"name":"The Expanse"}}]},
+		{"id":13,"title":"Abaddon's Gate (The Expanse Book 3)","users_count":200,"description":"Book 3 blurb","book_series":[{"series_position":3,"series":{"id":7,"name":"The Expanse"}}]},
+		{"id":14,"title":"Abaddon's Gate","users_count":200,"image":{"url":"https://example.com/abaddon.jpg"},"book_series":[{"series_position":3,"series":{"id":7,"name":"The Expanse"}}]},
+		{"id":15,"title":"The Churn (The Expanse Novella","book_series":[{"series_position":null,"series":{"id":7,"name":"The Expanse"}}]},
+		{"id":16,"title":"The Churn (The Expanse Novella)","description":"Novella blurb","book_series":[{"series_position":null,"series":{"id":7,"name":"The Expanse"}}]}
+	]}}`)
+
+	p := metadata.NewHardcoverProvider("mock", metadata.WithHardcoverClient(mt.Client()))
+	books, err := p.SeriesBooks(context.Background(), "The Expanse")
+	if err != nil {
+		t.Fatalf("SeriesBooks failed: %v", err)
+	}
+	if len(books) != 3 {
+		t.Fatalf("expected 3 deduplicated books, got %d: %+v", len(books), books)
+	}
+	if books[0].Title != "Caliban's War" || books[0].SeriesIndex == nil || *books[0].SeriesIndex != 2 || books[0].Description != "Truncated duplicate" || books[0].CoverURL == "" {
+		t.Fatalf("unexpected book 2 merge: %+v", books[0])
+	}
+	if books[1].Title != "Abaddon's Gate" || books[1].SeriesIndex == nil || *books[1].SeriesIndex != 3 || books[1].Description != "Book 3 blurb" || books[1].CoverURL == "" {
+		t.Fatalf("unexpected book 3 merge: %+v", books[1])
+	}
+	if books[2].Title != "The Churn (The Expanse Novella)" || books[2].Description != "Novella blurb" {
+		t.Fatalf("unexpected unindexed novella merge: %+v", books[2])
+	}
+}

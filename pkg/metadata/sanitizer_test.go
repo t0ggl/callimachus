@@ -72,6 +72,31 @@ func TestSanitizeTitle(t *testing.T) {
 			input:    "A Drop of Corruption (Shadow of the Leviathan, Book 2)",
 			expected: "A Drop of Corruption (Shadow of the Leviathan, Book 2)",
 		},
+		{
+			name:     "Strips truncated unclosed parenthesized series tag",
+			input:    "Abaddon's Gate (The Expanse Book 3",
+			expected: "Abaddon's Gate",
+		},
+		{
+			name:     "Strips truncated unclosed bracketed series tag",
+			input:    "Caliban's War [The Expanse #2",
+			expected: "Caliban's War",
+		},
+		{
+			name:     "Strips truncated unclosed partial parenthetical",
+			input:    "Leviathan Wakes (The Expanse",
+			expected: "Leviathan Wakes",
+		},
+		{
+			name:     "Strips extra unmatched closing parenthesis",
+			input:    "Cibola Burn (The Expanse Book 4))",
+			expected: "Cibola Burn (The Expanse Book 4)",
+		},
+		{
+			name:     "Strips trailing dangling punctuation",
+			input:    "Nemesis Games:",
+			expected: "Nemesis Games",
+		},
 	}
 
 	for _, tt := range tests {
@@ -680,6 +705,24 @@ func TestExtractSeriesFromTitle(t *testing.T) {
 			input:     "Yearbook 2024",
 			wantIndex: nil,
 		},
+		{
+			name:       "Truncated unclosed parenthesized series and book",
+			input:      "Abaddon's Gate (The Expanse Book 3",
+			wantSeries: "The Expanse",
+			wantIndex:  floatPtr(3),
+		},
+		{
+			name:       "Truncated unclosed parenthesized series and hash",
+			input:      "Caliban's War (The Expanse #2",
+			wantSeries: "The Expanse",
+			wantIndex:  floatPtr(2),
+		},
+		{
+			name:       "Truncated unclosed bracketed series and book",
+			input:      "Cibola Burn [The Expanse, Book 4",
+			wantSeries: "The Expanse",
+			wantIndex:  floatPtr(4),
+		},
 	}
 
 	for _, tc := range tests {
@@ -707,6 +750,9 @@ func TestNormalizeTitleKey(t *testing.T) {
 		{"Centre of the Storm", "Center of the Storm"},
 		{"Armour of Light", "Armor of Light"},
 		{"Dishonoured Crown", "Dishonored Crown"},
+		{"Abaddon's Gate (The Expanse Book 3)", "Abaddon's Gate (The Expanse Book 3"},
+		{"Abaddon's Gate (The Expanse Book 3)", "Abaddon's Gate"},
+		{"Abaddon\u2019s Gate (The Expanse Book 3", "Abaddon's Gate"},
 	}
 	for _, pair := range equalPairs {
 		a := NormalizeTitleKey(pair[0])
@@ -721,6 +767,7 @@ func TestNormalizeTitleKey(t *testing.T) {
 		{"The Dark Hour", "The Dark Hor"},
 		{"Grand Tour", "Grand Tor"},
 		{"Your Shadow", "Yor Shadow"},
+		{"The Long Tale (Part 1)", "The Long Tale (Part 2)"},
 	}
 	for _, pair := range distinctPairs {
 		a := NormalizeTitleKey(pair[0])
@@ -728,6 +775,58 @@ func TestNormalizeTitleKey(t *testing.T) {
 		if a == b {
 			t.Errorf("NormalizeTitleKey false collision: %q and %q both normalized to %q", pair[0], pair[1], a)
 		}
+	}
+}
+
+func TestMalformedAndPreferredBookTitles(t *testing.T) {
+	t.Parallel()
+	malformed := []string{
+		"",
+		"Abaddon's Gate (The Expanse Book 3",
+		"Abaddon's Gate [The Expanse Book 3",
+		"Abaddon's Gate (The Expanse Book 3))",
+		"Abaddon's Gate:",
+		"Abaddon's Gate -",
+	}
+	for _, title := range malformed {
+		if !IsMalformedTitle(title) {
+			t.Errorf("IsMalformedTitle(%q) = false, want true", title)
+		}
+	}
+
+	wellFormed := []string{
+		"Abaddon's Gate",
+		"Abaddon's Gate (The Expanse Book 3)",
+		"The Long Tale (Part 1)",
+	}
+	for _, title := range wellFormed {
+		if IsMalformedTitle(title) {
+			t.Errorf("IsMalformedTitle(%q) = true, want false", title)
+		}
+	}
+
+	cases := []struct {
+		name      string
+		candidate string
+		current   string
+		series    string
+		want      bool
+	}{
+		{"balanced beats truncated", "Abaddon's Gate (The Expanse Book 3)", "Abaddon's Gate (The Expanse Book 3", "The Expanse", true},
+		{"truncated does not beat balanced", "Abaddon's Gate (The Expanse Book 3", "Abaddon's Gate (The Expanse Book 3)", "The Expanse", false},
+		{"clean beats parenthetical series suffix", "Abaddon's Gate", "Abaddon's Gate (The Expanse Book 3)", "The Expanse", true},
+		{"clean beats truncated suffix", "Abaddon's Gate", "Abaddon's Gate (The Expanse Book 3", "The Expanse", true},
+		{"clean beats leading series prefix", "Jimmy the Hand", "Legends of the Riftwar, Book 3: Jimmy the Hand", "Legends of the Riftwar", true},
+		{"parenthetical suffix does not beat clean", "Abaddon's Gate (The Expanse Book 3)", "Abaddon's Gate", "The Expanse", false},
+		{"equally clean preserves current", "Honored Enemy", "Honoured Enemy", "Legends of the Riftwar", false},
+		{"non-empty beats empty", "Abaddon's Gate", "", "The Expanse", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PreferBookTitle(tc.candidate, tc.current, tc.series); got != tc.want {
+				t.Errorf("PreferBookTitle(%q, %q, %q) = %v, want %v", tc.candidate, tc.current, tc.series, got, tc.want)
+			}
+		})
 	}
 }
 

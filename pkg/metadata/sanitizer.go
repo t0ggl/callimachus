@@ -60,12 +60,16 @@ var (
 	reSceneTags = regexp.MustCompile(`(?i)\b(retail|web-rip|webrip|web|ebook|audiobook|unabridged|abridged|v\d+(?:\.\d+)?|repack|internal|readnfo|bundle|trilogy|complete|proper|scan)\b`)
 
 	// Series patterns
-	reParenSeries   = regexp.MustCompile(`(?i)[\(\[]([^()\[\]]*?(?:book|bk|volume|vol|part|no|#)[^()\[\]]*?)[\)\]]`)
-	reSeriesPattern = regexp.MustCompile(`(?i)^(.*?)(?:^|[,_\s\-\(\[.]+)(?:book|bk|volume|vol|part|no)\.?[._\s#]*(\d+(?:\.\d+)?)\s*[\)\]]?`)
-	reSeriesHash    = regexp.MustCompile(`(?i)^(.*?)\s*#\s*(\d+(?:\.\d+)?)\s*[\)\]]?$`)
-	reSeriesNumOnly = regexp.MustCompile(`(?i)^(?:book|bk|volume|vol|part|no|#)\.?[._\s#]*(\d+(?:\.\d+)?)$`)
-	reSeriesTailNum = regexp.MustCompile(`^(.*?)[,_\s\-]+(\d+(?:\.\d+)?)$`)
-	reVolumeInTitle = regexp.MustCompile(`(?i)\b(?:vol(?:ume)?|book|bk)\.?\s*(\d+(?:\.\d+)?)\b`)
+	reParenSeries             = regexp.MustCompile(`(?i)(?:\(([^()]*?(?:book|bk|volume|vol|part|no|#)[^()]*?)(?:\)|$)|\[([^\[\]]*?(?:book|bk|volume|vol|part|no|#)[^\[\]]*?)(?:\]|$))`)
+	reTrailingTitleAnnotation = regexp.MustCompile(`(?:\s*(?:\([^()]*\)|\[[^\[\]]*\]|\([^()]*$|\[[^\[\]]*$))+\s*$`)
+	reSeriesPattern           = regexp.MustCompile(`(?i)^(.*?)(?:^|[,_\s\-\(\[.]+)(?:book|bk|volume|vol|part|no)\.?[._\s#]*(\d+(?:\.\d+)?)\s*[\)\]]?`)
+	reSeriesHash              = regexp.MustCompile(`(?i)^(.*?)\s*#\s*(\d+(?:\.\d+)?)\s*[\)\]]?$`)
+	reSeriesNumOnly           = regexp.MustCompile(`(?i)^(?:book|bk|volume|vol|part|no|#)\.?[._\s#]*(\d+(?:\.\d+)?)$`)
+	reSeriesTailNum           = regexp.MustCompile(`^(.*?)[,_\s\-]+(\d+(?:\.\d+)?)$`)
+	reVolumeInTitle           = regexp.MustCompile(`(?i)\b(?:vol(?:ume)?|book|bk)\.?\s*(\d+(?:\.\d+)?)\b`)
+	reTitleSubtitleSeparator  = regexp.MustCompile(`:\s*|\s+[-–—]\s+`)
+	seriesTitlePunctReplacer  = strings.NewReplacer(",", " ", ".", " ", ";", " ", ":", " ", "-", " ", "–", " ", "—", " ")
+	smartQuoteReplacer        = strings.NewReplacer("\u2019", "'", "\u2018", "'", "\u201c", `"`, "\u201d", `"`)
 
 	// Authors
 	reCoAuthorSplit = regexp.MustCompile(`(?i)\s+(?:&|and|with|feat\.?|ft\.?)\s+|;\s*|\s*/\s*`)
@@ -406,16 +410,148 @@ func SanitizeTitle(title string) string {
 	}
 
 	// Trim edge punctuation and any unmatched opening/closing delimiters without breaking balanced "(Series, Book 2)"
-	t = strings.Trim(t, " -:,_./#")
+	t = strings.Trim(t, " -:,;_./#")
+	t = stripUnclosedTrailingDelimiter(t)
 	t = strings.TrimLeft(t, ")]}")
 	t = strings.TrimRight(t, "([{")
 	for strings.HasSuffix(t, ")") && strings.Count(t, ")") > strings.Count(t, "(") {
-		t = strings.TrimRight(strings.TrimSuffix(t, ")"), " -:,_./#")
+		t = strings.TrimRight(strings.TrimSuffix(t, ")"), " -:,;_./#")
 	}
 	for strings.HasSuffix(t, "]") && strings.Count(t, "]") > strings.Count(t, "[") {
-		t = strings.TrimRight(strings.TrimSuffix(t, "]"), " -:,_./#")
+		t = strings.TrimRight(strings.TrimSuffix(t, "]"), " -:,;_./#")
 	}
-	return strings.Trim(t, " -:,_./#")
+	return strings.Trim(t, " -:,;_./#")
+}
+
+// stripUnclosedTrailingDelimiter trims a truncated unclosed parenthetical/bracketed
+// suffix (e.g. "Abaddon's Gate (The Expanse Book 3" -> "Abaddon's Gate") while
+// preserving balanced delimiters like "A Drop of Corruption (Shadow of the Leviathan, Book 2)".
+func stripUnclosedTrailingDelimiter(s string) string {
+	type openDelim struct {
+		pos  int
+		want rune
+	}
+	var stack []openDelim
+	for i, r := range s {
+		switch r {
+		case '(':
+			stack = append(stack, openDelim{pos: i, want: ')'})
+		case '[':
+			stack = append(stack, openDelim{pos: i, want: ']'})
+		case '{':
+			stack = append(stack, openDelim{pos: i, want: '}'})
+		case ')', ']', '}':
+			for j := len(stack) - 1; j >= 0; j-- {
+				if stack[j].want == r {
+					stack = stack[:j]
+					break
+				}
+			}
+		}
+	}
+	if len(stack) == 0 {
+		return s
+	}
+	cut := stack[0].pos
+	if prefix := strings.Trim(s[:cut], " -:,;_./#"); prefix != "" {
+		return prefix
+	}
+	// If the unclosed delimiter is at the start of the string, drop only that delimiter.
+	return strings.TrimLeft(s[cut+1:], " -:,;_./#([{")
+}
+
+// HasUnbalancedDelimiters reports whether s contains unmatched parentheses, brackets, or braces.
+func HasUnbalancedDelimiters(s string) bool {
+	return unbalancedDelimiterCount(s) > 0
+}
+
+func unbalancedDelimiterCount(s string) int {
+	var stack []rune
+	unmatched := 0
+	for _, r := range s {
+		switch r {
+		case '(':
+			stack = append(stack, ')')
+		case '[':
+			stack = append(stack, ']')
+		case '{':
+			stack = append(stack, '}')
+		case ')', ']', '}':
+			found := -1
+			for j := len(stack) - 1; j >= 0; j-- {
+				if stack[j] == r {
+					found = j
+					break
+				}
+			}
+			if found >= 0 {
+				unmatched += len(stack) - 1 - found
+				stack = stack[:found]
+			} else {
+				unmatched++
+			}
+		}
+	}
+	return unmatched + len(stack)
+}
+
+// IsMalformedTitle reports whether a book title is empty, has unbalanced delimiters,
+// or ends with dangling separator punctuation.
+func IsMalformedTitle(title string) bool {
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" {
+		return true
+	}
+	if HasUnbalancedDelimiters(trimmed) {
+		return true
+	}
+	switch trimmed[len(trimmed)-1] {
+	case ':', '-', ',', ';', '(', '[', '{':
+		return true
+	}
+	return strings.HasSuffix(trimmed, "–") || strings.HasSuffix(trimmed, "—")
+}
+
+// StripTitleAnnotation removes balanced or truncated trailing parenthetical/bracketed
+// annotations (e.g. "(The Expanse Book 3)" or "(The Expanse Book 3") unless doing so
+// would leave an empty title.
+func StripTitleAnnotation(title string) string {
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" {
+		return ""
+	}
+	stripped := strings.TrimSpace(reTrailingTitleAnnotation.ReplaceAllString(trimmed, ""))
+	if stripped == "" {
+		return trimmed
+	}
+	return stripped
+}
+
+// stripTrailingNamedSeriesAnnotation removes a trailing parenthetical/bracketed series
+// tag that names a series and index (e.g. "(The Expanse Book 3)") while preserving
+// bare part indicators like "(Part 1)" / "(Part 2)".
+func stripTrailingNamedSeriesAnnotation(title string) string {
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" {
+		return ""
+	}
+	for {
+		loc := reTrailingTitleAnnotation.FindStringIndex(trimmed)
+		if loc == nil {
+			break
+		}
+		suffix := trimmed[loc[0]:loc[1]]
+		ser, idx := ExtractSeries(suffix)
+		if ser == "" || idx == nil {
+			break
+		}
+		prefix := strings.TrimSpace(trimmed[:loc[0]])
+		if prefix == "" {
+			break
+		}
+		trimmed = prefix
+	}
+	return trimmed
 }
 
 var (
@@ -496,13 +632,151 @@ func normalizeUSUKWord(w string) string {
 }
 
 // NormalizeTitleKey returns a normalized comparison key for matching book titles across
-// casing, whitespace, scene noise, and common US/UK spelling variations.
+// casing, whitespace, scene noise, smart quotes, trailing named series annotations,
+// and common US/UK spelling variations.
 func NormalizeTitleKey(title string) string {
-	cleaned := strings.ToLower(strings.Join(strings.Fields(SanitizeTitle(title)), " "))
+	normalized := smartQuoteReplacer.Replace(stripTrailingNamedSeriesAnnotation(title))
+	cleaned := strings.ToLower(strings.Join(strings.Fields(SanitizeTitle(normalized)), " "))
 	if cleaned == "" {
 		return ""
 	}
 	return reASCIIWord.ReplaceAllStringFunc(cleaned, normalizeUSUKWord)
+}
+
+// SeriesTitleKey returns a punctuation-insensitive normalized key for comparing
+// series titles and book titles within a series.
+func SeriesTitleKey(title string) string {
+	key := NormalizeTitleKey(title)
+	if key == "" {
+		return ""
+	}
+	key = seriesTitlePunctReplacer.Replace(key)
+	fields := strings.Fields(key)
+	for i, f := range fields {
+		if f == "vol" {
+			fields[i] = "volume"
+		}
+	}
+	return strings.Join(fields, " ")
+}
+
+func isSeriesPrefixSegment(prefix, seriesTitle string) bool {
+	normPrefix := SeriesTitleKey(prefix)
+	if normPrefix == "" {
+		return false
+	}
+	if seriesTitle != "" && normPrefix == SeriesTitleKey(seriesTitle) {
+		return true
+	}
+	if ser, idx := ExtractSeries(prefix); idx != nil {
+		if ser == "" {
+			return true
+		}
+		if seriesTitle != "" && SeriesTitleKey(ser) == SeriesTitleKey(seriesTitle) {
+			return true
+		}
+	}
+	return false
+}
+
+// CanonicalSeriesBookTitleKey returns the normalized core title key for a book inside a
+// series, stripping trailing balanced/truncated parenthetical annotations and leading
+// series/volume prefixes (e.g. "Series, Book 3: Title").
+func CanonicalSeriesBookTitleKey(title, seriesTitle string) string {
+	clean := StripTitleAnnotation(title)
+	if sep := reTitleSubtitleSeparator.FindStringIndex(clean); sep != nil {
+		mainPart := strings.TrimSpace(clean[:sep[0]])
+		subPart := strings.TrimSpace(clean[sep[1]:])
+		if subPart != "" && isSeriesPrefixSegment(mainPart, seriesTitle) {
+			clean = subPart
+		}
+	}
+	return SeriesTitleKey(clean)
+}
+
+// HasSeriesTitleAnnotation reports whether title carries a trailing parenthetical/bracketed
+// series annotation or a leading series/volume prefix.
+func HasSeriesTitleAnnotation(title, seriesTitle string) bool {
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" {
+		return false
+	}
+	if stripped := StripTitleAnnotation(trimmed); stripped != trimmed {
+		suffix := strings.TrimSpace(trimmed[len(stripped):])
+		if _, idx := ExtractSeries(suffix); idx != nil {
+			return true
+		}
+		if seriesTitle != "" && SeriesTitleKey(suffix) == SeriesTitleKey(seriesTitle) {
+			return true
+		}
+		if HasUnbalancedDelimiters(suffix) {
+			return true
+		}
+	}
+	if sep := reTitleSubtitleSeparator.FindStringIndex(trimmed); sep != nil {
+		mainPart := strings.TrimSpace(trimmed[:sep[0]])
+		subPart := strings.TrimSpace(trimmed[sep[1]:])
+		if subPart != "" && isSeriesPrefixSegment(mainPart, seriesTitle) {
+			return true
+		}
+	}
+	return false
+}
+
+// PreferBookTitle reports whether candidate is a strictly cleaner, better-formed title
+// than current for the same book (preferring well-formed punctuation and titles without
+// redundant series annotations while preserving current on ties).
+func PreferBookTitle(candidate, current, seriesTitle string) bool {
+	cand := strings.TrimSpace(candidate)
+	cur := strings.TrimSpace(current)
+	if cand == "" {
+		return false
+	}
+	if cur == "" {
+		return true
+	}
+	candMalformed := IsMalformedTitle(cand)
+	curMalformed := IsMalformedTitle(cur)
+	if candMalformed != curMalformed {
+		return !candMalformed
+	}
+	if candMalformed && curMalformed {
+		candUnbal := unbalancedDelimiterCount(cand)
+		curUnbal := unbalancedDelimiterCount(cur)
+		if candUnbal != curUnbal {
+			return candUnbal < curUnbal
+		}
+	}
+	candAnnotated := HasSeriesTitleAnnotation(cand, seriesTitle)
+	curAnnotated := HasSeriesTitleAnnotation(cur, seriesTitle)
+	if candAnnotated != curAnnotated {
+		return !candAnnotated
+	}
+	if candAnnotated && curAnnotated {
+		// When both carry annotations, prefer the cleaner/shorter annotation form if one is
+		// missing closing punctuation or otherwise noisier.
+		candUnbal := unbalancedDelimiterCount(cand)
+		curUnbal := unbalancedDelimiterCount(cur)
+		if candUnbal != curUnbal {
+			return candUnbal < curUnbal
+		}
+	}
+	return false
+}
+
+// DistinctTitlePartIndices reports whether two titles carry explicit, conflicting
+// volume/part numbers (e.g. "The Long Tale (Part 1)" vs "The Long Tale (Part 2)").
+func DistinctTitlePartIndices(a, b string) bool {
+	_, aIdx := ExtractSeriesFromTitle(a)
+	_, bIdx := ExtractSeriesFromTitle(b)
+	if aIdx == nil || bIdx == nil {
+		return false
+	}
+	diff := *aIdx - *bIdx
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff > 1e-6
 }
 
 // DiscoveryKey returns a normalized comparison key for matching a book by title and author.
@@ -612,6 +886,17 @@ func normalizeSingleAuthor(s string) string {
 	return reMultipleSpace.ReplaceAllString(s, " ")
 }
 
+func extractParenSeries(s string) string {
+	m := reParenSeries.FindStringSubmatch(s)
+	if len(m) < 3 {
+		return ""
+	}
+	if m[1] != "" {
+		return m[1]
+	}
+	return m[2]
+}
+
 // ExtractSeries extracts a series name and its numeric index (e.g. 1.0, 2.5) from a string.
 // Handles formats like "Book 2.5", "#01", "Vol. 3", "Synthetic Series Book 05", "Series, Book 2", etc.
 func ExtractSeries(raw string) (series string, index *float64) {
@@ -620,9 +905,9 @@ func ExtractSeries(raw string) (series string, index *float64) {
 		return "", nil
 	}
 
-	// Check for parenthesized series: e.g. "Title (Series Name #2)"
-	if m := reParenSeries.FindStringSubmatch(s); len(m) > 1 {
-		ser, idx := ExtractSeries(m[1])
+	// Check for parenthesized series: e.g. "Title (Series Name #2)" or truncated "Title (Series Name Book 3"
+	if inner := extractParenSeries(s); inner != "" {
+		ser, idx := ExtractSeries(inner)
 		if idx != nil {
 			return ser, idx
 		}
@@ -673,8 +958,8 @@ func ExtractSeriesFromTitle(raw string) (series string, index *float64) {
 	if s == "" {
 		return "", nil
 	}
-	if m := reParenSeries.FindStringSubmatch(s); len(m) > 1 {
-		ser, idx := ExtractSeries(m[1])
+	if inner := extractParenSeries(s); inner != "" {
+		ser, idx := ExtractSeries(inner)
 		if idx != nil {
 			return ser, idx
 		}
