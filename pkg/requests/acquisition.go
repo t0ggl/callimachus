@@ -224,6 +224,9 @@ func (a *Acquisition) Candidates(ctx context.Context, id int64) ([]Candidate, er
 }
 
 func formatMatchesRequest(requestFormat, releaseFormat string) bool {
+	if releaseFormat == "" {
+		return true
+	}
 	audio := releaseFormat == "m4b" || releaseFormat == "mp3"
 	switch requestFormat {
 	case FormatEPUB:

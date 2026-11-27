@@ -214,10 +214,14 @@ function CandidateList({ format, resolveRequest }: {
                 </td>
                 <td className="p-2 tabular-nums">{c.release.seeders || 0}</td>
                 <td className="p-2">
-                  {Object.entries(c.breakdown)
-                    .map(([k, v]) => `${k}: ${v > 0 ? '+' : ''}${v}`)
-                    .join(', ')}
-                  ; failure: {c.penalty}
+                  {[
+                    Object.entries(c.breakdown)
+                      .map(([k, v]) => `${k}: ${v > 0 ? '+' : ''}${v}`)
+                      .join(', '),
+                    `failure: ${c.penalty}`,
+                  ]
+                    .filter(Boolean)
+                    .join('; ')}
                 </td>
                 <td className="p-2 tabular-nums">{c.score}</td>
                 <td className="p-2">

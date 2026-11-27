@@ -269,20 +269,16 @@ func (p QualityProfile) EvaluateReleaseIssues(release ReleaseCandidate) []Evalua
 		}
 	}
 
-	if formatReason == "" && len(p.AllowedFormats) > 0 && format != "m4b" && format != "mp3" {
-		if format == "" {
-			formatReason = "release format could not be determined"
-		} else {
-			allowed := false
-			for _, af := range p.AllowedFormats {
-				if strings.EqualFold(strings.TrimPrefix(af, "."), format) {
-					allowed = true
-					break
-				}
+	if formatReason == "" && format != "" && len(p.AllowedFormats) > 0 && format != "m4b" && format != "mp3" {
+		allowed := false
+		for _, af := range p.AllowedFormats {
+			if strings.EqualFold(strings.TrimPrefix(af, "."), format) {
+				allowed = true
+				break
 			}
-			if !allowed {
-				formatReason = fmt.Sprintf("format %q not allowed by quality profile", format)
-			}
+		}
+		if !allowed {
+			formatReason = fmt.Sprintf("format %q not allowed by quality profile", format)
 		}
 	}
 	if formatReason != "" {

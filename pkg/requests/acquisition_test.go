@@ -94,6 +94,42 @@ func TestScoreCandidate_FormatPreferencesAndExclusions(t *testing.T) {
 	if multi.Breakdown["multi-book"] != -1000 || !multi.IsExcluded() || multi.Score >= 0 {
 		t.Fatalf("multi-book release not excluded: %+v", multi)
 	}
+
+	// Unknown format leaves the format breakdown blank (not negative) for both eBook and audiobook requests.
+	for _, reqFmt := range []string{FormatEPUB, FormatM4B, FormatBoth} {
+		unknown := ScoreCandidate(
+			indexers.ProwlarrRelease{Title: "Single Book Without Format", Seeders: 10},
+			0,
+			reqFmt,
+			Evaluation{EbookPreferences: []string{"epub", "pdf"}},
+		)
+		if _, hasFormat := unknown.Breakdown["format"]; hasFormat {
+			t.Fatalf("unknown format for %s request should omit format score, got %+v", reqFmt, unknown.Breakdown)
+		}
+		if unknown.IsExcluded() || unknown.Score != 10 {
+			t.Fatalf("unknown format for %s request should not be excluded, got %+v", reqFmt, unknown)
+		}
+	}
+
+	// Definite format mismatches still score format=-1000.
+	audioForEbook := ScoreCandidate(
+		indexers.ProwlarrRelease{Title: "Book M4B", Seeders: 20},
+		0,
+		FormatEPUB,
+		Evaluation{Format: "m4b", EbookPreferences: []string{"epub"}},
+	)
+	if audioForEbook.Breakdown["format"] != -1000 || !audioForEbook.IsExcluded() {
+		t.Fatalf("m4b for epub request should score format=-1000, got %+v", audioForEbook)
+	}
+	ebookForAudio := ScoreCandidate(
+		indexers.ProwlarrRelease{Title: "Book EPUB", Seeders: 20},
+		0,
+		FormatM4B,
+		Evaluation{Format: "epub", EbookPreferences: []string{"epub"}},
+	)
+	if ebookForAudio.Breakdown["format"] != -1000 || !ebookForAudio.IsExcluded() {
+		t.Fatalf("epub for m4b request should score format=-1000, got %+v", ebookForAudio)
+	}
 }
 
 func acquisitionFixture(t *testing.T) (*Acquisition, int64, *int, *int) {
