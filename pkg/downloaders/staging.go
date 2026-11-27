@@ -208,10 +208,15 @@ func (sm *StagingMonitor) PollOnce(ctx context.Context) error {
 		slog.InfoContext(ctx, "staged download processing started", "queue_id", item.ID)
 		if err := sm.dispatchPostProcessing(ctx, item, path, requestFormat); err != nil {
 			slog.WarnContext(ctx, "staged download processing failed", "queue_id", item.ID)
-			if _, resetErr := sm.db.ExecContext(ctx, `UPDATE download_queue SET status = 'queued' WHERE id = ? AND status = 'importing'`, item.ID); resetErr != nil {
+			if errors.Is(err, converter.ErrMissingMP3Playlist) {
+				if _, failErr := sm.db.ExecContext(ctx, `UPDATE download_queue SET status = 'failed', error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'importing'`, err.Error(), item.ID); failErr != nil {
+					return failErr
+				}
+				continue
+			}
+			if _, resetErr := sm.db.ExecContext(ctx, `UPDATE download_queue SET status = 'queued', error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'importing'`, fmt.Sprintf("post-processing: %v", err), item.ID); resetErr != nil {
 				return resetErr
 			}
-			sm.recordError(ctx, item.ID, fmt.Sprintf("post-processing: %v", err))
 			continue // Leave queued so a later pass retries failed ingestion.
 		}
 		if _, err := sm.db.ExecContext(ctx, `UPDATE download_queue SET status = 'completed', progress_percent = 100, error_message = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'importing'`, item.ID); err != nil {
@@ -377,10 +382,17 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 			return nil
 		}
 
-		// Case B: Multi-part MP3 -> enqueues into conversion_queue via Queue.Enqueue
-		if len(mp3Files) > 1 {
+		// Case B: MP3 audiobook -> requires a valid playlist (.m3u/.m3u8) and enqueues conversion to M4B
+		if len(mp3Files) > 0 {
+			if _, err := converter.ResolveAudioFiles(stagingPath); err != nil {
+				if errors.Is(err, converter.ErrMissingMP3Playlist) {
+					return err
+				}
+				return fmt.Errorf("resolve mp3 playlist: %w", err)
+			}
+
 			if sm.converter == nil {
-				return errors.New("converter queue not configured for multi-part mp3")
+				return errors.New("converter queue not configured for mp3 conversion")
 			}
 
 			editionID := ""
@@ -451,71 +463,6 @@ func (sm *StagingMonitor) dispatchPostProcessing(ctx context.Context, item datab
 				return fmt.Errorf("enqueue conversion: %w", err)
 			}
 			return nil
-		}
-
-		// Case C: Single MP3
-		if len(mp3Files) == 1 {
-			singleMP3 := mp3Files[0]
-			if sm.converter != nil {
-				editionID := ""
-				if item.EditionID != nil {
-					editionID = *item.EditionID
-				}
-				if editionID == "" && sm.catalog != nil {
-					author, err := sm.catalog.GetOrCreateAuthor(ctx, bookDetails.Author)
-					if err == nil {
-						var seriesID *string
-						if bookDetails.Series != "" {
-							if series, sErr := sm.catalog.GetOrCreateSeries(ctx, bookDetails.Series, author.ID, 0); sErr == nil && series != nil {
-								seriesID = &series.ID
-							}
-						}
-						var date *string
-						if bookDetails.Year > 0 {
-							value := fmt.Sprintf("%04d", bookDetails.Year)
-							date = &value
-						}
-						var subtitle *string
-						if sub := strings.TrimSpace(bookDetails.Subtitle); sub != "" {
-							subtitle = &sub
-						}
-						var synopsis *string
-						if syn := metadata.CleanDescription(bookDetails.Description); syn != "" {
-							synopsis = &syn
-						}
-						book, err := sm.catalog.GetOrCreateBook(ctx, &database.Book{
-							AuthorID:    author.ID,
-							Title:       bookDetails.Title,
-							Subtitle:    subtitle,
-							SeriesID:    seriesID,
-							SeriesIndex: bookDetails.SeriesIndex,
-							ReleaseDate: date,
-							Synopsis:    synopsis,
-						})
-						if err == nil {
-							ed, err := sm.catalog.GetOrCreateEdition(ctx, &database.BookEdition{
-								BookID: book.ID,
-								Format: "m4b",
-							})
-							if err == nil {
-								editionID = ed.ID
-								_, _ = sm.db.ExecContext(ctx, "UPDATE download_queue SET edition_id = ? WHERE id = ?", editionID, item.ID)
-							}
-						}
-					}
-				}
-				if editionID != "" {
-					targetM4BPath, _, _, err := catalog.ResolveCanonicalPath(sm.libraryRoot, bookDetails, ".m4b")
-					if err == nil {
-						_, err = sm.converter.Enqueue(ctx, editionID, singleMP3, targetM4BPath, 0, downloadIDs...)
-						if err == nil {
-							return nil
-						}
-					}
-				}
-			}
-
-			return errors.New("cannot import MP3 without successful M4B conversion queuing")
 		}
 	}
 
@@ -616,12 +563,6 @@ func (sm *StagingMonitor) resolveBookDetails(ctx context.Context, item database.
 	}
 
 	return details
-}
-
-func (sm *StagingMonitor) recordError(ctx context.Context, itemID, errMsg string) {
-	if sm.db != nil {
-		_, _ = sm.db.ExecContext(ctx, "UPDATE download_queue SET error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", errMsg, itemID)
-	}
 }
 
 func findMediaFiles(stagingPath string) (ebooks []string, audios []string, err error) {

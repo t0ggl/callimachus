@@ -182,7 +182,7 @@ func TestStagingMonitor_MultiPartMP3_DispatchesToConverter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create multi-part MP3 files
+	// Create multi-part MP3 files (no playlist needed; chapters come from parts)
 	part1 := filepath.Join(stagingDir, "01_Synthetic_Part1.mp3")
 	part2 := filepath.Join(stagingDir, "02_Synthetic_Part2.mp3")
 	if err := os.WriteFile(part1, []byte("fake mp3 data 1"), 0644); err != nil {
@@ -504,8 +504,15 @@ func TestStagingMonitor_SingleMP3RequiresConversion(t *testing.T) {
 	t.Parallel()
 	db := setupTestDB(t)
 	root, library := t.TempDir(), t.TempDir()
-	source := filepath.Join(root, "Author - Book.mp3")
+	release := filepath.Join(root, "Author - Book")
+	if err := os.Mkdir(release, 0755); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(release, "Author - Book.mp3")
 	if err := os.WriteFile(source, []byte("audio"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(release, "book.m3u"), []byte("Author - Book.mp3\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{DB: db, CompletedRoot: root, LibraryRoot: library})
@@ -523,6 +530,89 @@ func TestStagingMonitor_SingleMP3RequiresConversion(t *testing.T) {
 	}
 	if _, err := os.Stat(source); err != nil {
 		t.Fatalf("MP3 source lost: %v", err)
+	}
+}
+
+func TestStagingMonitor_SingleMP3WithoutPlaylistFails(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, completedRoot string) string
+	}{
+		{
+			name: "directory with single mp3 and no playlist",
+			setup: func(t *testing.T, completedRoot string) string {
+				dir := filepath.Join(completedRoot, "Author - Missing Playlist")
+				if err := os.MkdirAll(dir, 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "book.mp3"), []byte("audio"), 0644); err != nil {
+					t.Fatal(err)
+				}
+				return dir
+			},
+		},
+		{
+			name: "single mp3 file without playlist",
+			setup: func(t *testing.T, completedRoot string) string {
+				file := filepath.Join(completedRoot, "Author - Single.mp3")
+				if err := os.WriteFile(file, []byte("audio"), 0644); err != nil {
+					t.Fatal(err)
+				}
+				return file
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			ctx := context.Background()
+			completedRoot, libraryRoot := t.TempDir(), t.TempDir()
+			stagingPath := tc.setup(t, completedRoot)
+
+			if _, err := db.ExecContext(ctx, `
+				INSERT INTO users (id, username, email, role) VALUES ('u1', 'reader', 'reader@example.com', 'requester');
+				INSERT INTO book_requests (id, user_id, title, author, format, status) VALUES (1, 'u1', 'The Martian', 'Andy Weir', 'm4b', 'downloading');
+				INSERT INTO download_queue (id, request_id, download_client_task_id, title, protocol, status, staging_path)
+				VALUES ('dq-mp3-fail', 1, 'task-mp3-fail', 'The Martian MP3', 'torrent', 'downloading', ?);
+			`, stagingPath); err != nil {
+				t.Fatal(err)
+			}
+
+			sm := downloaders.NewStagingMonitor(downloaders.StagingConfig{
+				DB:            db,
+				Catalog:       catalog.New(db),
+				Converter:     converter.NewQueue(db),
+				LibraryRoot:   libraryRoot,
+				CompletedRoot: completedRoot,
+			})
+			if err := sm.PollOnce(ctx); err != nil {
+				t.Fatalf("PollOnce failed: %v", err)
+			}
+
+			var status, errMsg string
+			if err := db.QueryRowContext(ctx, `SELECT status, COALESCE(error_message, '') FROM download_queue WHERE id = 'dq-mp3-fail'`).Scan(&status, &errMsg); err != nil {
+				t.Fatal(err)
+			}
+			if status != "failed" {
+				t.Fatalf("download status = %q, want failed", status)
+			}
+			if !strings.Contains(errMsg, "playlist") {
+				t.Fatalf("error_message = %q, want playlist error", errMsg)
+			}
+
+			var convCount int
+			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversion_queue`).Scan(&convCount); err != nil || convCount != 0 {
+				t.Fatalf("conversion_queue count = %d (err=%v), want 0", convCount, err)
+			}
+
+			var eventMsg string
+			if err := db.QueryRowContext(ctx, `SELECT message FROM request_events WHERE request_id = 1 AND kind = 'failed' ORDER BY id DESC LIMIT 1`).Scan(&eventMsg); err != nil {
+				t.Fatalf("missing failed request_event: %v", err)
+			}
+			if !strings.Contains(eventMsg, "playlist") {
+				t.Fatalf("search log event = %q, want playlist error detail", eventMsg)
+			}
+		})
 	}
 }
 

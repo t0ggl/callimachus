@@ -236,3 +236,79 @@ func TestDismissFinishedAndCancelLinkedConversion(t *testing.T) {
 		})
 	}
 }
+
+func TestSearchLogIncludesActualErrorsAndRedactsSecrets(t *testing.T) {
+	a, id, _, _ := acquisitionFixture(t)
+	ctx := context.Background()
+
+	// 1. Acquisition error logs sanitized actual error instead of generic message.
+	a.Search = func(context.Context, string, string) ([]indexers.ProwlarrRelease, error) {
+		return nil, errors.New(`Get "http://user:pass@prowlarr.local:9696/api/v1/search?apikey=topsecret": dial tcp: connection refused`)
+	}
+	if err := a.Refresh(ctx, id); err == nil {
+		t.Fatal("expected refresh error")
+	}
+	var msg string
+	if err := a.DB.QueryRowContext(ctx, `SELECT message FROM request_events WHERE request_id=? AND kind='search_error' ORDER BY id DESC LIMIT 1`, id).Scan(&msg); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(msg, "connection refused") || !strings.Contains(msg, "http://prowlarr.local:9696/api/v1/search") {
+		t.Fatalf("expected sanitized error detail, got %q", msg)
+	}
+	if strings.Contains(msg, "topsecret") || strings.Contains(msg, "user:pass") {
+		t.Fatalf("credentials leaked in search log: %q", msg)
+	}
+
+	// 2. Clicking download while already active returns ErrDownloadActive without polluting the search log.
+	mustExec(t, a, `UPDATE book_requests SET status='downloading' WHERE id=?`, id)
+	mustExec(t, a, `INSERT INTO request_events(request_id, kind, message) VALUES(?, 'converting', 'Conversion queued')`, id)
+	if err := a.Download(ctx, id, "1:any"); !errors.Is(err, ErrDownloadActive) {
+		t.Fatalf("expected ErrDownloadActive while active, got %v", err)
+	}
+	var errCount int
+	if err := a.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM request_events WHERE request_id=? AND kind='error'`, id).Scan(&errCount); err != nil {
+		t.Fatal(err)
+	}
+	if errCount != 0 {
+		t.Fatalf("expected 0 error events for ErrDownloadActive, got %d", errCount)
+	}
+
+	// 3. Real non-search acquisition error (e.g. Evaluate failure) logs the actual error.
+	a.Search = func(context.Context, string, string) ([]indexers.ProwlarrRelease, error) {
+		return []indexers.ProwlarrRelease{{GUID: "g1", IndexerID: 1, Title: "The Martian"}}, nil
+	}
+	a.Evaluate = func(context.Context, indexers.ProwlarrRelease, string) (Evaluation, error) {
+		return Evaluation{}, errors.New("quality profile lookup failed")
+	}
+	if err := a.Refresh(ctx, id); err == nil {
+		t.Fatal("expected refresh error from Evaluate")
+	}
+	if err := a.DB.QueryRowContext(ctx, `SELECT message FROM request_events WHERE request_id=? AND kind='error' ORDER BY id DESC LIMIT 1`, id).Scan(&msg); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(msg, "quality profile lookup failed") {
+		t.Fatalf("expected actual acquisition error, got %q", msg)
+	}
+
+	// 3. Conversion failure propagates actual error_message to search log and download_queue.
+	mustExec(t, a, `INSERT INTO book_editions(id,book_id,format) SELECT 'ed-m4b',book_id,'m4b' FROM book_requests WHERE id=?`, id)
+	mustExec(t, a, `INSERT INTO download_queue(id,request_id,download_client_task_id,title,protocol,status) VALUES('dq-1',?,'task-1','The Martian','torrent','importing')`, id)
+	mustExec(t, a, `INSERT INTO conversion_queue(id,edition_id,download_id,source_path,target_path,status,current_stage) VALUES('cq-1','ed-m4b','dq-1','/src','/dst.m4b','processing','preparing')`)
+	mustExec(t, a, `UPDATE conversion_queue SET status='failed', error_message='ffmpeg exited with code 1' WHERE id='cq-1'`)
+
+	var convEvent, dlEvent, dlErr string
+	if err := a.DB.QueryRowContext(ctx, `SELECT message FROM request_events WHERE request_id=? AND kind='conversion_failed' ORDER BY id DESC LIMIT 1`, id).Scan(&convEvent); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.DB.QueryRowContext(ctx, `SELECT message FROM request_events WHERE request_id=? AND kind='failed' ORDER BY id DESC LIMIT 1`, id).Scan(&dlEvent); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.DB.QueryRowContext(ctx, `SELECT COALESCE(error_message, '') FROM download_queue WHERE id='dq-1'`).Scan(&dlErr); err != nil {
+		t.Fatal(err)
+	}
+	for label, val := range map[string]string{"conversion_failed": convEvent, "failed": dlEvent, "download_queue.error_message": dlErr} {
+		if !strings.Contains(val, "ffmpeg exited with code 1") {
+			t.Errorf("%s = %q, want conversion error detail", label, val)
+		}
+	}
+}

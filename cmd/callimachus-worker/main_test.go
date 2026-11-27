@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -90,5 +91,25 @@ func TestWorkerCLI_LogLevelPrecedence(t *testing.T) {
 		if got := logging.Level.Level(); got != tc.want {
 			t.Errorf("worker level for environment %q = %s, want %s", tc.env, got, tc.want)
 		}
+	}
+}
+
+func TestWorkerCLI_ConfigFlagResolvesDatabase(t *testing.T) {
+	cfgDir := t.TempDir()
+	dbPath := filepath.Join(cfgDir, "callimachus.db")
+	testutil.PrepareTestDBFile(t, dbPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	previous := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(cancelWhenListening{cancel}, nil)))
+
+	if err := run(ctx, []string{"--config", cfgDir, "--poll", "20ms", "--workdir", filepath.Join(cfgDir, "work")}); err != nil {
+		t.Fatalf("run with --config failed: %v", err)
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("expected database at %s: %v", dbPath, err)
 	}
 }

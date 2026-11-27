@@ -1,6 +1,7 @@
 package converter
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -127,19 +128,53 @@ func TestPlaylist_ParseM3U(t *testing.T) {
 func TestPlaylist_ResolveAudioFiles(t *testing.T) {
 	tempDir := t.TempDir()
 
-	// 1. Single audio file
-	singleFile := filepath.Join(tempDir, "single.mp3")
-	_ = os.WriteFile(singleFile, []byte("audio"), 0644)
+	// 1. Single non-MP3 audio file succeeds
+	singleM4B := filepath.Join(tempDir, "single.m4b")
+	_ = os.WriteFile(singleM4B, []byte("audio"), 0644)
 
-	res, err := ResolveAudioFiles(singleFile)
+	res, err := ResolveAudioFiles(singleM4B)
 	if err != nil {
-		t.Fatalf("single file resolve failed: %v", err)
+		t.Fatalf("single m4b resolve failed: %v", err)
 	}
-	if len(res) != 1 || res[0] != singleFile {
-		t.Errorf("expected [%s], got %v", singleFile, res)
+	if len(res) != 1 || res[0] != singleM4B {
+		t.Errorf("expected [%s], got %v", singleM4B, res)
 	}
 
-	// 2. Directory without playlist -> sorted naturally
+	// 2. Single MP3 file without playlist fails
+	singleMP3 := filepath.Join(tempDir, "single.mp3")
+	_ = os.WriteFile(singleMP3, []byte("audio"), 0644)
+	if _, err := ResolveAudioFiles(singleMP3); !errors.Is(err, ErrMissingMP3Playlist) {
+		t.Fatalf("expected ErrMissingMP3Playlist for single mp3, got %v", err)
+	}
+
+	// 3. Directory with single MP3 file and no playlist fails
+	singleMP3Dir := filepath.Join(tempDir, "single-mp3-dir")
+	_ = os.MkdirAll(singleMP3Dir, 0755)
+	onlyTrack := filepath.Join(singleMP3Dir, "book.mp3")
+	_ = os.WriteFile(onlyTrack, []byte("audio"), 0644)
+	if _, err := ResolveAudioFiles(singleMP3Dir); !errors.Is(err, ErrMissingMP3Playlist) {
+		t.Fatalf("expected ErrMissingMP3Playlist for single mp3 dir without playlist, got %v", err)
+	}
+
+	// 4. Directory with single MP3 and empty/broken playlist still fails
+	brokenM3U := filepath.Join(singleMP3Dir, "empty.m3u")
+	_ = os.WriteFile(brokenM3U, []byte("#EXTM3U\nmissing.mp3\n"), 0644)
+	if _, err := ResolveAudioFiles(singleMP3Dir); !errors.Is(err, ErrMissingMP3Playlist) {
+		t.Fatalf("expected ErrMissingMP3Playlist for single mp3 dir with broken playlist, got %v", err)
+	}
+
+	// 5. Directory with single MP3 and valid playlist succeeds
+	validSingleM3U := filepath.Join(singleMP3Dir, "valid.m3u")
+	_ = os.WriteFile(validSingleM3U, []byte("#EXTM3U\nbook.mp3\n"), 0644)
+	resSinglePl, err := ResolveAudioFiles(singleMP3Dir)
+	if err != nil {
+		t.Fatalf("single mp3 dir with valid playlist failed: %v", err)
+	}
+	if !reflect.DeepEqual(resSinglePl, []string{onlyTrack}) {
+		t.Errorf("expected [%s], got %v", onlyTrack, resSinglePl)
+	}
+
+	// 6. Directory of multi-part MP3 files without playlist -> sorted naturally
 	stagedDir := filepath.Join(tempDir, "staged")
 	_ = os.MkdirAll(stagedDir, 0755)
 
@@ -152,15 +187,14 @@ func TestPlaylist_ResolveAudioFiles(t *testing.T) {
 
 	resDir, err := ResolveAudioFiles(stagedDir)
 	if err != nil {
-		t.Fatalf("dir resolve failed: %v", err)
+		t.Fatalf("multi-part mp3 dir resolve failed: %v", err)
 	}
-
 	expectedDirOrder := []string{t1, t2, t10}
 	if !reflect.DeepEqual(resDir, expectedDirOrder) {
 		t.Errorf("expected natural sorted order %v, got %v", expectedDirOrder, resDir)
 	}
 
-	// 3. Directory with playlist -> playlist takes priority
+	// 7. Directory with valid playlist -> playlist order takes priority
 	m3uPath := filepath.Join(stagedDir, "album.m3u8")
 	m3uContent := "#EXTM3U\ntrack10.mp3\ntrack1.mp3\ntrack2.mp3\n"
 	_ = os.WriteFile(m3uPath, []byte(m3uContent), 0644)

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -21,7 +23,40 @@ import (
 var (
 	errTransferFailed  = errors.New("download dispatch failed")
 	ErrReleaseNotFound = errors.New("could not find the requested download after refreshing search results; please try again from the updated list")
+	// ErrDownloadActive indicates a manual download was requested while another download is already active.
+	ErrDownloadActive = errors.New("a download is already active")
+	errURLPattern     = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>]+`)
+	errSecretPattern  = regexp.MustCompile(`(?i)(api[_-]?key|token|secret|password|authorization)\s*[:=]\s*[^\s,;]+`)
 )
+
+func formatEventError(prefix string, err error) string {
+	if err == nil {
+		return prefix
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return prefix
+	}
+	msg = errURLPattern.ReplaceAllStringFunc(msg, func(raw string) string {
+		u, parseErr := url.Parse(raw)
+		if parseErr != nil {
+			return "[redacted-url]"
+		}
+		u.User = nil
+		u.RawQuery = ""
+		u.Fragment = ""
+		return u.String()
+	})
+	msg = errSecretPattern.ReplaceAllString(msg, "$1=[redacted]")
+	msg = strings.Join(strings.Fields(msg), " ")
+	if len(msg) > 300 {
+		msg = msg[:297] + "..."
+	}
+	if prefix == "" {
+		return msg
+	}
+	return prefix + ": " + msg
+}
 
 const exclusionPenalty = -1000
 
@@ -180,13 +215,13 @@ func (a *Acquisition) run(ctx context.Context, id int64, work func(context.Conte
 		cancel()
 	}()
 	err := work(ctx, id)
-	if err != nil && ctx.Err() == nil && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, ErrNotFound) {
-		// External errors can contain URLs or credentials. Persist a safe summary.
+	if err != nil && ctx.Err() == nil && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrDownloadActive) {
+		msg := formatEventError("Acquisition failed", err)
 		_, logErr := a.DB.ExecContext(ctx, `INSERT INTO request_events(request_id,kind,message)
-			SELECT id,'error','Acquisition could not continue. Check indexer or download settings.'
+			SELECT id,'error',?
 			FROM book_requests WHERE id=? AND dismissed=0 AND COALESCE((
 				SELECT kind FROM request_events WHERE request_id=book_requests.id ORDER BY id DESC LIMIT 1
-			),'') NOT IN ('error','search_error')`, id)
+			),'') NOT IN ('error','search_error')`, msg, id)
 		if logErr != nil {
 			return errors.Join(err, logErr)
 		}
@@ -261,7 +296,8 @@ func (a *Acquisition) refresh(ctx context.Context, id int64) error {
 	releases, err := a.Search(ctx, title+" "+author, format)
 	if err != nil {
 		slog.WarnContext(ctx, "acquisition search failed", "request_id", id)
-		return errors.Join(err, a.logEvent(ctx, id, "search_error", "searching", "Indexer search failed. Automatic searches retry in one minute."))
+		msg := formatEventError("Indexer search failed", err) + ". Automatic searches retry in one minute."
+		return errors.Join(err, a.logEvent(ctx, id, "search_error", "searching", msg))
 	}
 	if err := a.logEvent(ctx, id, "indexers_queried", "evaluating", fmt.Sprintf("Prowlarr returned %d releases", len(releases))); err != nil {
 		return err
@@ -448,7 +484,7 @@ func (a *Acquisition) download(ctx context.Context, id int64, key string) error 
 		return err
 	}
 	if status == StatusDownloading {
-		return fmt.Errorf("a download is already active")
+		return ErrDownloadActive
 	}
 	candidates, err := a.Candidates(ctx, id)
 	if err != nil {

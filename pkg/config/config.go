@@ -52,10 +52,11 @@ const DefaultSearchFormat = "ebook"
 
 // Bootstrap setting keys (resolved before opening SQLite).
 const (
-	BootstrapKeyConfigDir    = "config_dir"
-	BootstrapKeyDatabasePath = "database_path"
-	BootstrapKeyHost         = "host"
-	BootstrapKeyPort         = "port"
+	BootstrapKeyConfigDir      = "config_dir"
+	BootstrapKeyDatabasePath   = "database_path"
+	BootstrapKeyHost           = "host"
+	BootstrapKeyPort           = "port"
+	BootstrapKeyEmbeddedWorker = "embedded_worker"
 )
 
 // SettingKind classifies how a setting value is parsed and formatted.
@@ -265,6 +266,18 @@ func ResolveBootstrap(configDirFlag, dbPathFlag, hostFlag string, portFlag int, 
 		Host:      host,
 		Port:      port,
 	}
+}
+
+// ResolveEmbeddedWorker reports whether the main server should run an embedded
+// conversion worker. Defaults to true unless CALLIMACHUS_EMBEDDED_WORKER is set to false/0/no/off.
+func ResolveEmbeddedWorker() bool {
+	if envVal, _, ok := LookupEnvForSetting(BootstrapKeyEmbeddedWorker); ok {
+		switch strings.ToLower(strings.TrimSpace(envVal)) {
+		case "0", "false", "no", "off":
+			return false
+		}
+	}
+	return true
 }
 
 // LookupEnvForSetting checks the standardized CALLIMACHUS_{SETTING_NAME} env var for key.

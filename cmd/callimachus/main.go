@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -52,6 +53,10 @@ type Config struct {
 	ProwlarrInterval    time.Duration
 	IndexerSyncInterval time.Duration
 	StagingPollInterval time.Duration
+	EmbeddedWorker      *bool
+	ConverterRunner     converter.CommandRunner
+	WorkerPollInterval  time.Duration
+	WorkerWorkDir       string
 	Version             string
 	Commit              string
 }
@@ -65,6 +70,8 @@ type Server struct {
 	acquisition         *requests.Acquisition
 	acquisitionCancel   context.CancelFunc
 	acquisitionDone     chan struct{}
+	converterWorker     *converter.Worker
+	converterDone       chan struct{}
 	cfg                 Config
 	displayVersion      string
 	baseOverrides       config.Overrides
@@ -209,7 +216,8 @@ func NewServer(cfg Config) (*Server, error) {
 		Interval: sCfg.IndexerSyncInterval,
 	})
 
-	// 5. Download Staging Monitor
+	// 5. Download Staging Monitor & Embedded Conversion Worker
+	convQueue := converter.NewQueue(db)
 	stagingMon := downloaders.NewStagingMonitor(downloaders.StagingConfig{
 		QualityProfile: func(ctx context.Context) (downloaders.QualityProfile, error) {
 			resolved, err := config.Load(ctx, db, config.Overrides{})
@@ -220,11 +228,53 @@ func NewServer(cfg Config) (*Server, error) {
 		},
 		DB:            db,
 		Catalog:       catalog.New(db),
-		Converter:     converter.NewQueue(db),
+		Converter:     convQueue,
 		LibraryRoot:   sCfg.LibraryRoot,
 		CompletedRoot: sCfg.CompletedDownloadRoot,
 		PollInterval:  sCfg.StagingPollInterval,
 	})
+
+	var convWorker *converter.Worker
+	embeddedWorker := config.ResolveEmbeddedWorker()
+	if cfg.EmbeddedWorker != nil {
+		embeddedWorker = *cfg.EmbeddedWorker
+	}
+	if embeddedWorker {
+		workerPoll := cfg.WorkerPollInterval
+		if workerPoll <= 0 {
+			workerPoll = 1 * time.Second
+			if envVal, _, ok := config.LookupEnvForSetting("worker_poll_interval"); ok {
+				if d, err := time.ParseDuration(envVal); err == nil && d > 0 {
+					workerPoll = d
+				}
+			}
+		}
+		workerID := ""
+		if envVal, _, ok := config.LookupEnvForSetting("worker_id"); ok {
+			workerID = envVal
+		}
+		if workerID == "" {
+			host, _ := os.Hostname()
+			if host == "" {
+				host = "server"
+			}
+			workerID = fmt.Sprintf("%s-%d-embedded", host, os.Getpid())
+		}
+		workDir := cfg.WorkerWorkDir
+		if workDir == "" {
+			if envVal, _, ok := config.LookupEnvForSetting("worker_workdir"); ok {
+				workDir = envVal
+			}
+		}
+		if workDir == "" {
+			workDir = filepath.Join(os.TempDir(), "callimachus-converter")
+		}
+		convWorker = converter.NewWorker(convQueue, cfg.ConverterRunner, converter.WorkerConfig{
+			WorkerID:     workerID,
+			PollInterval: workerPoll,
+			WorkDir:      workDir,
+		})
+	}
 
 	// 6. Notification Dispatcher
 	dispatcher := notify.NewDispatcher()
@@ -249,9 +299,10 @@ func NewServer(cfg Config) (*Server, error) {
 		db:             db,
 		sessionMgr:     sessionMgr,
 		fallbackAuth:   fallbackAuth,
-		syncer:         syncer,
-		stagingMon:     stagingMon,
-		intakeWake:     make(chan struct{}, 1),
+		syncer:          syncer,
+		stagingMon:      stagingMon,
+		converterWorker: convWorker,
+		intakeWake:      make(chan struct{}, 1),
 		dispatcher:     dispatcher,
 		staticFS:       staticFS,
 	}
@@ -336,6 +387,17 @@ func (s *Server) Start(ctx context.Context) error {
 		s.runIntake(workerCtx)
 	}()
 
+	if s.converterWorker != nil {
+		s.converterDone = make(chan struct{})
+		go func() {
+			defer close(s.converterDone)
+			slog.InfoContext(workerCtx, "embedded conversion worker listening for jobs")
+			if err := s.converterWorker.Run(workerCtx); err != nil && !errors.Is(err, context.Canceled) {
+				slog.ErrorContext(workerCtx, "embedded conversion worker stopped with an error")
+			}
+		}()
+	}
+
 	// Start background staging monitor
 	if err := s.stagingMon.Start(ctx); err != nil {
 		slog.WarnContext(ctx, "staging monitor could not start")
@@ -377,6 +439,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 		if s.maintenanceDone != nil {
 			<-s.maintenanceDone
+		}
+		if s.converterDone != nil {
+			<-s.converterDone
 		}
 	}
 	var errs []error

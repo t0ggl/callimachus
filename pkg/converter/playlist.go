@@ -12,6 +12,9 @@ import (
 	"unicode"
 )
 
+// ErrMissingMP3Playlist indicates a single-file MP3 audiobook lacks a valid .m3u/.m3u8 playlist.
+var ErrMissingMP3Playlist = errors.New("single-file MP3 audiobook is missing a playlist (.m3u or .m3u8)")
+
 // AudioExtensions contains supported audio file extensions in lowercase.
 var AudioExtensions = map[string]bool{
 	".mp3":  true,
@@ -191,6 +194,9 @@ func ResolveAudioFiles(sourcePath string) ([]string, error) {
 			return files, nil
 		}
 		if IsAudioFile(sourcePath) {
+			if strings.EqualFold(filepath.Ext(sourcePath), ".mp3") {
+				return nil, ErrMissingMP3Playlist
+			}
 			return []string{filepath.Clean(sourcePath)}, nil
 		}
 		return nil, fmt.Errorf("file %s is neither an audio file nor a supported playlist", sourcePath)
@@ -241,6 +247,10 @@ func ResolveAudioFiles(sourcePath string) ([]string, error) {
 
 	if len(candidateAudioFiles) == 0 {
 		return nil, fmt.Errorf("no audio files found in %s", sourcePath)
+	}
+
+	if len(candidateAudioFiles) == 1 && strings.EqualFold(filepath.Ext(candidateAudioFiles[0]), ".mp3") {
+		return nil, ErrMissingMP3Playlist
 	}
 
 	SortFilesNaturally(candidateAudioFiles)
