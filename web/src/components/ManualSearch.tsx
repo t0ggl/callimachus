@@ -130,6 +130,14 @@ function CandidateList({ format, resolveRequest }: {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState('');
+  const filterCandidates = (results: Candidate[], reqFormat: RequestFormat) =>
+    reqFormat === 'both'
+      ? results.filter((candidate) => {
+          const audio = candidate.format === 'm4b' || candidate.format === 'mp3';
+          return audio === (format === 'm4b');
+        })
+      : results;
+
   const load = async (action = '', key?: string) => {
     setBusy(true);
     setError('');
@@ -145,15 +153,17 @@ function CandidateList({ format, resolveRequest }: {
             }
           : undefined,
       );
-      if (!res.ok)
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (Array.isArray(data.candidates)) {
+          setCandidates(filterCandidates(data.candidates, request.format));
+        }
         throw new Error(
-          (await res.json()).error || 'Unable to load candidates. Try Refresh.',
+          data.error || 'Unable to load candidates. Try Refresh.',
         );
+      }
       const results: Candidate[] = await res.json();
-      setCandidates(request.format === 'both' ? results.filter(candidate => {
-        const audio = candidate.format === 'm4b' || candidate.format === 'mp3';
-        return audio === (format === 'm4b');
-      }) : results);
+      setCandidates(filterCandidates(results, request.format));
     } catch (e) {
       setError((e as Error).message);
     } finally {

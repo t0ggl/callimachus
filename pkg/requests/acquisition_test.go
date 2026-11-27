@@ -1,13 +1,17 @@
 package requests
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/t0ggl/callimachus/pkg/auth"
 	"github.com/t0ggl/callimachus/pkg/indexers"
 	"github.com/t0ggl/callimachus/pkg/testutil"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -411,5 +415,176 @@ func TestManualDownloadOverridesExclusionsWhileAutoRequiresPositiveScore(t *test
 	}
 	if *grabs != 1 || grabbed != "excluded" {
 		t.Fatalf("expected manual grab of excluded candidate, got grabs=%d guid=%q", *grabs, grabbed)
+	}
+}
+
+func TestDownloadRetriesExpiredReleaseAfterRefresh(t *testing.T) {
+	t.Run("succeeds on retry when same guid is still present and refreshes list", func(t *testing.T) {
+		a, id, searches, grabs := acquisitionFixture(t)
+		ctx := context.Background()
+		a.Search = func(context.Context, string, string) ([]indexers.ProwlarrRelease, error) {
+			*searches++
+			if *searches == 1 {
+				return []indexers.ProwlarrRelease{
+					{GUID: "g1", IndexerID: 1, Title: "Book EPUB", Seeders: 10},
+				}, nil
+			}
+			return []indexers.ProwlarrRelease{
+				{GUID: "g1", IndexerID: 1, Title: "Book EPUB", Seeders: 25},
+				{GUID: "g2", IndexerID: 1, Title: "Book EPUB New", Seeders: 50},
+			}, nil
+		}
+		a.Grab = func(_ context.Context, r indexers.ProwlarrRelease) error {
+			*grabs++
+			if *grabs == 1 {
+				return fmt.Errorf("prowlarr grab: HTTP 404: %w", indexers.ErrReleaseExpired)
+			}
+			if r.GUID != "g1" {
+				t.Fatalf("expected retry with guid g1, got %q", r.GUID)
+			}
+			return nil
+		}
+
+		if err := a.Refresh(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+
+		svc := NewRequestService(a.DB)
+		h := NewHandler(HandlerConfig{Service: svc, DB: a.DB, Acquisition: a})
+		t.Cleanup(h.sessionMgr.Close)
+		mux := http.NewServeMux()
+		h.RegisterRoutes(mux)
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/requests/%d/download", id), bytes.NewBufferString(`{"key":"1:g1"}`))
+		req = req.WithContext(auth.ContextWithUser(ctx, &auth.User{ID: "reader", Role: auth.RoleRequester}))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 after automatic retry, got %d: %s", w.Code, w.Body.String())
+		}
+		if *searches != 2 || *grabs != 2 {
+			t.Fatalf("expected 2 searches and 2 grabs, got searches=%d grabs=%d", *searches, *grabs)
+		}
+		var refreshed []Candidate
+		if err := json.Unmarshal(w.Body.Bytes(), &refreshed); err != nil {
+			t.Fatal(err)
+		}
+		if len(refreshed) != 2 {
+			t.Fatalf("expected 2 refreshed candidates, got %+v", refreshed)
+		}
+	})
+
+	t.Run("returns meaningful error and refreshed candidates when release disappears or still 404s", func(t *testing.T) {
+		for _, tc := range []struct {
+			name            string
+			secondSearch    []indexers.ProwlarrRelease
+			wantGrabs       int
+			wantCandidateID string
+		}{
+			{
+				name: "missing from refreshed search",
+				secondSearch: []indexers.ProwlarrRelease{
+					{GUID: "g-new", IndexerID: 1, Title: "Book EPUB Fresh", Seeders: 40},
+				},
+				wantGrabs:       1,
+				wantCandidateID: "1:g-new",
+			},
+			{
+				name: "present in refreshed search but grab still 404s",
+				secondSearch: []indexers.ProwlarrRelease{
+					{GUID: "g1", IndexerID: 1, Title: "Book EPUB", Seeders: 10},
+					{GUID: "g-new", IndexerID: 1, Title: "Book EPUB Fresh", Seeders: 40},
+				},
+				wantGrabs:       2,
+				wantCandidateID: "1:g-new",
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				a, id, searches, grabs := acquisitionFixture(t)
+				ctx := context.Background()
+				a.Search = func(context.Context, string, string) ([]indexers.ProwlarrRelease, error) {
+					*searches++
+					if *searches == 1 {
+						return []indexers.ProwlarrRelease{
+							{GUID: "g1", IndexerID: 1, Title: "Book EPUB", Seeders: 10},
+						}, nil
+					}
+					return tc.secondSearch, nil
+				}
+				a.Grab = func(_ context.Context, r indexers.ProwlarrRelease) error {
+					*grabs++
+					if r.GUID == "g1" {
+						return fmt.Errorf("prowlarr grab: HTTP 404: %w", indexers.ErrReleaseExpired)
+					}
+					return nil
+				}
+
+				if err := a.Refresh(ctx, id); err != nil {
+					t.Fatal(err)
+				}
+
+				svc := NewRequestService(a.DB)
+				h := NewHandler(HandlerConfig{Service: svc, DB: a.DB, Acquisition: a})
+				t.Cleanup(h.sessionMgr.Close)
+				mux := http.NewServeMux()
+				h.RegisterRoutes(mux)
+
+				req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/requests/%d/download", id), bytes.NewBufferString(`{"key":"1:g1"}`))
+				req = req.WithContext(auth.ContextWithUser(ctx, &auth.User{ID: "reader", Role: auth.RoleRequester}))
+				w := httptest.NewRecorder()
+				mux.ServeHTTP(w, req)
+
+				if w.Code != http.StatusNotFound {
+					t.Fatalf("expected 404 when release cannot be found after refresh, got %d: %s", w.Code, w.Body.String())
+				}
+				if *searches != 2 || *grabs != tc.wantGrabs {
+					t.Fatalf("expected 2 searches and %d grabs, got searches=%d grabs=%d", tc.wantGrabs, *searches, *grabs)
+				}
+
+				var body struct {
+					Error      string      `json:"error"`
+					Candidates []Candidate `json:"candidates"`
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(strings.ToLower(body.Error), "could not find the requested download") {
+					t.Fatalf("unexpected error message: %q", body.Error)
+				}
+				foundNew := false
+				for _, c := range body.Candidates {
+					if c.Key == tc.wantCandidateID {
+						foundNew = true
+					}
+				}
+				if !foundNew {
+					t.Fatalf("expected refreshed candidate %s in error response, got %+v", tc.wantCandidateID, body.Candidates)
+				}
+
+				// Request status must be restored so the user can immediately download from the refreshed list.
+				if err := a.Download(ctx, id, tc.wantCandidateID); err != nil {
+					t.Fatalf("subsequent download of refreshed candidate failed: %v", err)
+				}
+			})
+		}
+	})
+}
+
+func TestDownloadDoesNotRetryNon404Errors(t *testing.T) {
+	a, id, searches, grabs := acquisitionFixture(t)
+	ctx := context.Background()
+	if err := a.Refresh(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	a.Grab = func(context.Context, indexers.ProwlarrRelease) error {
+		*grabs++
+		return errors.New("prowlarr grab: HTTP 500")
+	}
+	if err := a.Download(ctx, id, "1:0"); err == nil {
+		t.Fatal("expected grab error")
+	}
+	if *searches != 1 || *grabs != 1 {
+		t.Fatalf("non-404 error must not trigger search retry: searches=%d grabs=%d", *searches, *grabs)
 	}
 }

@@ -328,6 +328,20 @@ func (h *Handler) handleCandidates(w http.ResponseWriter, r *http.Request) {
 		err = h.acquisition.Download(r.Context(), id, body.Key)
 	}
 	if err != nil {
+		if strings.HasSuffix(r.URL.Path, "/download") {
+			status := 502
+			msg := err.Error()
+			if errors.Is(err, ErrReleaseNotFound) {
+				status = 404
+				msg = ErrReleaseNotFound.Error()
+			}
+			payload := map[string]any{"error": msg}
+			if candidates, cErr := h.acquisition.Candidates(r.Context(), id); cErr == nil {
+				payload["candidates"] = candidates
+			}
+			writeJSON(w, status, payload)
+			return
+		}
 		writeError(w, 502, err.Error())
 		return
 	}

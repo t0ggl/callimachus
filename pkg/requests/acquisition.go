@@ -18,7 +18,10 @@ import (
 	"github.com/t0ggl/callimachus/pkg/metadata"
 )
 
-var errTransferFailed = errors.New("download dispatch failed")
+var (
+	errTransferFailed  = errors.New("download dispatch failed")
+	ErrReleaseNotFound = errors.New("could not find the requested download after refreshing search results; please try again from the updated list")
+)
 
 const exclusionPenalty = -1000
 
@@ -360,15 +363,61 @@ func (a *Acquisition) dispatch(ctx context.Context, id int64, c Candidate, allow
 		return err
 	}
 	slog.InfoContext(ctx, "requesting Prowlarr grab", "request_id", id, "queue_id", qid, "indexer_id", c.Release.IndexerID)
-	if err = a.Grab(ctx, c.Release); err != nil {
+	err = a.Grab(ctx, c.Release)
+	if err != nil && errors.Is(err, indexers.ErrReleaseExpired) && ctx.Err() == nil {
+		slog.InfoContext(ctx, "Prowlarr release expired; refreshing search and retrying grab", "request_id", id, "queue_id", qid, "indexer_id", c.Release.IndexerID)
+		if _, e := a.DB.ExecContext(ctx, `UPDATE acquisition_candidates SET queue_id=NULL WHERE request_id=? AND queue_id=?`, id, qid); e != nil {
+			return e
+		}
+		if refreshErr := a.refresh(ctx, id); refreshErr != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if _, e := a.DB.ExecContext(ctx, `UPDATE download_queue SET status='failed',error_message=? WHERE id=? AND status='dispatching'`, "Prowlarr could not refresh expired release", qid); e != nil {
+				return e
+			}
+			return fmt.Errorf("%w: %w", errTransferFailed, refreshErr)
+		}
+		refreshed, listErr := a.Candidates(ctx, id)
+		if listErr != nil {
+			return listErr
+		}
+		var matched *Candidate
+		for i := range refreshed {
+			if refreshed[i].Key == c.Key {
+				matched = &refreshed[i]
+				break
+			}
+		}
+		if matched == nil || (!allowExcluded && matched.IsExcluded()) {
+			slog.WarnContext(ctx, "Prowlarr release no longer found after search refresh", "request_id", id, "queue_id", qid, "indexer_id", c.Release.IndexerID)
+			if _, e := a.DB.ExecContext(ctx, `UPDATE download_queue SET status='failed',error_message=? WHERE id=? AND status='dispatching'`, ErrReleaseNotFound.Error(), qid); e != nil {
+				return e
+			}
+			return fmt.Errorf("%w: %w", errTransferFailed, ErrReleaseNotFound)
+		}
+		if _, e := a.DB.ExecContext(ctx, `UPDATE acquisition_candidates SET queue_id=? WHERE request_id=? AND release_key=?`, qid, id, matched.Key); e != nil {
+			return e
+		}
+		c = *matched
+		err = a.Grab(ctx, c.Release)
+		if errors.Is(err, indexers.ErrReleaseExpired) {
+			err = ErrReleaseNotFound
+		}
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		slog.WarnContext(ctx, "Prowlarr grab failed", "request_id", id, "queue_id", qid, "indexer_id", c.Release.IndexerID)
-		if _, e := a.DB.ExecContext(ctx, `UPDATE download_queue SET status='failed',error_message=? WHERE id=? AND status='dispatching'`, "Prowlarr could not grab this release", qid); e != nil {
+		queueErrMsg := "Prowlarr could not grab this release"
+		if errors.Is(err, ErrReleaseNotFound) {
+			queueErrMsg = ErrReleaseNotFound.Error()
+		}
+		if _, e := a.DB.ExecContext(ctx, `UPDATE download_queue SET status='failed',error_message=? WHERE id=? AND status='dispatching'`, queueErrMsg, qid); e != nil {
 			return e
 		}
-		return fmt.Errorf("%w: %v", errTransferFailed, err)
+		return fmt.Errorf("%w: %w", errTransferFailed, err)
 	}
 	_, err = a.DB.ExecContext(ctx, `UPDATE download_queue SET status='queued' WHERE id=? AND status='dispatching'`, qid)
 	if err == nil {
@@ -402,6 +451,9 @@ func (a *Acquisition) download(ctx context.Context, id int64, key string) error 
 		if c.Key == key {
 			err = a.dispatch(ctx, id, c, true)
 			if errors.Is(err, errTransferFailed) {
+				if _, e := a.DB.ExecContext(ctx, `UPDATE book_requests SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='downloading'`, status, id); e != nil {
+					return e
+				}
 				if e := a.fail(ctx, key); e != nil {
 					return e
 				}
